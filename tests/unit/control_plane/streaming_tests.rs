@@ -885,6 +885,10 @@ struct SocketTestProvisioner;
 
 #[async_trait]
 impl HostProvisioner for SocketTestProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,

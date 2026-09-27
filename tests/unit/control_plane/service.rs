@@ -34,6 +34,10 @@ struct UnavailableProvisioner;
 
 #[async_trait]
 impl HostProvisioner for UnavailableProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -72,6 +76,10 @@ struct FakeRetiringProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRetiringProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -117,6 +125,10 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
+        fn host_idle_timeout_ms(&self) -> u64 {
+            10_000
+        }
+
         async fn prepare_deployment(
             &self,
             source: &HostLaunchSpec,
@@ -458,6 +470,10 @@ struct LosingActivation {
 
 #[async_trait]
 impl HostProvisioner for LosingActivation {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -542,6 +558,10 @@ struct FakeRoutingProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRoutingProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,

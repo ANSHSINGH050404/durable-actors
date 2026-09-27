@@ -316,6 +316,10 @@ async fn host_invoke(
 struct InvocationProvisioner(String);
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,

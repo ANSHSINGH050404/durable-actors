@@ -328,6 +328,8 @@ impl ControlPlaneService {
         grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
+        let idle_expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?
+            .saturating_add(self.provisioner.host_idle_timeout_ms());
         let target = self
             .route_actor(
                 actor,
@@ -345,6 +347,9 @@ impl ControlPlaneService {
             target.placement.owner_epoch,
             grant,
         )?;
+        let expires_at_ms = issued.expires_at_ms.min(i64::try_from(
+            idle_expires_at_ms.min(target.lease.expires_at_ms),
+        )?);
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
         }
@@ -357,7 +362,7 @@ impl ControlPlaneService {
             route,
             token: issued.token,
             owner_epoch: target.placement.owner_epoch,
-            expires_at_ms: issued.expires_at_ms,
+            expires_at_ms,
         })
     }
 }
@@ -741,6 +746,8 @@ impl std::error::Error for RegionConflict {}
 
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
+    fn host_idle_timeout_ms(&self) -> u64;
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -818,6 +825,10 @@ impl SandboxHostProvisioner {
 
 #[async_trait]
 impl HostProvisioner for SandboxHostProvisioner {
+    fn host_idle_timeout_ms(&self) -> u64 {
+        self.runtime.host_idle_timeout_ms
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,

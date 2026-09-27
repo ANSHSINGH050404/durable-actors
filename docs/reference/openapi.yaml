@@ -1017,7 +1017,10 @@ components:
                 route: { type: string, format: uri, description: HTTP(S) origin of the actor HTTP host. }
                 token: { type: string, description: Bearer token for actor RPCs. }
                 ownerEpoch: { type: integer, minimum: 0 }
-                expiresAtMs: { type: integer, format: int64 }
+                expiresAtMs:
+                    type: integer
+                    format: int64
+                    description: Route cache deadline in Unix milliseconds, bounded by the host idle timeout, host lease, and credential expiry. May precede the token's expiry.
         WebSocketGrant:
             type: object
             required: [homeRegion, websocketUrl, connectByMs, authorizedUntilMs]

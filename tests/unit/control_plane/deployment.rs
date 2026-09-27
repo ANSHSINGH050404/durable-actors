@@ -213,7 +213,79 @@ async fn compiled_deployments_and_cached_contracts_are_scoped_to_the_project() -
     Ok(())
 }
 
+#[tokio::test]
+async fn resolved_targets_expire_within_host_idle_lease_and_authorization_limits() -> Result<()> {
+    use crate::clock::{Clock, SystemClock};
+
+    for (idle_ms, lease_ms, grant_ms) in [
+        (10_000, 30_000, None),
+        (25_000, 30_000, Some(60_000)),
+        (1, 30_000, Some(60_000)),
+        (120_000, 8_000, Some(60_000)),
+        (120_000, 60_000, Some(120_000)),
+        (30_000, 30_000, Some(7_000)),
+    ] {
+        let (mut service, admin, _) = fixture_with_idle_timeout(idle_ms)?;
+        let spec = source();
+        admin.register_deployment(&spec, None).await?;
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let before = SystemClock.now_ms()?;
+        let lease = HostLease {
+            id: HostId::new(format!("host.v3.{}.one", spec.host_config_key())),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            route: "https://host.example.com".into(),
+            expires_at_ms: before + lease_ms,
+        };
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        placements.set_owner(&actor.storage_key(), lease.clone(), "north-america-west")?;
+        service.placements = placements;
+        let grant = grant_ms.map(|grant_ms| super::super::session::InvocationGrant {
+            subject: "subject".into(),
+            grant_id: "grant".into(),
+            expires_at: ((before + grant_ms) / 1_000) as i64,
+            methods: vec!["increment".into()],
+        });
+        let target = service
+            .resolve_actor_route(&actor, None, None, grant.clone())
+            .await?;
+        let after = SystemClock.now_ms()?;
+        let expiry = u64::try_from(target.expires_at_ms)?;
+        let authorization_expiry = grant.map_or(u64::MAX, |grant| grant.expires_at as u64 * 1_000);
+        assert!(
+            expiry <= after + idle_ms,
+            "target outlives host idle timeout: {idle_ms}ms"
+        );
+        assert!(expiry <= lease.expires_at_ms, "target outlives host lease");
+        assert!(
+            expiry <= authorization_expiry,
+            "target outlives authorization"
+        );
+        assert!(
+            expiry <= (after / 1_000 + 60) * 1_000,
+            "target outlives credential"
+        );
+        assert!(
+            expiry
+                >= (before + idle_ms)
+                    .min(lease.expires_at_ms)
+                    .min(authorization_expiry)
+                    .min((before / 1_000 + 60) * 1_000)
+        );
+    }
+    Ok(())
+}
+
 fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> {
+    fixture_with_idle_timeout(60_000)
+}
+
+fn fixture_with_idle_timeout(
+    host_idle_timeout_ms: u64,
+) -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> {
     let issuer = super::tests::test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -231,7 +303,7 @@ fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> 
             control_plane_url: "http://control".into(),
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
-            host_idle_timeout_ms: 60_000,
+            host_idle_timeout_ms,
         },
         issuer.clone(),
         Some("im-runtime".into()),

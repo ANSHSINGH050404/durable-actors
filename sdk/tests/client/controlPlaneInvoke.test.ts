@@ -62,6 +62,33 @@ test("a cold call resolves and invokes once, then warm calls go directly to the 
     ])
 })
 
+test("host idle validity sends the first call after idle through the control plane", async () => {
+    for (const delay of [4_999, 5_000, 31_918]) {
+        const urls: string[] = []
+        let now = 0
+        const client = new RemoteActorClient(options, {
+            now: () => now,
+            telemetry: () => {},
+            fetch: async url => {
+                urls.push(String(url))
+                const outcome = { type: "completed", result: urls.length }
+                if (String(url).startsWith(target.route)) {
+                    assert.ok(now < 10_000, "the idle host has already stopped")
+                    return Response.json(outcome)
+                }
+                return Response.json({ target: { ...target, expiresAtMs: now + 10_000 }, outcome })
+            }
+        })
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 1)
+        now = delay
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 2)
+        assert.deepEqual(urls, [
+            `${options.controlPlaneUrl}/v1/projects/project/actors/Counter/one/invoke`,
+            `${delay < 5_000 ? target.route : options.controlPlaneUrl}/v1/projects/project/actors/Counter/one/invoke`
+        ])
+    }
+})
+
 test("combined invocation preserves placement and does not hide a structured not-found error", async () => {
     let calls = 0
     const client = new RemoteActorClient(
@@ -260,6 +287,43 @@ test("an actor failure still supplies a target for the next warm call", async ()
         `${options.controlPlaneUrl}/v1/projects/project/actors/Counter/one/invoke`,
         `${target.route}/v1/projects/project/actors/Counter/one/invoke`
     ])
+})
+
+test("the next separate invocation resolves through the control plane after a direct transport failure", async () => {
+    const fresh = { ...target, route: "https://fresh.example.com", token: "fresh", ownerEpoch: 4 }
+    const requests: { url: string; requestId: string }[] = []
+    let nextRequestId = 0
+    const client = new RemoteActorClient(options, {
+        now: () => 0,
+        telemetry: () => {},
+        requestId: () => `request-${++nextRequestId}`,
+        fetch: async (url, init) => {
+            requests.push({ url: String(url), requestId: JSON.parse(String(init?.body)).requestId })
+            if (String(url).startsWith(target.route)) throw new TypeError("fetch failed")
+            const outcome = { type: "completed", result: 7 }
+            return Response.json(
+                String(url).startsWith(fresh.route)
+                    ? outcome
+                    : { target: requests.length === 1 ? target : fresh, outcome }
+            )
+        }
+    })
+    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+    await assert.rejects(
+        client.invoke("Counter", "one", "increment", [1]),
+        error =>
+            error instanceof ActorInvocationError && error.code === "outcome_unknown" && error.requestId === "request-2"
+    )
+    assert.equal(requests.length, 2)
+    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+    assert.deepEqual(
+        requests,
+        [options.controlPlaneUrl, target.route, options.controlPlaneUrl, fresh.route].map((origin, index) => ({
+            url: `${origin}/v1/projects/project/actors/Counter/one/invoke`,
+            requestId: `request-${index + 1}`
+        }))
+    )
 })
 
 test("a late failure from the old host cannot erase a refreshed target", { timeout: 2000 }, async t => {
