@@ -388,6 +388,7 @@ async fn prepare_actor_host(
         },
         bind_host_listener(config, warm_listener),
     )?;
+    timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
     let control_plane = Arc::new(control_plane);
     let scope = crate::replication::ReplicaScope {
         actor: config.actor.clone().context("actor identity missing")?,
@@ -405,16 +406,22 @@ async fn prepare_actor_host(
         stop.clone(),
         transport.clone(),
     );
-    let storage_ready = prepare_storage(
-        config,
-        &endpoint,
-        control_plane.clone(),
-        stop,
-        warm_storage,
-        transport,
-    );
+    let started = timings.started_at;
+    let storage_ready = async {
+        let result = prepare_storage(
+            config,
+            &endpoint,
+            control_plane.clone(),
+            stop,
+            warm_storage,
+            transport,
+        )
+        .await;
+        timings.storage_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        result
+    };
     let executor_ready = async {
-        if let Some((executor, javascript, entrypoint)) = warm_executor {
+        let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection =
                 tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
             Ok((connection, javascript))
@@ -425,7 +432,9 @@ async fn prepare_actor_host(
                 &mut timings.javascript_spawned_at_ms,
             )
             .await
-        }
+        };
+        timings.executor_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        result
     };
     let (storage, executor) = tokio::join!(storage_ready, executor_ready);
     let (storage, lease, renewal) = storage?;
@@ -567,6 +576,9 @@ struct HostStartupTimings {
     started_at: Instant,
     configuration_loaded_at_ms: f64,
     authentication_ready_at_ms: Option<f64>,
+    control_plane_ready_at_ms: Option<f64>,
+    storage_ready_at_ms: Option<f64>,
+    executor_ready_at_ms: Option<f64>,
     javascript_spawned_at_ms: Option<f64>,
     lease_registered_at_ms: Option<f64>,
     executor_notified_at_ms: Option<f64>,
@@ -578,6 +590,9 @@ impl HostStartupTimings {
             started_at: config.startup_started_at,
             configuration_loaded_at_ms: config.configuration_loaded_at_ms,
             authentication_ready_at_ms: None,
+            control_plane_ready_at_ms: None,
+            storage_ready_at_ms: None,
+            executor_ready_at_ms: None,
             javascript_spawned_at_ms: None,
             lease_registered_at_ms: None,
             executor_notified_at_ms: None,
@@ -602,6 +617,9 @@ fn log_startup(
         started_at_ms = 0,
         configuration_loaded_at_ms = timings.configuration_loaded_at_ms,
         authentication_ready_at_ms = timings.authentication_ready_at_ms,
+        control_plane_ready_at_ms = timings.control_plane_ready_at_ms,
+        storage_ready_at_ms = timings.storage_ready_at_ms,
+        executor_ready_at_ms = timings.executor_ready_at_ms,
         javascript_spawned_at_ms = timings.javascript_spawned_at_ms,
         lease_registered_at_ms = timings.lease_registered_at_ms,
         executor_notified_at_ms = timings.executor_notified_at_ms,

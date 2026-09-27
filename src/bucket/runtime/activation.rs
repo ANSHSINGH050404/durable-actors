@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::*;
 use crate::host_leases::HostLeaseRequest;
 
@@ -12,11 +14,15 @@ impl RuntimeStorage {
         actor.validate()?;
         crate::placement::validate_region(region)?;
         request.validate_duration()?;
+        let started = Instant::now();
         let current = if new_actor {
             None
         } else {
             self.load(&actor.storage_key()).await?
         };
+        let ownership_read_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let mut session_recovery_ms = None;
+        let mut snapshot_load_ms = None;
         let recovered = match &current {
             Some((_, record)) => {
                 ensure!(
@@ -31,8 +37,13 @@ impl RuntimeStorage {
                     record.lease.expires_at_ms <= self.clock.now_ms()?,
                     "previous owner lease is still active"
                 );
+                let recovery_started = Instant::now();
                 let recovered = self.recover_session(record).await?;
-                self.latest(record, recovered).await?
+                session_recovery_ms = Some(recovery_started.elapsed().as_secs_f64() * 1_000.0);
+                let snapshot_started = Instant::now();
+                let snapshot = self.latest(record, recovered).await?;
+                snapshot_load_ms = Some(snapshot_started.elapsed().as_secs_f64() * 1_000.0);
+                snapshot
             }
             None => None,
         };
@@ -50,8 +61,23 @@ impl RuntimeStorage {
             lease: self.new_lease(request)?,
             mutation: String::new(),
         };
+        let write_started = Instant::now();
         self.save_activation(&mut record, current.map(|(generation, _)| generation))
             .await?;
+        tracing::info!(
+            event = "actor_activation_storage",
+            project_id = %actor.project_id,
+            actor_name = %actor.actor_name,
+            actor_id = %actor.actor_id,
+            host_id = %request.id,
+            session_id = %request.session_id,
+            new_actor,
+            ownership_read_ms,
+            session_recovery_ms,
+            snapshot_load_ms,
+            ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
+            duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        );
         Ok(self.remember(record, recovered))
     }
 
