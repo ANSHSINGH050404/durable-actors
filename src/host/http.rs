@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     actor::{
@@ -156,6 +156,16 @@ async fn invoke(
     let principal = service.authenticate(&headers)?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
+    let grant = principal
+        .invocation
+        .as_ref()
+        .and_then(|capability| capability.grant.as_ref());
+    if let Err(error) = authorize_grant(grant, Some(&request.method)) {
+        return Ok(Json(InvocationReply::failed("forbidden", &error.1)));
+    }
+    if let Some(grant) = grant {
+        info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
+    }
     let invocation = ActorInvocation {
         actor,
         request_id: request.request_id,
@@ -173,6 +183,13 @@ async fn publish(
     body: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<StatusCode, HttpError> {
     let principal = service.authenticate(&headers)?;
+    authorize_grant(
+        principal
+            .invocation
+            .as_ref()
+            .and_then(|capability| capability.grant.as_ref()),
+        None,
+    )?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
     crate::actor::validate_socket_effects(&request.effects).map_err(bad_request)?;
@@ -193,6 +210,27 @@ async fn publish(
             )
         })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn authorize_grant(
+    grant: Option<&crate::control_plane::session::InvocationGrant>,
+    method: Option<&str>,
+) -> Result<(), HttpError> {
+    if let Some(grant) = grant {
+        let allowed = method.is_some_and(|method| {
+            !matches!(
+                method,
+                "onConnect" | "onMessage" | "onDisconnect" | "connect" | "broadcast" | "then"
+            ) && grant.methods.iter().any(|allowed| allowed == method)
+        });
+        if !allowed {
+            return Err(HttpError(
+                StatusCode::FORBIDDEN,
+                "operation is outside the actor grant".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_host_request(

@@ -27,6 +27,11 @@ class ActorInvocationError extends Error {
     }
 }
 
+/** Signals that the authorization service explicitly revoked or denied access. */
+class ActorSessionRejectedError extends Error {
+    override readonly name = "ActorSessionRejectedError"
+}
+
 class ActorSessionError extends Error {
     constructor(message: string, options?: ErrorOptions) {
         super(message, options)
@@ -62,6 +67,7 @@ export {
     ActorProtocolError,
     ActorSerializationError,
     ActorSessionError,
+    ActorSessionRejectedError,
     ActorValidationError
 }
 

@@ -110,6 +110,7 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         "revision-1",
         "north-america-east",
         3,
+        None,
     )?;
     let invocation_verifier = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -138,6 +139,148 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
     assert!(
         authority_verifier
             .authenticate_authorization(&format!("Bearer {}", issued.token))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let now = unix_millis()? / 1000;
+    let grant = super::super::session::InvocationGrant {
+        subject: "credential-fingerprint".into(),
+        grant_id: "grant-id".into(),
+        expires_at: now + 20,
+        methods: vec!["increment".into()],
+    };
+    let issue = |grant| {
+        issuer.issue_invocation_target(
+            &actor,
+            &HostId::new("host.v3.revision.one"),
+            "00000000-0000-4000-8000-000000000001",
+            "revision",
+            "us-west",
+            1,
+            Some(grant),
+        )
+    };
+    let issued = issue(grant.clone())?;
+    assert_eq!(issued.expires_at_ms, grant.expires_at * 1000);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(issued.token.split('.').nth(1).unwrap())?)?;
+    assert_eq!(payload["scope"], "actor:delegated-invoke");
+    let verifier = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "invocation",
+        ActorTokenPurpose::Invocation,
+        Duration::from_secs(60),
+    )?;
+    let principal = verifier.authenticate_authorization(&format!("Bearer {}", issued.token))?;
+    assert_eq!(principal.invocation.unwrap().grant, Some(grant.clone()));
+    assert!(
+        issue(super::super::session::InvocationGrant {
+            expires_at: now,
+            ..grant
+        })
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let now = unix_millis()?;
+    for deadline in [now + 25_000, now + 300_000] {
+        let issued = issuer.issue_session("project".into(), "credential".into(), deadline)?;
+        assert!(issued.expires_at_ms <= deadline.min(unix_millis()? + 60_000));
+        let authorization = format!("Bearer {}", issued.token);
+        let verifier = issuer.session_verifier()?;
+        let session = verifier.authenticate(&authorization, "project")?;
+        assert_eq!(session.subject, "credential");
+        assert_eq!(session.expires_at * 1000, issued.expires_at_ms);
+        assert_eq!(session.project_id, "project");
+        assert!(verifier.authenticate(&authorization, "other").is_err());
+        assert!(
+            socket_issuer()?
+                .session_verifier()?
+                .authenticate(&authorization, "project")
+                .is_err()
+        );
+        for (audience, purpose) in [
+            ("authority", ActorTokenPurpose::ControlPlane),
+            ("invocation", ActorTokenPurpose::Invocation),
+        ] {
+            let host_verifier = ActorJwtVerifier::for_scope(
+                issuer.verifier_keys_json()?,
+                "issuer",
+                audience,
+                purpose,
+                Duration::from_secs(60),
+            )?;
+            assert!(
+                host_verifier
+                    .authenticate_authorization(&authorization)
+                    .is_err()
+            );
+        }
+    }
+    assert!(
+        issuer
+            .issue_session("project".into(), "credential".into(), now)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let issued = issuer.issue_session(
+        "project".into(),
+        "credential".into(),
+        unix_millis()? + 60_000,
+    )?;
+    let verifier = issuer.session_verifier()?;
+    let session = verifier.authenticate(&format!("Bearer {}", issued.token), "project")?;
+    let original = serde_json::to_value(&session)?;
+    for (field, value) in [
+        ("iss", serde_json::json!("other")),
+        ("aud", serde_json::json!("invocation")),
+        ("scope", serde_json::json!("actor:invoke")),
+        ("sub", serde_json::json!("")),
+        ("jti", serde_json::json!("")),
+        ("nbf", serde_json::json!(session.iat + 60)),
+        ("iat", serde_json::json!(session.iat + 60)),
+        ("exp", serde_json::json!(session.iat)),
+        ("exp", serde_json::json!(session.iat + 61)),
+        ("projectId", serde_json::json!("")),
+        ("projectId", serde_json::json!("../other")),
+        ("unexpected", serde_json::json!(true)),
+    ] {
+        let mut claims = original.clone();
+        claims[field] = value;
+        assert!(
+            verifier
+                .authenticate(&format!("Bearer {}", issuer.sign(&claims)?), "project")
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut parts: Vec<String> = issued.token.split('.').map(str::to_owned).collect();
+    let mut altered = original;
+    altered["projectId"] = serde_json::json!("other");
+    parts[1] = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&altered)?);
+    assert!(
+        verifier
+            .authenticate(&format!("Bearer {}", parts.join(".")), "other")
             .is_err()
     );
     Ok(())

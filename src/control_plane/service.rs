@@ -237,8 +237,9 @@ impl ControlPlaneService {
         actor: &ActorKey,
         home_region: Option<&str>,
         timings: &mut TargetResolutionTimings,
+        grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
-        self.resolve_actor_route(actor, home_region, Some(timings))
+        self.resolve_actor_route(actor, home_region, Some(timings), grant)
             .await
     }
 
@@ -324,6 +325,7 @@ impl ControlPlaneService {
         actor: &ActorKey,
         home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
+        grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
         let target = self
@@ -341,6 +343,7 @@ impl ControlPlaneService {
             &target.spec.host_config_key(),
             &target.placement.home_region,
             target.placement.owner_epoch,
+            grant,
         )?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());

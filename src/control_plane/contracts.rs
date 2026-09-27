@@ -51,6 +51,21 @@ pub(crate) struct PublishedContract {
 }
 
 impl PublishedContract {
+    pub(crate) fn rpc_methods(&self, actor_name: &str) -> Result<Vec<String>> {
+        let document: ContractDocument = serde_json::from_value(self.contract.clone())?;
+        let actor = document
+            .actors
+            .into_iter()
+            .find(|actor| actor.actor_name == actor_name)
+            .context("actor is not in the published contract")?;
+        Ok(actor
+            .rpc
+            .methods
+            .into_iter()
+            .map(|method| method.name)
+            .collect())
+    }
+
     pub(crate) fn new(contract: &PublicActorContract) -> Self {
         Self {
             contract_hash: contract.hash().into(),

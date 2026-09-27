@@ -150,7 +150,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
-    let target = service.resolve_actor_route(&actor, None, None).await?;
+    let target = service.resolve_actor_route(&actor, None, None, None).await?;
     assert_eq!(target.owner_epoch, 1);
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 1);
     assert_eq!(bucket.writes.load(Ordering::SeqCst), 1);
@@ -161,7 +161,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     assert_eq!(principal.actor, actor);
     service.require_active_host(&principal).await?;
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 2);
-    let again = service.resolve_actor_route(&actor, None, None).await?;
+    let again = service.resolve_actor_route(&actor, None, None, None).await?;
     assert_eq!(again.route, target.route);
     assert_eq!(
         bucket.reads.load(Ordering::SeqCst),

@@ -128,6 +128,7 @@ pub(crate) struct AdminService {
     api_key: Option<String>,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
+    sessions: super::session::SessionVerifier,
 }
 
 impl AdminService {
@@ -142,11 +143,42 @@ impl AdminService {
                 "API key is invalid"
             );
         }
+        let sessions = issuer.session_verifier()?;
         Ok(Self {
             api_key,
             registry,
             issuer,
+            sessions,
         })
+    }
+
+    pub(super) fn authorize_session_issuance(&self, authorization: &str) -> Result<()> {
+        ensure!(
+            self.api_key.is_some(),
+            "session issuance requires administrative authentication"
+        );
+        self.authenticate(authorization)
+    }
+
+    pub(super) fn issue_session(
+        &self,
+        project_id: String,
+        subject: String,
+        expires_at_ms: i64,
+    ) -> Result<super::issuer::IssuedActorToken> {
+        self.issuer
+            .issue_session(project_id, subject, expires_at_ms)
+    }
+
+    pub(super) fn authorize_discovery(
+        &self,
+        authorization: &str,
+        project_id: &str,
+    ) -> Result<Option<super::session::ActorSession>> {
+        if self.authenticate(authorization).is_ok() {
+            return Ok(None);
+        }
+        Ok(Some(self.sessions.authenticate(authorization, project_id)?))
     }
 
     pub(super) fn issue_direct_socket(

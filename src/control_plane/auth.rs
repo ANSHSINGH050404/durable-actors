@@ -44,6 +44,8 @@ pub(crate) struct ActorInvocationCapability {
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub owner_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<super::session::InvocationGrant>,
 }
 
 #[derive(Clone)]
@@ -181,13 +183,24 @@ impl ActorJwtVerifier {
     }
 
     fn validate_claims(&self, claims: ActorJwtClaims) -> Result<ActorPrincipal> {
-        ensure!(
+        let delegated = claims
+            .invocation
+            .as_ref()
+            .is_some_and(|capability| capability.grant.is_some());
+        let valid_scope = if delegated {
+            self.purpose == ActorTokenPurpose::Invocation
+                && claims.scope == "actor:delegated-invoke"
+        } else {
             claims
                 .scope
                 .split_ascii_whitespace()
-                .any(|scope| scope == self.purpose.claim()),
-            "actor token credential scope is invalid"
-        );
+                .any(|scope| scope == self.purpose.claim())
+                && !claims
+                    .scope
+                    .split_ascii_whitespace()
+                    .any(|scope| scope == "actor:delegated-invoke")
+        };
+        ensure!(valid_scope, "actor token credential scope is invalid");
         ensure!(!claims.sub.is_empty(), "actor token subject is empty");
         ensure!(
             claims.sub == claims.host_id,
@@ -242,6 +255,23 @@ impl ActorJwtVerifier {
             "actor token storage region is invalid"
         );
         if let Some(capability) = &principal.invocation {
+            if let Some(grant) = &capability.grant {
+                ensure!(
+                    claims.exp <= grant.expires_at && grant.expires_at > now,
+                    "delegated authorization has expired"
+                );
+                ensure!(
+                    !grant.subject.is_empty()
+                        && grant.subject.len() <= 128
+                        && !grant.grant_id.is_empty()
+                        && grant.grant_id.len() <= 128,
+                    "delegated identity is invalid"
+                );
+                ensure!(grant.methods.len() <= 256, "too many delegated methods");
+                for method in &grant.methods {
+                    super::admin::validate_component("delegated method", method, 128)?;
+                }
+            }
             ensure!(
                 capability.host_id == principal.host_id,
                 "actor invocation capability targets another host"
@@ -256,7 +286,7 @@ impl ActorJwtVerifier {
     }
 }
 
-fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, DecodingKey>> {
+pub(super) fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, DecodingKey>> {
     let keys: JwkSet = serde_json::from_str(public_keys_json)
         .context("parse durable-actors JWT public keys as a JWK set")?;
     ensure!(
@@ -282,7 +312,7 @@ fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, Decoding
         .collect()
 }
 
-fn bearer_token(authorization: &str) -> Result<&str> {
+pub(super) fn bearer_token(authorization: &str) -> Result<&str> {
     let token = authorization
         .strip_prefix("Bearer ")
         .context("actor token must use Bearer authentication")?;
@@ -293,7 +323,7 @@ fn bearer_token(authorization: &str) -> Result<&str> {
     Ok(token)
 }
 
-fn unix_seconds() -> Result<i64> {
+pub(super) fn unix_seconds() -> Result<i64> {
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?;

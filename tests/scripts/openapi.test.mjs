@@ -61,6 +61,15 @@ test("actor discovery accepts an optional placement region", async () => {
         assert.equal(validate(request), false, JSON.stringify(request))
 })
 
+test("project session issuance requires an identity and absolute deadline", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const validate = new Ajv({ strict: false, validateFormats: false }).compile(spec.components.schemas.IssueActorSession)
+    const request = { subject: "credential-fingerprint", expiresAtMs: 1_790_000_060_000 }
+    assert.ok(validate(request), JSON.stringify(validate.errors))
+    for (const invalid of [{ subject: request.subject }, { expiresAtMs: request.expiresAtMs }, { ...request, subject: "" }, { ...request, unexpected: true }])
+        assert.equal(validate(invalid), false, JSON.stringify(invalid))
+})
+
 test("deployment schemas describe both hosted and local registration and the complete read response", async () => {
     const spec = await SwaggerParser.dereference(specPath)
     const deployment = spec.paths["/v1/projects/{project_id}/deployment"]

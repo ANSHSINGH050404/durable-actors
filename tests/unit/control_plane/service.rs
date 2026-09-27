@@ -6,6 +6,9 @@ use crate::{actor_state::ActorStorageKey, placement::testing::LocalObjectPlaceme
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use base64::{Engine, engine::general_purpose::STANDARD};
 
+#[path = "delegated_access.rs"]
+mod delegated_access;
+
 struct FakeSocketEventSink {
     delivered: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
 }
@@ -194,11 +197,15 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    let target = service.resolve_actor_route(&actor, None, None).await?;
+    let target = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(target.route, route);
     assert_eq!(target.owner_epoch, 42);
     assert!(placements.get(&actor.storage_key()).await?.is_none());
-    service.resolve_actor_route(&actor, None, None).await?;
+    service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(
         requests.load(std::sync::atomic::Ordering::SeqCst),
         0,

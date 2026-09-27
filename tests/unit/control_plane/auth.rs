@@ -74,6 +74,41 @@ fn invocation_credentials_are_distinct_from_control_plane_credentials() -> Resul
 }
 
 #[test]
+fn delegated_scope_requires_a_restricted_capability() -> Result<()> {
+    let (_, key_pair) = verifier_and_key_pair()?;
+    let verifier = ActorJwtVerifier::for_scope(
+        public_key_set(&key_pair)?,
+        "durable-actors-control-plane",
+        "durable-actors-invoke",
+        ActorTokenPurpose::Invocation,
+        Duration::from_secs(60),
+    )?;
+    let now = unix_seconds()?;
+    let mut claims = valid_claims(now);
+    claims["aud"] = json!("durable-actors-invoke");
+    claims["scope"] = json!("actor:delegated-invoke");
+    let sign = |claims| {
+        token(
+            &key_pair,
+            json!({"alg": "EdDSA", "kid": "test-key", "typ": "JWT"}),
+            claims,
+        )
+    };
+    assert!(verifier.verify(&sign(claims.clone())?).is_err());
+    claims["invocation"] = json!({
+        "actor": claims["actor"], "hostId": claims["processId"], "ownerEpoch": 1,
+        "grant": { "subject": "credential-a", "grantId": "grant-a", "expiresAt": now + 60, "methods": ["increment"] }
+    });
+    assert!(verifier.verify(&sign(claims.clone())?).is_ok());
+    claims["scope"] = json!("actor:invoke");
+    assert!(verifier.verify(&sign(claims.clone())?).is_err());
+    claims["scope"] = json!("actor:delegated-invoke");
+    claims["invocation"]["grant"]["expiresAt"] = json!(now + 30);
+    assert!(verifier.verify(&sign(claims)?).is_err());
+    Ok(())
+}
+
+#[test]
 fn rejects_an_expired_token_during_clock_skew_leeway() -> Result<()> {
     let (verifier, key_pair) = verifier_and_key_pair()?;
     let now = unix_seconds()?;

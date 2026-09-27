@@ -18,7 +18,8 @@ async function generateClientArtifacts(input: PublicActorContract): Promise<Read
     const source = `${usageComment("Use this file to call actors and prepare WebSocket access from your backend.", 'import { actors, ActorProxy, type ActorAuthorization } from "./generated/index.js"')}
 import { createActorStub as $createActorStub, SocketProxy as $SocketProxy } from "./runtime/index.js"
 import type { ActorTypes as $ActorTypes } from "./types.js"
-export { createActorTransport, ActorInvocationError } from "./runtime/index.js"
+export { createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError } from "./runtime/index.js"
+export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./runtime/index.js"
 export type { ActorRpcTransport, DurableActorsClientOptions, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "./runtime/index.js"
 
 ${usageComment("Types for actor state and socket messages.", exampleActor && `type State = actors.${exampleActor}.State`)}

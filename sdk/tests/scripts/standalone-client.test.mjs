@@ -78,7 +78,7 @@ async function checkTypes(directory) {
     await writeFile(
         consumer,
         `
-        import { actors, createActorTransport, ActorInvocationError, type SocketGrant } from "./generated/index.js"
+        import { actors, createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError, type ActorSession, type SocketGrant } from "./generated/index.js"
         const transport = createActorTransport({ controlPlaneUrl: "http://localhost:7100" })
         const room = actors.ChatRoom.get("lobby", transport)
         const message: Promise<{ id: string; text: string }> = room.sendMessage({ text: "hello" })
@@ -86,6 +86,10 @@ async function checkTypes(directory) {
         // @ts-expect-error the generated stub preserves argument types
         room.sendMessage({ text: 42 })
         const error: string = new ActorInvocationError("actor_error", "request", "failed").code
+        const session: ActorSession = { projectId: "team-a", token: "session", controlPlaneUrl: "https://actors.example", expiresAtMs: Date.now() + 60000 }
+        const sessions = createActorSessionTransport({ projectId: "team-a", getSession: async () => session })
+        sessions.dispose()
+        const denial: Error = new ActorSessionRejectedError("access revoked")
     `
     )
     const program = ts.createProgram([consumer], {
@@ -163,14 +167,21 @@ async function invokeClient(directory, origin, format) {
         script,
         `
         import assert from "node:assert/strict"
-        import { actors, ActorInvocationError } from ${JSON.stringify(`./${file}`)}
-        const room = actors.ChatRoom.get("lobby")
+        import { actors, createActorSessionTransport, ActorInvocationError } from ${JSON.stringify(`./${file}`)}
+        let exchanges = 0
+        const transport = createActorSessionTransport({ projectId: "team-a", getSession: async () => {
+            exchanges++
+            return { projectId: "team-a", token: "app-key", controlPlaneUrl: ${JSON.stringify(origin)}, expiresAtMs: Date.now() + 60000 }
+        } })
+        const room = actors.ChatRoom.get("lobby", transport)
         const input = { text: "hello" }
         assert.deepEqual(await room.sendMessage(input), { id: "1", text: "hello" })
         assert.equal(await room.clear(), undefined)
         await assert.rejects(room.sendMessage({ text: "fail" }), error => error instanceof ActorInvocationError && error.code === "actor_error")
         const grant = await actors.ChatRoom.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
         assert.equal(grant.websocketUrl, "wss://example.com/socket?key=ticket")
+        assert.equal(exchanges, 1)
+        transport.dispose()
     `
     )
     await run(process.execPath, [script], {
@@ -192,6 +203,8 @@ async function checkBrowser(directory) {
     assert.throws(() => module.actors.ChatRoom.get("lobby"), /server/)
     assert.throws(() => new module.ActorProxy(), /server/)
     assert.throws(() => module.createActorTransport({ controlPlaneUrl: "http://localhost:7100" }), /server/)
+    assert.throws(() => module.createActorSessionTransport({ projectId: "team-a", getSession: async () => null }), /server/)
+    assert.equal(new module.ActorSessionRejectedError("access revoked").name, "ActorSessionRejectedError")
     assert.ok(browser.outputFiles[0].contents.length < 10_000)
 }
 

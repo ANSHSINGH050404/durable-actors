@@ -22,6 +22,7 @@ tags:
     - name: Actors
     - name: Observability
     - name: WebSockets
+    - name: Sessions
 paths:
     /openapi.yaml:
         get:
@@ -123,6 +124,38 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/sessions:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        post:
+            operationId: issueActorSession
+            tags: [Sessions]
+            summary: Issue a scoped RPC session
+            security: [{ ApiKey: [] }]
+            description: Requires the configured administrative secret and an active deployment. The trusted backend must authenticate its caller and check project ACLs first. Sessions authorize all actor types, actor IDs, and published RPC methods in exactly one project. Expiry is capped by the requested absolute deadline, 60 seconds, and the runtime maximum JWT lifetime. Session credentials cannot issue sessions or access administrative APIs or WebSockets.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/IssueActorSession" }
+            responses:
+                "200":
+                    description: Runtime-signed session and its absolute expiration.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [token, expiresAtMs]
+                                properties:
+                                    token: { type: string }
+                                    expiresAtMs: { type: integer, format: int64 }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -132,12 +165,15 @@ paths:
             operationId: findActor
             tags: [Actors]
             summary: Find an actor host
-            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment.
+            security: [{ ApiKey: [] }, { ActorSession: [] }, {}]
+            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret or a runtime-issued actor:session credential for this project. Sessions produce actor-specific tickets containing all of the actor's published RPC methods. These tickets cannot outlive the session.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "403": { description: Actor has no published RPC methods. }
+                "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -574,6 +610,10 @@ components:
             type: http
             scheme: bearer
             description: Short-lived actor capability returned by findActor. Never use the application API key at the actor host.
+        ActorSession:
+            type: http
+            scheme: bearer
+            description: Runtime-issued project-scoped session, accepted only for actor RPC discovery.
         SocketTicket:
             type: apiKey
             in: query
@@ -901,6 +941,18 @@ components:
                 version: { type: integer, minimum: 0 }
                 code: { type: integer, description: "1000 or 3000–4999." }
                 reason: { type: string }
+        IssueActorSession:
+            type: object
+            additionalProperties: false
+            required: [subject, expiresAtMs]
+            properties:
+                subject: { type: string, minLength: 1, maxLength: 128, description: "Stable opaque credential fingerprint, not a secret." }
+                expiresAtMs:
+                    {
+                        type: integer,
+                        format: int64,
+                        description: "Absolute authorization deadline in Unix milliseconds. Set this from the start of application authentication, not after it completes."
+                    }
         FindActorRequest:
             type: object
             additionalProperties: false

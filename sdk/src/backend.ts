@@ -1,4 +1,6 @@
 /** @module durable-actors/backend */
+import { ActorSessionTransport } from "./client-runtime/session.js"
+import type { ActorSessionTransportOptions } from "./client-runtime/session.js"
 import { createActorStub as stub } from "./client-runtime/stub.js"
 import type { ActorRpcMethod, ActorRpcTransport } from "./client-runtime/stub.js"
 import { actorClient } from "./client/client.js"
@@ -33,6 +35,11 @@ export function createActorTransport(options: DurableActorsClientOptions): Actor
         }
     }
 }
+export function createActorSessionTransport(options: ActorSessionTransportOptions): ActorSessionTransport {
+    return new ActorSessionTransport(options, { createTransport: createActorTransport })
+}
+export { ActorSessionRejectedError } from "./client-runtime/session.js"
+export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./client-runtime/session.js"
 export type { DurableActorsClientOptions }
 
 export type { ActorRpcMethod, ActorRpcTransport }

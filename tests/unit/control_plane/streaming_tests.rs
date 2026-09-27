@@ -1068,3 +1068,74 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     stack.child.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let http = reqwest::Client::new();
+    let target: serde_json::Value = http
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/find-actor",
+            stack.gateway
+        ))
+        .bearer_auth("test-api-key")
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let url = format!(
+        "{}/v1/projects/default/actors/Counter/counter-1",
+        target["route"].as_str().unwrap()
+    );
+    let epoch = target["ownerEpoch"].as_u64().unwrap();
+    let expiry = crate::control_plane::auth::unix_seconds()? + 60;
+    let ticket = stack
+        .issuer
+        .issue_invocation_target(
+            &stack.actor,
+            &stack.host_id,
+            "00000000-0000-4000-8000-000000000001",
+            "revision",
+            "us-east",
+            epoch,
+            Some(crate::control_plane::session::InvocationGrant {
+                subject: "credential-a".into(),
+                grant_id: "grant-a".into(),
+                expires_at: expiry,
+                methods: vec!["readHistory".into()],
+            }),
+        )?
+        .token;
+    assert_eq!(
+        http.head(format!("{url}/invoke"))
+            .bearer_auth(&ticket)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    for method in ["change", "onConnect", "onMessage", "onDisconnect"] {
+        let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
+            .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]}))
+            .send().await?.error_for_status()?.json().await?;
+        assert_eq!(reply["code"], "forbidden");
+    }
+    assert_eq!(
+        http.post(format!("{url}/socket-effects"))
+            .bearer_auth(&ticket)
+            .json(&serde_json::json!({"ownerEpoch":epoch,"effects":[]}))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
+        .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":"readHistory", "args":[]}))
+        .send().await?.error_for_status()?.json().await?;
+    assert_eq!(reply["type"], "completed");
+    stack.child.kill().await?;
+    Ok(())
+}
