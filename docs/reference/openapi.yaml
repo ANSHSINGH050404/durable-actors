@@ -188,18 +188,6 @@ paths:
             - { $ref: "#/components/parameters/ProjectId" }
             - { $ref: "#/components/parameters/ActorName" }
             - { $ref: "#/components/parameters/ActorId" }
-        head:
-            operationId: pingActorHost
-            tags: [Actors]
-            summary: Check the host before sending an invocation
-            security: [{ ActorTicket: [] }]
-            description: Authenticates the actor ticket and resets the host idle timer without invoking actor code. The SDK pings before each invocation and refreshes discovery once if the ping fails. A successful ping does not guarantee that a subsequent invocation will complete.
-            responses:
-                "204": { description: Host accepts the actor ticket and its idle timer has been reset. No response body. }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { description: Ticket rejected. Refresh discovery once. }
-                "403": { description: Ticket belongs to another actor or host session. }
-                "503": { description: Host unavailable. Refresh discovery once. }
         post:
             operationId: invokeActor
             tags: [Actors]
@@ -209,10 +197,7 @@ paths:
                 Send the discovery token and ownerEpoch to the discovered host origin.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
-                HTTP 401, an explicit reroute, or a confirmed connection refusal before dispatch permits rediscovery and one shared retry.
-                Ambiguous network errors, other HTTP failures and failed outcomes must not be retried automatically.
-                Exhausted connection refusals and discovery transport failures are unavailable; ambiguous invocation transport failures are outcome_unknown.
-                requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
+                Maximum body size is 32 MiB.
             requestBody:
                 required: true
                 content:
@@ -230,9 +215,9 @@ paths:
                             examples:
                                 completed: { value: { type: completed, result: 7 } }
                                 failed: { value: { type: failed, code: actor_error, message: Method failed } }
-                                reroute: { value: { type: reroute } }
+                                notExecuted: { value: { type: not_executed, reason: host_unavailable } }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { description: Ticket rejected before dispatch. Refresh discovery once. }
+                "401": { description: Ticket rejected before dispatch. }
                 "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
@@ -915,9 +900,12 @@ components:
                       code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
                       message: { type: string }
                 - type: object
-                  required: [type]
+                  required: [type, reason]
                   properties:
-                      type: { const: reroute }
+                      type: { const: not_executed }
+                      reason:
+                          type: string
+                          enum: [stale_owner, host_unavailable, upstream_not_reached]
         ActorSocketEffect:
             type: object
             description: Host-validated socket effect. Broadcasts require message, except_connection_ids and tags; connection-specific effects require connection_id.

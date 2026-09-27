@@ -6,9 +6,6 @@ export class HttpActorHostTransport implements ActorHostTransport {
     constructor(private readonly fetchRequest: typeof globalThis.fetch = globalThis.fetch) {}
 
     async invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply> {
-        // TODO: Replace this extra round trip with durable idempotency keys for safe invocation retries.
-        const readiness = await this.ping(target, invocation)
-        if (readiness !== "ready") return { type: readiness }
         let response: Response
         try {
             response = await this.post(target, invocation, "invoke", {
@@ -18,7 +15,7 @@ export class HttpActorHostTransport implements ActorHostTransport {
                 args: invocation.args
             })
         } catch (error) {
-            if (connectionRefused(error)) return { type: "not_dispatched" }
+            if (connectionRefused(error)) return { type: "not_executed", reason: "upstream_not_reached" }
             throw error
         }
         // A 401 is issued before dispatch, so refreshing this ticket cannot repeat actor code.
@@ -35,7 +32,8 @@ export class HttpActorHostTransport implements ActorHostTransport {
                 typeof reply.message === "string"
             )
                 return { type: "failed", code: reply.code, message: reply.message }
-            if (reply.type === "reroute") return { type: "reroute" }
+            if (reply.type === "not_executed" && rejectionReason(reply.reason))
+                return { type: "not_executed", reason: reply.reason }
         }
         throw new ActorProtocolError("actor host response did not contain a valid outcome")
     }
@@ -43,27 +41,6 @@ export class HttpActorHostTransport implements ActorHostTransport {
     async publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void> {
         const response = await this.post(target, actor, "socket-effects", { ownerEpoch: target.ownerEpoch, effects })
         if (!response.ok) throw new Error(`socket effects returned HTTP ${response.status}`)
-    }
-
-    private async ping(
-        target: ActorHostTarget,
-        actor: ActorAddress
-    ): Promise<"ready" | "unauthenticated" | "not_dispatched"> {
-        try {
-            const response = await this.fetchRequest(
-                `${validateOrigin(target.route)}${projectActorPath(actor.projectId, actor.actorName, actor.actorId)}/invoke`,
-                {
-                    method: "HEAD",
-                    redirect: "error",
-                    headers: { authorization: `Bearer ${target.token}` },
-                    signal: AbortSignal.timeout(5_000)
-                }
-            )
-            if (response.status === 401) return "unauthenticated"
-            return response.status === 204 ? "ready" : "not_dispatched"
-        } catch {
-            return "not_dispatched"
-        }
     }
 
     private post(target: ActorHostTarget, actor: ActorAddress, endpoint: string, body: unknown): Promise<Response> {
@@ -81,6 +58,10 @@ export class HttpActorHostTransport implements ActorHostTransport {
             }
         )
     }
+}
+
+function rejectionReason(value: unknown): value is ActorRejectionReason {
+    return value === "stale_owner" || value === "host_unavailable" || value === "upstream_not_reached"
 }
 
 function connectionRefused(error: unknown, ancestors = new Set<unknown>()): boolean {
@@ -125,12 +106,13 @@ export interface DirectActorInvocation extends ActorAddress {
     readonly method: string
     readonly args: readonly JsonValue[]
 }
+type ActorRejectionReason = "stale_owner" | "host_unavailable" | "upstream_not_reached"
+
 export type ActorHostReply =
     | { readonly type: "completed"; readonly result: unknown }
     | { readonly type: "failed"; readonly code: string; readonly message: string }
-    | { readonly type: "reroute" }
     | { readonly type: "unauthenticated" }
-    | { readonly type: "not_dispatched" }
+    | { readonly type: "not_executed"; readonly reason: ActorRejectionReason }
 export interface ActorHostTransport {
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
     publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>

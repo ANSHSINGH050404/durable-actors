@@ -29,13 +29,15 @@ for (const method of ["read", "increment"]) {
     })
 }
 
-test("connection refusals, reroutes and ticket refreshes share one recovery attempt", async () => {
+test("all pre-execution rejections share one recovery attempt", async () => {
     const rejections = [
         async () => {
             throw refused()
         },
-        async () => Response.json({ type: "reroute" }),
-        async () => new Response(null, { status: 401 })
+        async () => new Response(null, { status: 401 }),
+        ...["host_unavailable", "stale_owner", "upstream_not_reached"].map(
+            reason => async () => Response.json({ type: "not_executed", reason })
+        )
     ]
     for (const first of rejections) {
         for (const [index, second] of rejections.entries()) {
@@ -43,12 +45,47 @@ test("connection refusals, reroutes and ticket refreshes share one recovery atte
             const { client, discoveries, requests } = retryClient(() => (++calls === 1 ? first() : second()))
             await assert.rejects(
                 client.invoke("Counter", "one", "increment", [1]),
-                invocationError(index === 2 ? "unauthenticated" : "unavailable")
+                invocationError(index === 1 ? "unauthenticated" : "unavailable")
             )
             assert.equal(discoveries.length, 2)
             assert.equal(requests.length, 2)
             assert.equal(requests[0].body.requestId, requests[1].body.requestId)
         }
+    }
+})
+
+for (const reason of ["host_unavailable", "stale_owner", "upstream_not_reached"]) {
+    test(`a ${reason} rejection rediscovers and executes the mutation once`, async () => {
+        let count = 0
+        const { client, discoveries, requests } = retryClient(async request => {
+            if (request.body.ownerEpoch === 1) return Response.json({ type: "not_executed", reason })
+            return completed(++count)
+        })
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 1)
+        assert.equal(count, 1)
+        assert.equal(discoveries.length, 2)
+        assert.equal(requests.length, 2)
+        assert.deepEqual(requests[0].body, { ...requests[1].body, ownerEpoch: 1 })
+        assert.equal(requests[1].authorization, "Bearer ticket-2")
+    })
+}
+
+test("gateway errors and actor failures never authorize replay", async () => {
+    for (const response of [
+        ...[502, 503, 504].map(status => () => new Response(null, { status })),
+        ...["unavailable", "not_executed", "host_unavailable"].map(
+            code => () => Response.json({ type: "failed", code, message: "actor method failed" })
+        )
+    ]) {
+        let executions = 0
+        const { client, discoveries, requests } = retryClient(async () => {
+            executions++
+            return response()
+        })
+        await assert.rejects(client.invoke("Counter", "one", "increment", [1]), ActorInvocationError)
+        assert.equal(executions, 1)
+        assert.equal(discoveries.length, 1)
+        assert.equal(requests.length, 1)
     }
 })
 
@@ -70,7 +107,6 @@ test("failed rediscovery remains unavailable when the host never received the in
         environment: {},
         telemetry: () => {},
         fetch: async (url, init) => {
-            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 if (++discoveries === 2) throw new Error("discovery disconnected")
                 return target(1)
@@ -130,7 +166,6 @@ test("an ambiguous stale failure does not wait for another caller's rediscovery"
         telemetry: () => {},
         now: () => 0,
         fetch: async (url, init) => {
-            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 if (++discoveries === 1) return target(1)
                 resolving.resolve()
@@ -173,10 +208,6 @@ test("an ambiguous stale failure does not wait for another caller's rediscovery"
 test("a mutation with a lost HTTP response is executed once and reports outcome_unknown", async t => {
     let executions = 0
     const host = createServer(async (request, response) => {
-        if (request.method === "HEAD") {
-            response.writeHead(204).end()
-            return
-        }
         request.resume()
         await once(request, "end")
         executions++
@@ -214,7 +245,6 @@ function retryClient(invoke: (request: HostRequest) => Promise<Response>, now = 
         now,
         requestId: () => `request-${++requestId}`,
         fetch: async (url, init) => {
-            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 discoveries.push(String(url))
                 return target(discoveries.length, now())

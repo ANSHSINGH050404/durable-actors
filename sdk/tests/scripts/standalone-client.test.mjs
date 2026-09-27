@@ -23,7 +23,7 @@ test("generated clients typecheck and run with or without bundling in an applica
     await checkBrowser(directory)
 })
 
-test("a generated client rediscovers a retired tunnel before sending the next mutation", { timeout: 30_000 }, async t => {
+test("a generated client retries an explicitly rejected mutation on the new host", { timeout: 30_000 }, async t => {
     const directory = await standaloneProject(t)
     const calls = []
     const oldHost = actorHost(calls)
@@ -43,14 +43,15 @@ test("a generated client rediscovers a retired tunnel before sending the next mu
     assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
     const retiredRequests = []
     oldHost.removeAllListeners("request")
-    oldHost.on("request", request => {
+    oldHost.on("request", (request, response) => {
         retiredRequests.push(request.method)
-        request.socket.destroy()
+        request.resume()
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "not_executed", reason: "host_unavailable" }))
     })
     port = newHost.address().port
     assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
     assert.deepEqual(calls, ["sendMessage", "sendMessage"])
-    assert.deepEqual(retiredRequests, ["HEAD"])
+    assert.deepEqual(retiredRequests, ["POST"])
     assert.equal(requests.length, 2)
 })
 
@@ -212,10 +213,7 @@ function actorHost(calls) {
     return createServer(async (request, response) => {
         assert.equal(request.headers.authorization, "Bearer host-ticket")
         assert.equal(request.url, "/v1/projects/team-a/actors/ChatRoom/lobby/invoke")
-        if (request.method === "HEAD") {
-            response.writeHead(204).end()
-            return
-        }
+        assert.equal(request.method, "POST")
         const chunks = []
         for await (const chunk of request) chunks.push(chunk)
         const body = JSON.parse(Buffer.concat(chunks).toString())

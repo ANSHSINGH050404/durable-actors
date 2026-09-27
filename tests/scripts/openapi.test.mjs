@@ -103,3 +103,10 @@ test("OpenAPI accepts the compiler's public contract fixture", async () => {
     const ajv = new Ajv({ strict: false })
     assert.ok(ajv.validate(spec.components.schemas.PublicActorContract, contract), ajv.errorsText())
 })
+
+test("invocation rejections require a recognized pre-execution reason", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const validate = new Ajv({ strict: false }).compile(spec.components.schemas.ActorInvocationReply)
+    for (const reason of ["stale_owner", "host_unavailable", "upstream_not_reached"]) assert.ok(validate({ type: "not_executed", reason }), JSON.stringify(validate.errors))
+    for (const reason of [undefined, "", "unknown", 42]) assert.equal(validate({ type: "not_executed", reason }), false)
+})

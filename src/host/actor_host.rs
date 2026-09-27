@@ -104,15 +104,6 @@ impl ActorHost {
         self.stopped.clone()
     }
 
-    pub(super) async fn ping(&self) -> Result<()> {
-        let (reply, result) = oneshot::channel();
-        self.commands
-            .send(HostCommand::Ping(reply))
-            .await
-            .context("actor dispatcher stopped")?;
-        result.await.context("actor ping was not completed")
-    }
-
     pub(super) async fn evict_idle(&self, last_active: tokio::time::Instant) -> Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
@@ -309,11 +300,6 @@ impl HostDispatcher {
                 Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
                 command = commands.recv() => match command {
                     Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
-                    Some(HostCommand::Ping(reply)) => {
-                        self.last_active = tokio::time::Instant::now();
-                        self.publish_activity();
-                        let _ = reply.send(());
-                    }
                     Some(HostCommand::EvictIdle { last_active, reply }) => {
                         let result = self.evict_idle(last_active).await;
                         let failed = result.is_err();
@@ -562,7 +548,6 @@ async fn run_actor(
 }
 
 enum HostCommand {
-    Ping(oneshot::Sender<()>),
     Invoke(Box<ActorRequest>),
     EvictIdle {
         last_active: tokio::time::Instant,

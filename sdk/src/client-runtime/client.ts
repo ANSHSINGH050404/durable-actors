@@ -84,20 +84,13 @@ export class HttpActorClient {
             }
             if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
             this.invalidateTarget(invocation, target)
-            if (reply.type === "unauthenticated" && !retryAvailable) {
-                throw new ActorInvocationError(
-                    "unauthenticated",
-                    invocation.requestId,
-                    "actor host rejected the refreshed invocation ticket"
-                )
-            }
             if (!retryAvailable)
                 throw new ActorInvocationError(
-                    "unavailable",
+                    reply.type === "unauthenticated" ? "unauthenticated" : "unavailable",
                     invocation.requestId,
-                    reply.type === "not_dispatched"
-                        ? "actor host could not be reached before execution"
-                        : "actor ownership changed repeatedly before execution"
+                    reply.type === "unauthenticated"
+                        ? "actor host rejected the refreshed invocation ticket"
+                        : `actor invocation was rejected before execution: ${reply.reason}`
                 )
             const rerouted = await this.target(invocation, timeline)
             return this.direct(rerouted, invocation, false, timeline)

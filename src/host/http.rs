@@ -46,7 +46,7 @@ impl ActorHostHttpService {
         Router::new()
             .route(
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
-                post(invoke).head(ping),
+                post(invoke),
             )
             .route(
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
@@ -111,10 +111,12 @@ impl ActorHostHttpService {
                 code: failure.code,
                 message: failure.message,
             },
-            Ok(ActorExecutionResult::Reroute) => InvocationReply::Reroute,
-            Ok(ActorExecutionResult::HostUnavailable) => {
-                InvocationReply::failed("unavailable", "actor host is draining")
-            }
+            Ok(ActorExecutionResult::Reroute) => InvocationReply::NotExecuted {
+                reason: RejectionReason::StaleOwner,
+            },
+            Ok(ActorExecutionResult::HostUnavailable) => InvocationReply::NotExecuted {
+                reason: RejectionReason::HostUnavailable,
+            },
             Err(error) => {
                 warn!(request_id, error = %format!("{error:#}"), "actor invocation failed before execution");
                 InvocationReply::failed(
@@ -124,27 +126,6 @@ impl ActorHostHttpService {
             }
         }
     }
-}
-
-async fn ping(
-    State(service): State<Arc<ActorHostHttpService>>,
-    Path(actor): Path<ActorKey>,
-    headers: HeaderMap,
-) -> Result<StatusCode, HttpError> {
-    let principal = service.authenticate(&headers)?;
-    let owner_epoch = principal
-        .invocation
-        .as_ref()
-        .map(|capability| capability.owner_epoch)
-        .unwrap_or(0);
-    service.authorize(&principal, &actor, owner_epoch)?;
-    service.host.ping().await.map_err(|_| {
-        HttpError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "actor host unavailable".into(),
-        )
-    })?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn invoke(
@@ -287,9 +268,24 @@ struct PublishRequest {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum InvocationReply {
-    Completed { result: Value },
-    Failed { code: String, message: String },
-    Reroute,
+    Completed {
+        result: Value,
+    },
+    Failed {
+        code: String,
+        message: String,
+    },
+    /// The invocation did not execute and cannot execute later from a queue.
+    NotExecuted {
+        reason: RejectionReason,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RejectionReason {
+    StaleOwner,
+    HostUnavailable,
 }
 
 impl InvocationReply {
