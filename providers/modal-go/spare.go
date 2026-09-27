@@ -23,6 +23,7 @@ type resourceLimits struct {
 	MemoryMiB int `json:"memoryMib"`
 }
 type spareRequest struct {
+	ControlPlaneURL string         `json:"controlPlaneUrl,omitempty"`
 	Kind            string         `json:"kind"`
 	Name            string         `json:"name"`
 	ImageRef        string         `json:"imageRef"`
@@ -103,6 +104,9 @@ func (p *provider) createSpare(ctx context.Context, request spareRequest) (spare
 	}
 	if request.Kind == "actor" {
 		p.handles.keep(sb)
+		warm, cancel := context.WithTimeout(ctx, 3*time.Second)
+		p.assigner.Warm(warm, handle)
+		cancel()
 	} else {
 		sb.Detach()
 	}
@@ -201,10 +205,14 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	if _, err := rand.Read(token); err != nil {
 		return nil, err
 	}
+	environment := map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)}
+	if request.Kind == "actor" && request.ControlPlaneURL != "" {
+		environment["DURABLE_ACTORS_CONTROL_PLANE_URL"] = request.ControlPlaneURL
+	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
 		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
-		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
+		Env:     environment,
 		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,
 		MemoryMiB: limits.MemoryMiB, MemoryLimitMiB: limits.MemoryMiB,

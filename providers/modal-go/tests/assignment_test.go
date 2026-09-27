@@ -56,3 +56,19 @@ func TestDirectAssignmentRejectsUntrustedEndpointsBeforeSendingCredentials(t *te
 type assignmentTransport func(*http.Request) (*http.Response, error)
 
 func (f assignmentTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWarmOpensAnUnauthenticatedConnectionToTheSpare(t *testing.T) {
+	var requests []string
+	assigner := httpSpareAssigner{client: &http.Client{Transport: assignmentTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("warmup sent credentials")
+		}
+		requests = append(requests, r.Method+" "+r.URL.String())
+		return &http.Response{StatusCode: http.StatusMethodNotAllowed, Body: http.NoBody}, nil
+	})}}
+	assigner.Warm(context.Background(), spareHandle{ControlRoute: "https://spare.w.modal.host/", ControlToken: "secret"})
+	assigner.Warm(context.Background(), spareHandle{ControlRoute: "https://169.254.169.254", ControlToken: "secret"})
+	if len(requests) != 1 || requests[0] != "GET https://spare.w.modal.host/assign" {
+		t.Fatal(requests)
+	}
+}

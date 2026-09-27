@@ -88,6 +88,7 @@ test("reentrant RPC and socket lifecycle survive overlap and restart", { timeout
     await ordinary
 
     const serial = await connect("SerialProbe")
+    await serial.next(value => value === "connected")
     const serialHold = transport.invoke("SerialProbe", "room", "hold", [])
     await serial.next(value => value === "started")
     assert.equal(await transport.invoke("SerialProbe", "room", "read", []), false)

@@ -3,7 +3,7 @@ info:
     title: durable-actors HTTP API
     version: "1"
     description: |
-        Manage durable-actors deployments, find actor hosts, and inspect activity.
+        Manage durable-actors deployments, invoke actors, find actor hosts, and inspect activity.
         When DURABLE_ACTORS_SECRET is set on the server, authenticate backend requests
         with that bearer API key; never expose it to browsers. When unset, no API key is required.
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
@@ -181,7 +181,7 @@ paths:
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke:
         servers:
             - url: "{actorHost}"
-              description: Use the route returned by findActor.
+              description: Use the cached route returned by invokeActor or findActor.
               variables:
                   actorHost: { default: "http://127.0.0.1:7101" }
         parameters:
@@ -191,19 +191,38 @@ paths:
         post:
             operationId: invokeActor
             tags: [Actors]
-            summary: Invoke a method on the owning host
-            security: [{ ActorTicket: [] }]
+            summary: Resolve and invoke an actor method
+            servers:
+                - url: "{controlPlane}"
+                  description: Resolve and invoke with an API key or project session.
+                  variables:
+                      controlPlane: { default: "http://127.0.0.1:7100" }
+                - url: "{actorHost}"
+                  description: Direct invocation with a cached host ticket and ownership epoch.
+                  variables:
+                      actorHost: { default: "http://127.0.0.1:7101" }
+            security: [{ ApiKey: [] }, { ActorSession: [] }, { ActorTicket: [] }, {}]
             description: |
-                Send the discovery token and ownerEpoch to the discovered host origin.
+                Without a valid cached target, the SDK sends requestId, method, args and an optional homeRegion to the control plane.
+                The control plane resolves placement, forwards one call and returns its outcome together with a scoped host target. Maximum body size is 16 MiB.
+                The SDK caches that target for subsequent invocations and broadcasts. Warm invocations go directly to the host with its ticket and ownerEpoch. Maximum body size is 32 MiB.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
-                Maximum body size is 32 MiB.
+                The SDK retries once across both paths only for explicit pre-execution rejection or a refused host connection.
+                A control-plane outcome of unauthenticated means the host rejected its ticket before execution; HTTP 401 means the caller credential was rejected.
+                Actor failures and ambiguous errors are never automatically replayed. An outcome_unknown error means execution may have occurred.
+                requestId identifies an attempt; it does not deduplicate execution.
             requestBody:
                 required: true
                 content:
                     application/json:
-                        schema: { $ref: "#/components/schemas/ActorInvocation" }
+                        schema:
+                            oneOf:
+                                - { $ref: "#/components/schemas/ActorInvocation" }
+                                - { $ref: "#/components/schemas/ControlPlaneInvocation" }
                         examples:
+                            resolveAndIncrement:
+                                value: { requestId: request-1, method: increment, args: [2], homeRegion: north-america-west }
                             increment:
                                 value: { requestId: request-1, ownerEpoch: 3, method: increment, args: [2] }
             responses:
@@ -211,14 +230,25 @@ paths:
                     description: Explicit execution outcome, including actor failures. A completed result includes null for void methods.
                     content:
                         application/json:
-                            schema: { $ref: "#/components/schemas/ActorInvocationReply" }
+                            schema:
+                                oneOf:
+                                    - { $ref: "#/components/schemas/ControlPlaneInvocationReply" }
+                                    - { $ref: "#/components/schemas/ActorInvocationReply" }
                             examples:
+                                resolved:
+                                    value:
+                                        target: { homeRegion: north-america-west, route: "https://host.example.com", token: host-ticket, ownerEpoch: 3, expiresAtMs: 1900000000000 }
+                                        outcome: { type: completed, result: 7 }
                                 completed: { value: { type: completed, result: 7 } }
                                 failed: { value: { type: failed, code: actor_error, message: Method failed } }
                                 notExecuted: { value: { type: not_executed, reason: host_unavailable } }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { description: Ticket rejected before dispatch. }
-                "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
+                "401": { description: "API key, project session or host ticket rejected before dispatch." }
+                "403": { description: "Host ticket belongs to another actor, host session or ownership epoch." }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "502": { description: The invocation outcome is unknown. Do not replay automatically. }
+                "503": { $ref: "#/components/responses/Unavailable" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
                 "422": { description: Invalid invocation document. }
@@ -886,6 +916,27 @@ components:
                 ownerEpoch: { type: integer, minimum: 1, maximum: 9007199254740991 }
                 method: { type: string, minLength: 1, maxLength: 128 }
                 args: { type: array, items: {} }
+        ControlPlaneInvocation:
+            type: object
+            additionalProperties: false
+            required: [requestId, method, args]
+            properties:
+                requestId: { type: string, minLength: 1, maxLength: 255 }
+                method: { type: string, minLength: 1, maxLength: 128 }
+                args: { type: array, items: {} }
+                homeRegion: { type: [string, "null"], minLength: 1, maxLength: 64, pattern: "^[a-z0-9-]+$" }
+        ControlPlaneInvocationReply:
+            type: object
+            required: [target, outcome]
+            properties:
+                target: { $ref: "#/components/schemas/ActorTarget" }
+                outcome:
+                    oneOf:
+                        - { $ref: "#/components/schemas/ActorInvocationReply" }
+                        - type: object
+                          required: [type]
+                          properties:
+                              type: { const: unauthenticated }
         ActorInvocationReply:
             oneOf:
                 - type: object

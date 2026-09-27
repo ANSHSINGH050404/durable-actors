@@ -50,14 +50,14 @@ test("actor calls read environment settings lazily without a setup function", ()
             globalThis.fetch = async (url, options) => {
                 assert.equal(options.headers.authorization, "Bearer backend-key");
                 requests.push(url);
-                return new Response("{}", { status: url.endsWith("/find-actor") ? 401 : 200 });
+                return new Response("{}", { status: 401 });
             };
             class Counter extends Actor { async increment() { return 1; } }
             const counter = Counter.get("one");
             await assert.rejects(counter.increment(), error => error instanceof ActorInvocationError && error.code === "unauthenticated");
             await assert.rejects(counter.broadcast("hello"), error => error instanceof ActorInvocationError && error.code === "unauthenticated");
             assert.deepEqual(requests, [
-                "https://control.example.com/v1/projects/default/actors/Counter/one/find-actor",
+                "https://control.example.com/v1/projects/default/actors/Counter/one/invoke",
                 "https://control.example.com/v1/projects/default/actors/Counter/one/find-actor"
             ]);
         `

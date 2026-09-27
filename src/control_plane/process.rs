@@ -368,6 +368,7 @@ fn sandbox_provider_config(
             image
         },
         pool: crate::sandbox::pool::PoolConfig {
+            control_plane_url: Some(control_plane_url.clone()),
             kind: crate::sandbox::SpareKind::Actor,
             idle,
             fleet_maximum,

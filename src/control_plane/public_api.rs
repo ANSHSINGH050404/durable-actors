@@ -19,13 +19,19 @@ use super::{
 };
 
 #[derive(Clone)]
-struct PublicApiState {
-    invocations: ControlPlaneService,
-    admin: AdminService,
+pub(super) struct PublicApiState {
+    pub invocations: ControlPlaneService,
+    pub admin: AdminService,
+    pub hosts: reqwest::Client,
 }
 
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
     let contracts = super::contract_api::router(admin.clone());
+    let hosts = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .expect("actor invocation HTTP client");
     Router::new()
         .route("/openapi.yaml", get(openapi))
         .route("/healthz", get(|| async { "ok" }))
@@ -37,6 +43,10 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
                 .delete(delete_deployment),
         )
         .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
+            post(super::invocation::invoke),
+        )
+        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor",
             post(find_actor),
         )
@@ -45,7 +55,11 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             post(find_websocket),
         )
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
-        .with_state(PublicApiState { invocations, admin })
+        .with_state(PublicApiState {
+            invocations,
+            admin,
+            hosts,
+        })
         .merge(contracts)
 }
 
@@ -235,13 +249,22 @@ async fn find_actor(
     headers: HeaderMap,
     request: Result<Json<FindActorRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
+    let target = resolve_actor_target(&state, &path.into_actor(), &headers, request).await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(target)).into_response())
+}
+
+pub(super) async fn resolve_actor_target(
+    state: &PublicApiState,
+    actor: &ActorKey,
+    headers: &HeaderMap,
+    request: Result<Json<FindActorRequest>, JsonRejection>,
+) -> Result<ActorTargetReply, ApiError> {
     let mut timings = TargetResolutionTimings::new();
     let request_id = headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let actor = path.into_actor();
     let grant = state
         .admin
         .authorize_discovery(
@@ -258,7 +281,7 @@ async fn find_actor(
         .invocations
         .validate_home_region(request.home_region.as_deref())
         .map_err(ApiError::assignment)?;
-    let result: Result<Json<ActorTargetReply>, ApiError> = async {
+    let result: Result<ActorTargetReply, ApiError> = async {
         actor.validate().map_err(ApiError::bad_request)?;
         timings.request_validated_at_ms = Some(timings.elapsed_ms());
         timings.client_authenticated_at_ms = Some(timings.elapsed_ms());
@@ -279,7 +302,7 @@ async fn find_actor(
                 Some(
                     grant
                         .invocation(
-                            &actor,
+                            actor,
                             contract.rpc_methods(&actor.actor_name).map_err(|_| {
                                 ApiError::new(StatusCode::NOT_FOUND, "not_found", "actor not found")
                             })?,
@@ -297,17 +320,17 @@ async fn find_actor(
         };
         let target = state
             .invocations
-            .resolve_actor_target_timed(&actor, request.home_region.as_deref(), &mut timings, grant)
+            .resolve_actor_target_timed(actor, request.home_region.as_deref(), &mut timings, grant)
             .await
             .map_err(ApiError::routing)?;
-        Ok(Json(ActorTargetReply {
+        Ok(ActorTargetReply {
             home_region: target.home_region,
             route: target.route,
             token: target.token,
             owner_epoch: target.owner_epoch,
 
             expires_at_ms: target.expires_at_ms,
-        }))
+        })
     }
     .await;
     let completed_at_ms = timings.elapsed_ms();
@@ -355,13 +378,13 @@ async fn find_actor(
             "actor target resolution failed"
         ),
     }
-    result.map(|target| ([(header::CACHE_CONTROL, "no-store")], target).into_response())
+    result
 }
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FindActorRequest {
-    home_region: Option<String>,
+pub(super) struct FindActorRequest {
+    pub home_region: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -426,11 +449,11 @@ struct DeploymentReply {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ActorTargetReply {
+pub(super) struct ActorTargetReply {
     home_region: String,
-    route: String,
-    token: String,
-    owner_epoch: u64,
+    pub route: String,
+    pub token: String,
+    pub owner_epoch: u64,
 
     expires_at_ms: i64,
 }
@@ -442,7 +465,7 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
-    fn json(error: JsonRejection) -> Self {
+    pub(super) fn json(error: JsonRejection) -> Self {
         if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
             Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -478,7 +501,7 @@ impl ApiError {
         )
     }
 
-    fn unauthorized(message: impl Into<String>) -> Self {
+    pub(super) fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthenticated", message)
     }
 

@@ -5,7 +5,7 @@ import { projectActorPath, validateOrigin } from "./settings.js"
 export class HttpActorHostTransport implements ActorHostTransport {
     constructor(private readonly fetchRequest: typeof globalThis.fetch = globalThis.fetch) {}
 
-    async invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply> {
+    async invoke(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply> {
         let response: Response
         try {
             response = await this.post(target, invocation, "invoke", {
@@ -21,21 +21,7 @@ export class HttpActorHostTransport implements ActorHostTransport {
         // A 401 is issued before dispatch, so refreshing this ticket cannot repeat actor code.
         if (response.status === 401) return { type: "unauthenticated" }
         if (!response.ok) throw new Error(`actor host returned HTTP ${response.status}`)
-        const reply = await responseDocument(response)
-        if (isRecord(reply)) {
-            if (reply.type === "completed" && Object.hasOwn(reply, "result"))
-                return { type: "completed", result: reply.result }
-            if (
-                reply.type === "failed" &&
-                typeof reply.code === "string" &&
-                reply.code.length > 0 &&
-                typeof reply.message === "string"
-            )
-                return { type: "failed", code: reply.code, message: reply.message }
-            if (reply.type === "not_executed" && rejectionReason(reply.reason))
-                return { type: "not_executed", reason: reply.reason }
-        }
-        throw new ActorProtocolError("actor host response did not contain a valid outcome")
+        return parseActorHostReply(await responseDocument(response))
     }
 
     async publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void> {
@@ -58,6 +44,23 @@ export class HttpActorHostTransport implements ActorHostTransport {
             }
         )
     }
+}
+
+export function parseActorHostReply(reply: unknown): ActorHostReply {
+    if (isRecord(reply)) {
+        if (reply.type === "completed" && Object.hasOwn(reply, "result"))
+            return { type: "completed", result: reply.result }
+        if (
+            reply.type === "failed" &&
+            typeof reply.code === "string" &&
+            reply.code.length > 0 &&
+            typeof reply.message === "string"
+        )
+            return { type: "failed", code: reply.code, message: reply.message }
+        if (reply.type === "not_executed" && rejectionReason(reply.reason))
+            return { type: "not_executed", reason: reply.reason }
+    }
+    throw new ActorProtocolError("actor host response did not contain a valid outcome")
 }
 
 function rejectionReason(value: unknown): value is ActorRejectionReason {
@@ -101,7 +104,7 @@ export interface ActorHostTarget {
     readonly ownerEpoch: number
     readonly expiresAtMs: number
 }
-export interface DirectActorInvocation extends ActorAddress {
+export interface ActorInvocation extends ActorAddress {
     readonly requestId: string
     readonly method: string
     readonly args: readonly JsonValue[]
@@ -114,6 +117,6 @@ export type ActorHostReply =
     | { readonly type: "unauthenticated" }
     | { readonly type: "not_executed"; readonly reason: ActorRejectionReason }
 export interface ActorHostTransport {
-    invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
+    invoke(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply>
     publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>
 }

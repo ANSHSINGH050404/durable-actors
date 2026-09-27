@@ -55,7 +55,7 @@ function fixture() {
     }
 }
 
-test("concurrent and warm invocations share a session and actor-target cache", async () => {
+test("concurrent and warm invocations share a session and transport", async () => {
     const f = fixture()
     await Promise.all(Array.from({ length: 5 }, () => f.client.invoke("Counter", "one", "read", [])))
     assert.deepEqual(f.stats(), { exchanges: 1, transports: 1, calls: 5 })

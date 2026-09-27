@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use tonic::{
     Request,
     metadata::MetadataValue,
-    transport::{Channel, Endpoint},
+    transport::{Channel, ClientTlsConfig, Endpoint},
 };
 
 use crate::{
@@ -132,17 +132,31 @@ impl ControlPlaneClient {
     }
 
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
-        let endpoint = endpoint.into();
-        let channel = Endpoint::new(endpoint.clone())
-            .context("parse actor control-plane endpoint")?
-            .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
-            .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
-            .connect_lazy();
+        let channel = control_plane_endpoint(&endpoint.into())?.connect_lazy();
+        Self::from_channel(channel, token.as_ref())
+    }
+
+    pub(crate) async fn prewarm(endpoint: &str) -> Result<Self> {
+        let channel = control_plane_endpoint(endpoint)?
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_while_idle(true)
+            .connect()
+            .await
+            .context("prewarm actor control-plane connection")?;
+        Self::from_channel(channel, "unassigned-spare")
+    }
+
+    pub(crate) fn with_host_token(self, token: &str) -> Result<Self> {
+        self.replace_token(token)?;
+        Ok(self)
+    }
+
+    fn from_channel(channel: Channel, token: &str) -> Result<Self> {
         Ok(Self {
             client: ActorControlPlaneServiceClient::new(channel)
                 .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
-            authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
+            authorization: Arc::new(RwLock::new(bearer_authorization(token)?)),
         })
     }
 }
@@ -221,6 +235,17 @@ impl ControlPlaneClient {
             bearer_authorization(token)?;
         Ok(())
     }
+}
+
+fn control_plane_endpoint(endpoint: &str) -> Result<Endpoint> {
+    let mut channel = Endpoint::new(endpoint.to_owned())
+        .context("parse actor control-plane endpoint")?
+        .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
+        .timeout(CONTROL_PLANE_REQUEST_TIMEOUT);
+    if endpoint.starts_with("https:") {
+        channel = channel.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+    }
+    Ok(channel)
 }
 
 fn bearer_authorization(token: &str) -> Result<MetadataValue<tonic::metadata::Ascii>> {

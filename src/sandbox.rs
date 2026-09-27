@@ -67,6 +67,8 @@ impl SpareKind {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSpareRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_plane_url: Option<String>,
     pub kind: SpareKind,
     pub name: String,
     pub image_ref: String,

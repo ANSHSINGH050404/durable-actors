@@ -1117,3 +1117,48 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
     stack.child.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let reply: serde_json::Value = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/invoke",
+            stack.gateway
+        ))
+        .bearer_auth("test-api-key")
+        .json(
+            &serde_json::json!({"requestId":"combined-call", "method":"appendHistory", "args":[]}),
+        )
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        reply["outcome"],
+        serde_json::json!({"type":"completed", "result":"saved"})
+    );
+    let warm: serde_json::Value = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/invoke",
+            reply["target"]["route"].as_str().unwrap()
+        ))
+        .bearer_auth(reply["target"]["token"].as_str().unwrap())
+        .json(&serde_json::json!({
+            "requestId":"warm-call", "ownerEpoch":reply["target"]["ownerEpoch"],
+            "method":"readHistory", "args":[]
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        warm,
+        serde_json::json!({"type":"completed", "result":"saved"})
+    );
+    stack.child.kill().await?;
+    Ok(())
+}

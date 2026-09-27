@@ -14,6 +14,12 @@ pub(super) struct WarmHost {
     pub javascript: tokio::process::Child,
     pub entrypoint: String,
     pub storage: WarmGcs,
+    pub control_plane: Option<WarmControlPlane>,
+}
+
+pub(super) struct WarmControlPlane {
+    pub url: String,
+    pub client: crate::control_plane::ControlPlaneClient,
 }
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
@@ -38,14 +44,20 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let listener = TcpListener::bind(bind).await?;
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let mut javascript = spawn_javascript_process(true, &socket)?;
-    let (executor, storage) = tokio::try_join!(
-        async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
+    let (warmed, control_plane) = tokio::join!(
         async {
-            let storage = WarmGcs::new().await?;
-            storage.preconnect().await;
-            anyhow::Ok(storage)
+            tokio::try_join!(
+                async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
+                async {
+                    let storage = WarmGcs::new().await?;
+                    storage.preconnect().await;
+                    anyhow::Ok(storage)
+                },
+            )
         },
-    )?;
+        prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
+    );
+    let (executor, storage) = warmed?;
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
@@ -81,8 +93,20 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         javascript,
         entrypoint,
         storage,
+        control_plane,
     };
     serve_assigned_host(config, Some(warm), shutdown).await
+}
+
+async fn prewarm_control_plane(url: Option<String>) -> Option<WarmControlPlane> {
+    let url = url?;
+    match crate::control_plane::ControlPlaneClient::prewarm(&url).await {
+        Ok(client) => Some(WarmControlPlane { url, client }),
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "control-plane prewarm failed; connecting at assignment");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

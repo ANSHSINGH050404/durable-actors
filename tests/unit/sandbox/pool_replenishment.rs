@@ -195,7 +195,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         registry.register_test_deployment(&spec).await?;
         let mut config = config(1);
         config.regions = vec!["slow".into(), "fast".into()];
-        let pool = SparePool::new(database.clone(), Arc::new(RegionalProvider), config);
+        let pool = SparePool::new(database.clone(), Arc::new(RegionalProvider { control_plane_url: None }), config);
         let stop = CancellationToken::new();
         let task = tokio::spawn(pool.clone().run(registry, stop.clone()));
         let guard = stop.clone().drop_guard();
@@ -220,11 +220,14 @@ async fn wait_for_ready(database: &PostgresDatabase, key: &str) -> Result<()> {
     }).await?
 }
 
-struct RegionalProvider;
+struct RegionalProvider {
+    control_plane_url: Option<&'static str>,
+}
 
 #[async_trait::async_trait]
 impl SandboxProvider for RegionalProvider {
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+        assert_eq!(request.control_plane_url.as_deref(), self.control_plane_url);
         if request.canonical_region == "slow" {
             std::future::pending::<()>().await;
         }
@@ -248,4 +251,22 @@ impl SandboxProvider for RegionalProvider {
     async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")
     }
+}
+
+#[tokio::test]
+async fn actor_pool_passes_its_control_plane_url_to_idle_spares() -> Result<()> {
+    for kind in [SpareKind::Actor, SpareKind::Replica] {
+        let mut config = config(1);
+        config.kind = kind;
+        config.control_plane_url = Some("https://control.example.com/".into());
+        let control_plane_url =
+            (kind == SpareKind::Actor).then_some("https://control.example.com/");
+        let pool = SparePool::new(
+            PostgresDatabase::lazy("postgresql://localhost:1/unused?sslmode=disable")?,
+            Arc::new(RegionalProvider { control_plane_url }),
+            config,
+        );
+        pool.create("im-runtime", "fast", "spare").await?;
+    }
+    Ok(())
 }

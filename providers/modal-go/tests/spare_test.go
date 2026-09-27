@@ -161,3 +161,19 @@ func TestAssignmentRequiresProjectAndActorName(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyActorSparesReceiveTheControlPlaneForPreconnection(t *testing.T) {
+	for _, kind := range []string{"actor", "replica"} {
+		params, err := spareParams(spareRequest{Kind: kind, Name: "spare", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", ControlPlaneURL: "https://control.test", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := ""
+		if kind == "actor" {
+			expected = "https://control.test"
+		}
+		if actual := params.Env["DURABLE_ACTORS_CONTROL_PLANE_URL"]; actual != expected {
+			t.Fatalf("%s control plane = %q, want %q", kind, actual, expected)
+		}
+	}
+}

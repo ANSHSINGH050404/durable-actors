@@ -7,7 +7,6 @@ import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 import ts from "typescript"
 
@@ -21,38 +20,6 @@ test("generated clients typecheck and run with or without bundling in an applica
     await checkTypes(directory)
     await checkServerCalls(t, directory)
     await checkBrowser(directory)
-})
-
-test("a generated client retries an explicitly rejected mutation on the new host", { timeout: 30_000 }, async t => {
-    const directory = await standaloneProject(t)
-    const calls = []
-    const oldHost = actorHost(calls)
-    const newHost = actorHost(calls)
-    for (const host of [oldHost, newHost]) {
-        t.after(() => host.close())
-        host.listen(0, "127.0.0.1")
-        await once(host, "listening")
-    }
-    let port = oldHost.address().port
-    const requests = []
-    const origin = await controlPlaneServer(t, () => port, requests)
-    const clientPath = path.join(directory, "generated/index.js")
-    const { actors, createActorTransport } = await import(pathToFileURL(clientPath).href)
-    const transport = createActorTransport({ projectId: "team-a", apiKey: "app-key", controlPlaneUrl: origin })
-    const room = actors.ChatRoom.get("lobby", transport)
-    assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
-    const retiredRequests = []
-    oldHost.removeAllListeners("request")
-    oldHost.on("request", (request, response) => {
-        retiredRequests.push(request.method)
-        request.resume()
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "not_executed", reason: "host_unavailable" }))
-    })
-    port = newHost.address().port
-    assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
-    assert.deepEqual(calls, ["sendMessage", "sendMessage"])
-    assert.deepEqual(retiredRequests, ["POST"])
-    assert.equal(requests.length, 2)
 })
 
 async function standaloneProject(t) {
@@ -109,13 +76,8 @@ async function checkTypes(directory) {
 
 async function checkServerCalls(t, directory) {
     const calls = []
-    const host = actorHost(calls)
-    t.after(() => host.close())
-    host.listen(0, "127.0.0.1")
-    await once(host, "listening")
-    const port = host.address().port
     const requests = []
-    const origin = await controlPlaneServer(t, () => port, requests)
+    const origin = await controlPlaneServer(t, calls, requests)
     for (const format of ["node", "esm", "cjs", "commonjs-project"]) {
         if (format === "commonjs-project") await writeFile(path.join(directory, "package.json"), '{"type":"commonjs"}')
         calls.length = 0
@@ -124,31 +86,59 @@ async function checkServerCalls(t, directory) {
         assert.deepEqual(calls, ["sendMessage", "clear", "sendMessage"])
         assert.deepEqual(
             requests.map(request => request.url),
-            ["/v1/projects/team-a/actors/ChatRoom/lobby/find-actor", "/v1/projects/team-a/actors/ChatRoom/lobby/find-websocket"]
+            ["/v1/projects/team-a/actors/ChatRoom/lobby/invoke", "/v1/projects/team-a/actors/ChatRoom/lobby/find-websocket"]
         )
         assert.deepEqual(requests[1].body, { metadata: { userId: "alice" }, authorizationLifetimeMs: 900000 })
     }
 }
 
-async function controlPlaneServer(t, port, requests) {
-    const controlPlane = createServer(async (request, response) => {
-        assert.equal(request.headers.authorization, "Bearer app-key")
-        const chunks = []
-        for await (const chunk of request) chunks.push(chunk)
-        requests.push({ url: request.url, body: JSON.parse(Buffer.concat(chunks).toString()) })
+async function controlPlaneServer(t, calls, requests) {
+    const host = createServer(async (request, response) => {
+        assert.equal(request.method, "POST")
+        assert.equal(request.headers.authorization, "Bearer host-ticket")
+        const body = await requestBody(request)
+        assert.equal(body.ownerEpoch, 3)
+        calls.push(body.method)
         response.setHeader("content-type", "application/json")
         response.end(
             JSON.stringify(
-                request.url.endsWith("/find-actor")
-                    ? { route: `http://127.0.0.1:${port()}`, token: "host-ticket", ownerEpoch: 3, expiresAtMs: Date.now() + 60_000 }
-                    : { websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000, authorizedUntilMs: 900000 }
+                body.args[0]?.text === "fail" ? { type: "failed", code: "actor_error", message: "failed" } : { type: "completed", result: body.method === "clear" ? null : { id: "1", text: "hello" } }
             )
         )
+    })
+    t.after(() => host.close())
+    host.listen(0, "127.0.0.1")
+    await once(host, "listening")
+    const target = { route: `http://127.0.0.1:${host.address().port}`, token: "host-ticket", ownerEpoch: 3, expiresAtMs: Date.now() + 60_000 }
+    const controlPlane = createServer(async (request, response) => {
+        assert.equal(request.method, "POST")
+        assert.equal(request.headers.authorization, "Bearer app-key")
+        const body = await requestBody(request)
+        requests.push({ url: request.url, body })
+        response.setHeader("content-type", "application/json")
+        if (request.url.endsWith("/invoke")) {
+            assert.ok(body.requestId)
+            assert.equal(body.ownerEpoch, undefined)
+            const invoked = await fetch(`${target.route}${request.url}`, {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: "Bearer host-ticket" },
+                body: JSON.stringify({ ...body, ownerEpoch: target.ownerEpoch })
+            })
+            response.end(JSON.stringify({ target, outcome: await invoked.json() }))
+        } else {
+            response.end(JSON.stringify({ websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000, authorizedUntilMs: 900000 }))
+        }
     })
     t.after(() => controlPlane.close())
     controlPlane.listen(0, "127.0.0.1")
     await once(controlPlane, "listening")
     return `http://127.0.0.1:${controlPlane.address().port}`
+}
+
+async function requestBody(request) {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    return JSON.parse(Buffer.concat(chunks).toString())
 }
 
 async function invokeClient(directory, origin, format) {
@@ -207,25 +197,4 @@ async function checkBrowser(directory) {
     assert.throws(() => module.createActorSessionTransport({ projectId: "team-a", getSession: async () => null }), /server/)
     assert.equal(new module.ActorSessionRejectedError("access revoked").name, "ActorSessionRejectedError")
     assert.ok(browser.outputFiles[0].contents.length < 10_000)
-}
-
-function actorHost(calls) {
-    return createServer(async (request, response) => {
-        assert.equal(request.headers.authorization, "Bearer host-ticket")
-        assert.equal(request.url, "/v1/projects/team-a/actors/ChatRoom/lobby/invoke")
-        assert.equal(request.method, "POST")
-        const chunks = []
-        for await (const chunk of request) chunks.push(chunk)
-        const body = JSON.parse(Buffer.concat(chunks).toString())
-        assert.equal(body.ownerEpoch, 3)
-        assert.ok(body.requestId)
-        const { method, args } = body
-        calls.push(method)
-        response.setHeader("content-type", "application/json")
-        response.end(
-            JSON.stringify(
-                args[0]?.text === "fail" ? { type: "failed", code: "actor_error", message: "failed" } : { type: "completed", result: method === "clear" ? null : { id: "1", text: "hello" } }
-            )
-        )
-    })
 }

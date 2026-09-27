@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 )
 
@@ -32,8 +31,7 @@ type commandRunner struct {
 }
 
 func newCommandRunner(api modalAPI, now func() time.Time) *commandRunner {
-	client := &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &commandRunner{api: api, handles: newSpareHandles(128, time.Hour, now), assigner: httpSpareAssigner{client: client}, now: now}
+	return &commandRunner{api: api, handles: newSpareHandles(128, time.Hour, now), assigner: httpSpareAssigner{client: newAssignmentClient()}, now: now}
 }
 
 func runCommand(ctx context.Context, input io.Reader, output io.Writer, factory apiFactory, now func() time.Time) error {

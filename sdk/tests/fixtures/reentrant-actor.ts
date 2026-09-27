@@ -66,6 +66,10 @@ export class ReentrantProbe extends Actor<Record<string, never>, string, Event> 
 export class SerialProbe extends Actor<Record<string, never>, string, string> {
     @Persisted waiting = false
 
+    async onConnect(socket: ActorSocket<Record<string, never>, string>): Promise<void> {
+        socket.send("connected")
+    }
+
     async hold(): Promise<void> {
         this.waiting = true
         this.broadcast("started")

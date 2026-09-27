@@ -208,6 +208,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
 
 fn config(idle: u32) -> PoolConfig {
     PoolConfig {
+        control_plane_url: None,
         kind: SpareKind::Actor,
         idle,
         fleet_maximum: 64,

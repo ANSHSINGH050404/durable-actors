@@ -18,6 +18,9 @@ test("OpenAPI validates and covers the public HTTP routes", async () => {
     const operations = Object.values(spec.paths).flatMap(path => ["get", "post", "put", "delete"].filter(method => path[method]).map(method => path[method]))
     assert.equal(new Set(operations.map(operation => operation.operationId)).size, operations.length)
     assert.ok(operations.every(operation => operation.operationId))
+    const invocation = spec.paths["/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke"].post
+    assert.ok(invocation.security.some(value => Object.hasOwn(value, "ActorSession")))
+    assert.ok(invocation.responses["502"])
 })
 
 test("actor discovery documents an explicit project for every operation", async () => {

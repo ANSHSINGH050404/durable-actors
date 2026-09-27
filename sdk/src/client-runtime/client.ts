@@ -1,6 +1,6 @@
 import { ActorInvocationError, ActorProtocolError } from "./errors.js"
-import { HttpActorHostTransport, isRecord, responseDocument } from "./http.js"
-import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./http.js"
+import { HttpActorHostTransport, isRecord, parseActorHostReply, responseDocument } from "./http.js"
+import type { ActorHostReply, ActorHostTarget, ActorHostTransport, ActorInvocation } from "./http.js"
 import { cloneJson } from "./json.js"
 import type { JsonValue } from "./json.js"
 import {
@@ -51,9 +51,7 @@ export class HttpActorClient {
             this.beforeInvoke(requestId)
             const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
-            const target = await this.target(invocation, timeline)
-            timeline.mark("target_resolved")
-            const result = await this.direct(target, invocation, true, timeline)
+            const result = await this.invokeAttempt(invocation, true, timeline)
             outcome = "completed"
             return result
         } finally {
@@ -69,34 +67,45 @@ export class HttpActorClient {
         }
     }
 
-    private async direct(
-        target: ActorHostTarget,
-        invocation: DirectActorInvocation,
+    private async invokeAttempt(
+        invocation: ActorInvocation,
         retryAvailable: boolean,
         timeline: LatencyTimeline
     ): Promise<unknown> {
-        try {
-            const reply = await this.actorHost.invoke(target, invocation)
+        let target = await this.cachedTarget(invocation, timeline)
+        let reply: ActorHostReply
+        if (target) {
+            reply = await this.direct(target, invocation)
             timeline.mark("host_rpc_completed")
-            if (reply.type === "completed") {
-                timeline.mark("socket_effects_completed")
-                return reply.result
+        } else {
+            const key = actorKey(invocation.actorName, invocation.actorId)
+            const current = this.targets.get(key)
+            const resolved = await this.resolveAndInvoke(invocation)
+            target = resolved.target
+            reply = resolved.reply
+            if ((reply.type === "completed" || reply.type === "failed") && this.targets.get(key) === current) {
+                this.targets.set(key, { promise: Promise.resolve(target), target })
             }
-            if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
-            this.invalidateTarget(invocation, target)
-            if (!retryAvailable)
-                throw new ActorInvocationError(
-                    reply.type === "unauthenticated" ? "unauthenticated" : "unavailable",
-                    invocation.requestId,
-                    reply.type === "unauthenticated"
-                        ? "actor host rejected the refreshed invocation ticket"
-                        : `actor invocation was rejected before execution: ${reply.reason}`
-                )
-            const rerouted = await this.target(invocation, timeline)
-            return this.direct(rerouted, invocation, false, timeline)
+            timeline.mark("control_plane_invocation_completed")
+        }
+        if (reply.type === "completed") return reply.result
+        if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
+        this.invalidateTarget(invocation, target)
+        if (!retryAvailable)
+            throw new ActorInvocationError(
+                reply.type === "unauthenticated" ? "unauthenticated" : "unavailable",
+                invocation.requestId,
+                "actor host rejected the invocation before execution after recovery"
+            )
+        return this.invokeAttempt(invocation, false, timeline)
+    }
+
+    private async direct(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply> {
+        try {
+            return await this.actorHost.invoke(target, invocation)
         } catch (error) {
-            if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
             this.invalidateTarget(invocation, target)
+            if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
                 "outcome_unknown",
@@ -106,22 +115,75 @@ export class HttpActorClient {
         }
     }
 
-    private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
-        const key = actorKey(invocation.actorName, invocation.actorId)
-        const current = this.targets.get(key)
-        if (current?.target === target) this.targets.delete(key)
+    private async resolveAndInvoke(
+        invocation: ActorInvocation
+    ): Promise<{ target: ActorHostTarget; reply: ActorHostReply }> {
+        let response: Response
+        try {
+            response = await this.fetchRequest(
+                `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, invocation.actorName, invocation.actorId)}/invoke`,
+                {
+                    method: "POST",
+                    redirect: "error",
+                    headers: {
+                        accept: "application/json",
+                        ...authorizationHeaders(this.settings.credential),
+                        "x-request-id": invocation.requestId,
+                        "content-type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        requestId: invocation.requestId,
+                        method: invocation.method,
+                        args: invocation.args,
+                        homeRegion: this.settings.homeRegion
+                    })
+                }
+            )
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new ActorInvocationError(
+                "outcome_unknown",
+                invocation.requestId,
+                `control-plane invocation failed after it may have been dispatched: ${message}`
+            )
+        }
+        const document = await responseDocument(response)
+        if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
+        if (!isRecord(document))
+            throw new ActorProtocolError("control-plane response did not contain an invocation outcome and target")
+        const target = parseTarget(document.target)
+        const reply =
+            isRecord(document.outcome) && document.outcome.type === "unauthenticated"
+                ? { type: "unauthenticated" as const }
+                : parseActorHostReply(document.outcome)
+        return { target, reply }
     }
 
-    protected async target(invocation: ActorAddress, timeline: LatencyTimeline): Promise<ActorHostTarget> {
+    private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
+        const key = actorKey(invocation.actorName, invocation.actorId)
+        if (this.targets.get(key)?.target === target) this.targets.delete(key)
+    }
+
+    private async cachedTarget(
+        invocation: ActorAddress,
+        timeline: LatencyTimeline
+    ): Promise<ActorHostTarget | undefined> {
         const key = actorKey(invocation.actorName, invocation.actorId)
         const current = this.targets.get(key)
         timeline.mark("target_cache_checked")
-        if (current) {
-            const target = await current.promise
-            if (this.targets.get(key) !== current) return this.target(invocation, timeline)
-            if (target.expiresAtMs > this.now() + TARGET_EXPIRATION_SAFETY_MS) return target
-            this.targets.delete(key)
-        }
+        if (!current) return undefined
+        const target = await current.promise
+        if (this.targets.get(key) !== current) return this.cachedTarget(invocation, timeline)
+        if (target.expiresAtMs > this.now() + TARGET_EXPIRATION_SAFETY_MS) return target
+        this.targets.delete(key)
+        return undefined
+    }
+
+    protected async target(invocation: ActorAddress, timeline: LatencyTimeline): Promise<ActorHostTarget> {
+        const cached = await this.cachedTarget(invocation, timeline)
+        if (cached) return cached
+        const key = actorKey(invocation.actorName, invocation.actorId)
+        if (this.targets.has(key)) return this.target(invocation, timeline)
         const resolving: TargetResolution = {
             promise: this.resolveTarget(invocation)
                 .then(target => {
@@ -161,22 +223,7 @@ export class HttpActorClient {
         }
         const document = await responseDocument(response)
         if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
-        if (
-            !isRecord(document) ||
-            typeof document.route !== "string" ||
-            typeof document.token !== "string" ||
-            !document.token.trim() ||
-            !positiveInteger(document.ownerEpoch) ||
-            !positiveInteger(document.expiresAtMs)
-        )
-            throw new ActorProtocolError("control-plane response did not contain a valid actor host target")
-        validateOrigin(document.route)
-        return {
-            route: document.route,
-            token: document.token,
-            ownerEpoch: document.ownerEpoch,
-            expiresAtMs: document.expiresAtMs
-        }
+        return parseTarget(document)
     }
 
     private throwResponseFailure(response: Response, document: unknown, requestId: string): never {
@@ -207,7 +254,7 @@ export class HttpActorClient {
         actorId: string,
         method: string,
         args: readonly unknown[]
-    ): DirectActorInvocation {
+    ): ActorInvocation {
         return {
             requestId,
             projectId: this.settings.projectId,
@@ -231,6 +278,25 @@ export class HttpActorClient {
     }
 }
 
+function parseTarget(document: unknown): ActorHostTarget {
+    if (
+        !isRecord(document) ||
+        typeof document.route !== "string" ||
+        typeof document.token !== "string" ||
+        !document.token.trim() ||
+        !positiveInteger(document.ownerEpoch) ||
+        !positiveInteger(document.expiresAtMs)
+    )
+        throw new ActorProtocolError("control-plane response did not contain a valid actor host target")
+    validateOrigin(document.route)
+    return {
+        route: document.route,
+        token: document.token,
+        ownerEpoch: document.ownerEpoch,
+        expiresAtMs: document.expiresAtMs
+    }
+}
+
 function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: string): string {
     const actor = validateActorComponent("actor name", actorName)
     const id = validateActorComponent("actor ID", actorId)
@@ -243,7 +309,7 @@ function actorKey(actorName: string, actorId: string): string {
 function positiveInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0
 }
-type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
+type ActorAddress = Pick<ActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 interface TargetResolution {
     readonly promise: Promise<ActorHostTarget>
     target?: ActorHostTarget

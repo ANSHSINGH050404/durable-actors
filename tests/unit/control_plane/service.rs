@@ -1675,3 +1675,6 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "invoke.rs"]
+mod invoke;

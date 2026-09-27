@@ -10,7 +10,7 @@ import { socketMetadata } from "../actor/socketValidation.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
 import { HttpActorClient } from "../client-runtime/client.js"
 import type { DurableActorsClientOptions, HttpActorClientDependencies } from "../client-runtime/client.js"
-import type { ActorHostTarget, DirectActorInvocation } from "../client-runtime/http.js"
+import type { ActorHostTarget, ActorInvocation } from "../client-runtime/http.js"
 import { ActorInvocationError } from "../errors.js"
 
 import { authorizationHeaders } from "./clientSettings.js"
@@ -139,6 +139,6 @@ interface RemoteActorClientDependencies extends HttpActorClientDependencies {
     readonly connectWebSocket?: WebSocketConnector
 }
 type WebSocketConnector = (url: string, schemas: ActorSchemas) => Promise<ActorConnection>
-type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
+type ActorAddress = Pick<ActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 export { RemoteActorClient }
 export type { DurableActorsClientOptions, RemoteActorClientDependencies }

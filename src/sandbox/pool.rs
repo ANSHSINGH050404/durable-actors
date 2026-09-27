@@ -15,6 +15,7 @@ mod replica;
 
 #[derive(Clone)]
 pub(crate) struct PoolConfig {
+    pub control_plane_url: Option<String>,
     pub kind: SpareKind,
     pub idle: u32,
     pub fleet_maximum: u32,
@@ -266,6 +267,11 @@ impl SparePool {
 
     async fn create(&self, image: &str, region: &str, name: &str) -> Result<SpareHandle> {
         let request = CreateSpareRequest {
+            control_plane_url: self
+                .config
+                .control_plane_url
+                .clone()
+                .filter(|_| self.config.kind == SpareKind::Actor),
             name: name.into(),
             image_ref: image.into(),
             canonical_region: region.into(),

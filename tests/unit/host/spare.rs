@@ -102,6 +102,7 @@ async fn run_activation(
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
     let warm = WarmHost {
+        control_plane: None,
         readiness: Some(readiness),
         listener,
         executor,
@@ -220,4 +221,18 @@ async fn compile_counter(sdk: &Path, project: &Path) -> Result<Vec<u8>> {
         String::from_utf8_lossy(&result.stderr)
     );
     Ok(tokio::fs::read(compiled).await?)
+}
+
+#[tokio::test]
+async fn unavailable_prewarming_leaves_assignment_available() {
+    assert!(prewarm_control_plane(None).await.is_none());
+    assert!(
+        prewarm_control_plane(Some("invalid endpoint".into()))
+            .await
+            .is_none()
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    assert!(prewarm_control_plane(Some(url)).await.is_none());
 }

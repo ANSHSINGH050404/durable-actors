@@ -368,16 +368,24 @@ async fn prepare_actor_host(
 ) -> Result<PreparedActorHost> {
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage) = match warm {
+    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript, warm.entrypoint)),
             Some(warm.storage),
+            warm.control_plane,
         ),
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
-        ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
+        async {
+            match warm_control_plane.filter(|warm| warm.url == config.control_plane_url) {
+                Some(warm) => warm.client.with_host_token(&config.host_token),
+                None => {
+                    ControlPlaneClient::connect(&config.control_plane_url, &config.host_token).await
+                }
+            }
+        },
         bind_host_listener(config, warm_listener),
     )?;
     let control_plane = Arc::new(control_plane);

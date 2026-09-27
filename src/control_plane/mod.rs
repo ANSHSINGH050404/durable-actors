@@ -9,6 +9,7 @@ mod inspection;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/inspection_tests.rs"]
 mod inspection_tests;
+mod invocation;
 mod issuer;
 mod local;
 mod local_build;

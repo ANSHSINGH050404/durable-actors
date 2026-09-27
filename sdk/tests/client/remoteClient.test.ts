@@ -8,7 +8,14 @@ import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
 import { ActorInvocationError, ActorProtocolError } from "../../src/errors.js"
 
-test("invalid discovery epochs and deadlines fail before host dispatch", async () => {
+const target = {
+    route: "https://host.example.com",
+    token: "invocation-ticket",
+    ownerEpoch: 1,
+    expiresAtMs: 4_000_000_000_000
+}
+
+test("invalid discovery epochs and deadlines fail before broadcast", async () => {
     for (const field of ["ownerEpoch", "expiresAtMs"]) {
         for (const value of [0, -1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1]) {
             const client = new RemoteActorClient(undefined, {
@@ -24,14 +31,14 @@ test("invalid discovery epochs and deadlines fail before host dispatch", async (
                     }),
                 actorHost: {
                     async invoke() {
-                        return assert.fail("invalid target reached actor host")
+                        return assert.fail("unexpected direct invocation")
                     },
                     async publish() {
                         assert.fail("invalid target reached actor host")
                     }
                 }
             })
-            await assert.rejects(client.invoke("Counter", "one", "increment", []), ActorProtocolError)
+            await assert.rejects(client.broadcast("Counter", "one", "updated"), ActorProtocolError)
         }
     }
 })
@@ -48,9 +55,18 @@ for (const local of [false, true]) {
                       DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
                   },
             telemetry: () => {},
+            requestId: () => "request-1",
             fetch: async (url, options) => {
                 requests.push(String(url))
                 assert.equal(new Headers(options?.headers).get("authorization"), local ? null : "Bearer backend-key")
+                if (String(url).endsWith("/invoke")) {
+                    assert.deepEqual(JSON.parse(String(options?.body)), {
+                        requestId: "request-1",
+                        method: "increment",
+                        args: []
+                    })
+                    return Response.json({ target, outcome: { type: "completed", result: 7 } })
+                }
                 const socket = String(url).endsWith("/find-websocket")
                 assert.deepEqual(JSON.parse(String(options?.body)), socket ? { metadata: {} } : {})
                 if (socket)
@@ -67,11 +83,12 @@ for (const local of [false, true]) {
                 })
             },
             actorHost: {
-                async publish() {},
-                async invoke(target, invocation) {
+                async invoke() {
+                    return assert.fail("unexpected direct invocation")
+                },
+                async publish(target, actor) {
                     assert.equal(target.token, "invocation-ticket")
-                    assert.equal(invocation.actorId, "one")
-                    return { type: "completed", result: 7 }
+                    assert.equal(actor.actorId, "one")
                 }
             },
             async connectWebSocket(url) {
@@ -85,13 +102,13 @@ for (const local of [false, true]) {
         const origin = local ? "http://127.0.0.1:7100" : "https://control.example.com"
         const project = local ? "local" : "default"
         assert.deepEqual(requests, [
-            `${origin}/v1/projects/${project}/actors/Counter/one/find-actor`,
+            `${origin}/v1/projects/${project}/actors/Counter/one/invoke`,
             `${origin}/v1/projects/${project}/actors/Counter/one/find-websocket`
         ])
     })
 }
 
-test("target expiry uses real time even when workflow Date.now is frozen", async () => {
+test("broadcast target expiry uses real time even when workflow Date.now is frozen", async () => {
     const originalNow = Date.now
     let resolutions = 0
     const usedTokens: string[] = []
@@ -110,189 +127,134 @@ test("target expiry uses real time even when workflow Date.now is frozen", async
                         expiresAtMs: Math.floor(performance.timeOrigin + performance.now()) + 1_000
                     }),
                 actorHost: {
-                    async publish() {},
-                    async invoke(target) {
+                    async invoke() {
+                        return assert.fail("unexpected direct invocation")
+                    },
+                    async publish(target) {
                         usedTokens.push(target.token)
-                        return { type: "completed", result: null }
                     }
                 }
             }
         )
-        await client.invoke("Counter", "one", "get", [])
-        await client.invoke("Counter", "one", "get", [])
+        await client.broadcast("Counter", "one", "updated")
+        await client.broadcast("Counter", "one", "updated")
         assert.deepEqual(usedTokens, ["target-1", "target-2"])
     } finally {
         Date.now = originalNow
     }
 })
 
-test("refreshes a rejected actor ticket once using the same invocation ID", async () => {
+test("concurrent broadcasts share discovery and refresh an expired target once", async () => {
+    let now = 0
     let resolutions = 0
-    let calls = 0
-    let rejectAll = false
-    const client = new RemoteActorClient(
-        { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
-        {
-            telemetry: () => {},
-            requestId: () => "same-request",
-            fetch: async () =>
-                Response.json({
-                    route: "https://host.example.com",
-                    token: `target-${++resolutions}`,
-                    ownerEpoch: 1,
-
-                    expiresAtMs: 4_000_000_000_000
-                }),
-            actorHost: {
-                async publish() {},
-                async invoke(_target, invocation) {
-                    calls++
-                    assert.equal(invocation.requestId, "same-request")
-                    if (calls === 1 || rejectAll) return { type: "unauthenticated" }
-                    return { type: "completed", result: 7 }
-                }
+    const tokens: string[] = []
+    const client = new RemoteActorClient(undefined, {
+        environment: {},
+        telemetry: () => {},
+        now: () => now,
+        fetch: async () =>
+            Response.json({
+                route: "https://host.example.com",
+                token: `target-${++resolutions}`,
+                ownerEpoch: 1,
+                expiresAtMs: now + 60_000
+            }),
+        actorHost: {
+            async invoke() {
+                return assert.fail("unexpected direct invocation")
+            },
+            async publish(target) {
+                tokens.push(target.token)
             }
         }
-    )
-    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+    })
+    const broadcast = () => Promise.all(Array.from({ length: 3 }, () => client.broadcast("Counter", "one", "updated")))
+    await broadcast()
+    await client.broadcast("Counter", "one", "updated")
+    now = 60_000
+    await broadcast()
     assert.equal(resolutions, 2)
-    assert.equal(calls, 2)
-    rejectAll = true
-    await assert.rejects(
-        client.invoke("Counter", "one", "increment", [1]),
-        error => error instanceof ActorInvocationError && error.code === "unauthenticated"
-    )
-    assert.equal(calls, 4)
-    assert.equal(resolutions, 3)
+    assert.deepEqual(tokens, [...Array(4).fill("target-1"), ...Array(3).fill("target-2")])
 })
 
-test("does not retry ambiguous host failures or actor-method authentication errors", async () => {
-    for (const ambiguous of [true, false]) {
-        let calls = 0
+test("does not retry failed or ambiguous invocations", async () => {
+    for (const [response, code] of [
+        [null, "outcome_unknown"],
+        [
+            Response.json({
+                target,
+                outcome: { type: "failed", code: "unauthenticated", message: "actor method failed" }
+            }),
+            "unauthenticated"
+        ],
+        [Response.json({ target, outcome: { type: "failed", code: "actor_error", message: "boom" } }), "actor_error"],
+        [Response.json({ error: { code: "outcome_unknown", message: "lost" } }, { status: 502 }), "outcome_unknown"],
+        [Response.json({}, { status: 401 }), "unauthenticated"]
+    ] as const) {
+        const requests: string[] = []
         const client = new RemoteActorClient(
             { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
             {
                 telemetry: () => {},
-                fetch: async () =>
-                    Response.json({
-                        route: "https://host.example.com",
-                        token: "target",
-                        ownerEpoch: 1,
-
-                        expiresAtMs: 4_000_000_000_000
-                    }),
-                actorHost: {
-                    async publish() {},
-                    async invoke() {
-                        calls++
-                        if (ambiguous) throw new Error("connection lost")
-                        return { type: "failed", code: "unauthenticated", message: "actor method failed" }
-                    }
+                fetch: async url => {
+                    requests.push(String(url))
+                    if (response === null) throw new Error("connection lost")
+                    return response.clone()
                 }
             }
         )
         await assert.rejects(
             client.invoke("Counter", "one", "increment", [1]),
-            error =>
-                error instanceof ActorInvocationError &&
-                error.code === (ambiguous ? "outcome_unknown" : "unauthenticated")
+            error => error instanceof ActorInvocationError && error.code === code
         )
-        assert.equal(calls, 1)
+        assert.deepEqual(requests, ["https://control.example.com/v1/projects/default/actors/Counter/one/invoke"])
     }
 })
 
-test("remote actor client resolves once and invokes the actor host directly", async () => {
-    let resolutions = 0
-    const hostInvocations: unknown[] = []
+test("cold and warm HTTP invocations report their respective timings", async () => {
+    const authorizations: (string | undefined)[] = []
     const telemetry: unknown[] = []
     const server = createServer(async (request, response) => {
-        resolutions += 1
         assert.equal(request.method, "POST")
-        assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/find-actor")
-        assert.equal(request.headers.authorization, "Bearer backend-key")
-        assert.equal(request.headers["x-request-id"], "00000000-0000-4000-8000-000000000000")
-        json(response, 200, {
-            route: "https://actor.example.com",
-            token: "direct-token",
-            ownerEpoch: 3,
-
-            expiresAtMs: 4_000_000_000_000
-        })
+        assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/invoke")
+        authorizations.push(request.headers.authorization)
+        const body = (await requestBody(request)) as Record<string, unknown>
+        const outcome = { type: "completed", result: 7 }
+        if (body.ownerEpoch) {
+            assert.equal(body.ownerEpoch, target.ownerEpoch)
+            json(response, 200, outcome)
+        } else {
+            json(response, 200, { target: { ...target, route: `http://127.0.0.1:${port}` }, outcome })
+        }
     })
     const port = await listen(server)
     const client = new RemoteActorClient(
+        { projectId: "default", apiKey: "backend-key", controlPlaneUrl: `http://127.0.0.1:${port}` },
         {
-            projectId: "default",
-            apiKey: "backend-key",
-            controlPlaneUrl: `http://127.0.0.1:${port}`
-        },
-        {
-            requestId: () => "00000000-0000-4000-8000-000000000000",
-            actorHost: {
-                async publish() {},
-                async invoke(target, invocation) {
-                    hostInvocations.push({ target, invocation })
-                    return { type: "completed", result: 7 }
-                }
-            },
+            requestId: () => "request-1",
             monotonicNow: tickingClock(),
             telemetry: event => telemetry.push(event)
         }
     )
     try {
-        assert.equal(await client.invoke("Counter", "counter-1", "increment", [2]), 7)
-        assert.equal(await client.invoke("Counter", "counter-1", "increment", [3]), 7)
-        assert.equal(resolutions, 1)
-        assert.equal(hostInvocations.length, 2)
-        assert.deepEqual(telemetry, [
-            {
+        for (const amount of [2, 3]) assert.equal(await client.invoke("Counter", "counter-1", "increment", [amount]), 7)
+        assert.deepEqual(authorizations, ["Bearer backend-key", "Bearer invocation-ticket"])
+        assert.deepEqual(
+            telemetry,
+            ["control_plane_invocation_completed_at_ms", "host_rpc_completed_at_ms"].map(completed => ({
                 event: "actor_client_invocation",
-                request_id: "00000000-0000-4000-8000-000000000000",
+                request_id: "request-1",
                 actor_name: "Counter",
                 actor_id: "counter-1",
                 method: "increment",
                 started_at_ms: 0,
                 invocation_built_at_ms: 1,
                 target_cache_checked_at_ms: 2,
-                target_resolved_at_ms: 3,
-                host_rpc_completed_at_ms: 4,
-                socket_effects_completed_at_ms: 5,
-                completed_at_ms: 6,
+                [completed]: 3,
+                completed_at_ms: 4,
                 outcome: "completed"
-            },
-            {
-                event: "actor_client_invocation",
-                request_id: "00000000-0000-4000-8000-000000000000",
-                actor_name: "Counter",
-                actor_id: "counter-1",
-                method: "increment",
-                started_at_ms: 0,
-                invocation_built_at_ms: 1,
-                target_cache_checked_at_ms: 2,
-                target_resolved_at_ms: 3,
-                host_rpc_completed_at_ms: 4,
-                socket_effects_completed_at_ms: 5,
-                completed_at_ms: 6,
-                outcome: "completed"
-            }
-        ])
-        assert.deepEqual(hostInvocations[0], {
-            target: {
-                route: "https://actor.example.com",
-                token: "direct-token",
-                ownerEpoch: 3,
-
-                expiresAtMs: 4_000_000_000_000
-            },
-            invocation: {
-                projectId: "default",
-                requestId: "00000000-0000-4000-8000-000000000000",
-                actorName: "Counter",
-                actorId: "counter-1",
-                method: "increment",
-                args: [2]
-            }
-        })
+            }))
+        )
     } finally {
         await close(server)
     }
@@ -335,7 +297,7 @@ test("resolves a fresh host socket grant before connecting", async () => {
     ])
 })
 
-test("a control-plane transport failure is unavailable before actor dispatch", async () => {
+test("a broadcast discovery transport failure is unavailable before dispatch", async () => {
     let calls = 0
     const server = createServer(request => {
         calls += 1
@@ -349,33 +311,10 @@ test("a control-plane transport failure is unavailable before actor dispatch", a
     })
     try {
         await assert.rejects(
-            client.invoke("Counter", "counter-1", "increment", [2]),
+            client.broadcast("Counter", "counter-1", "updated"),
             error => error instanceof ActorInvocationError && error.code === "unavailable"
         )
         assert.equal(calls, 1)
-    } finally {
-        await close(server)
-    }
-})
-
-test("requires the direct actor target endpoint", async () => {
-    const calls: string[] = []
-    const server = createServer((request, response) => {
-        calls.push(request.url ?? "")
-        json(response, 404, { error: { code: "not_found", message: "not found" } })
-    })
-    const port = await listen(server)
-    const client = new RemoteActorClient({
-        projectId: "default",
-        apiKey: "backend-key",
-        controlPlaneUrl: `http://127.0.0.1:${port}`
-    })
-    try {
-        await assert.rejects(
-            client.invoke("Counter", "counter-1", "increment", [2]),
-            error => error instanceof ActorInvocationError && error.code === "not_found"
-        )
-        assert.deepEqual(calls, ["/v1/projects/default/actors/Counter/counter-1/find-actor"])
     } finally {
         await close(server)
     }
@@ -471,6 +410,9 @@ test("broadcasts use the owning host HTTP transport", async () => {
                 })
             },
             actorHost: {
+                async invoke() {
+                    return assert.fail("unexpected direct invocation")
+                },
                 ...{
                     async publish(
                         target: { ownerEpoch: number },
@@ -489,9 +431,6 @@ test("broadcasts use the owning host HTTP transport", async () => {
                         ])
                         published = true
                     }
-                },
-                async invoke() {
-                    throw new Error("broadcast must not invoke an actor method")
                 }
             }
         }
@@ -502,7 +441,6 @@ test("broadcasts use the owning host HTTP transport", async () => {
 
 test("project clients retain project identity across resolution, RPC, and broadcast", async () => {
     const requests: string[] = []
-    const invoked: string[] = []
     const published: string[] = []
     for (const projectId of ["team-a", "team-b"]) {
         const client = new RemoteActorClient(
@@ -511,6 +449,8 @@ test("project clients retain project identity across resolution, RPC, and broadc
                 telemetry: () => {},
                 fetch: async url => {
                     requests.push(String(url))
+                    if (String(url).endsWith("/invoke"))
+                        return Response.json({ target, outcome: { type: "completed", result: projectId } })
                     return Response.json({
                         route: "https://host.example",
                         token: "ticket",
@@ -519,9 +459,8 @@ test("project clients retain project identity across resolution, RPC, and broadc
                     })
                 },
                 actorHost: {
-                    async invoke(_target, invocation) {
-                        invoked.push(invocation.projectId!)
-                        return { type: "completed", result: projectId }
+                    async invoke() {
+                        return assert.fail("unexpected direct invocation")
                     },
                     async publish(_target, actor) {
                         published.push(actor.projectId!)
@@ -534,10 +473,7 @@ test("project clients retain project identity across resolution, RPC, and broadc
     }
     assert.deepEqual(
         requests,
-        ["team-a", "team-b"].map(
-            project => `https://control.example/v1/projects/${project}/actors/Counter/same/find-actor`
-        )
+        ["team-a", "team-b"].map(project => `https://control.example/v1/projects/${project}/actors/Counter/same/invoke`)
     )
-    assert.deepEqual(invoked, ["team-a", "team-b"])
     assert.deepEqual(published, ["team-a", "team-b"])
 })
