@@ -1,10 +1,10 @@
-<div align="left">
-  <h1>Durable Actors</h1>
+<div align="center">
+  <h1 align="center">Durable Actors</h1>
 
-  <p><strong>Durable state for collaborative apps and AI agents.</strong></p>
-  <p>TypeScript actors. Rust runtime.</p>
+  <p align="center"><strong>Durable state for collaborative apps and AI agents.</strong></p>
+  <p align="center">TypeScript actors. Rust runtime.</p>
 
-  <p>
+  <p align="center">
     <a href="https://github.com/TerseAI/durable-actors/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/TerseAI/durable-actors?style=flat&amp;logo=github&amp;color=f5a623"></a>
     <a href="https://www.npmjs.com/package/durable-actors"><img alt="durable-actors on npm" src="https://img.shields.io/npm/v/durable-actors?label=npm&amp;logo=npm&amp;color=cb3837"></a>
     <a href="https://crates.io/crates/durable-actors"><img alt="durable-actors on crates.io" src="https://img.shields.io/crates/v/durable-actors?logo=rust&amp;color=dea584"></a>
@@ -12,14 +12,14 @@
     <a href="https://github.com/TerseAI/durable-actors/blob/main/LICENSE.md"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   </p>
 
-  <p>
+  <p align="center">
     <a href="#local-development"><img alt="Quickstart" src="https://img.shields.io/badge/quickstart-local%20development-22c55e?logo=rocket&amp;logoColor=white"></a>
     <a href="https://github.com/TerseAI/durable-actors/tree/main/docs"><img alt="Documentation" src="https://img.shields.io/badge/docs-Durable%20Actors-2563eb?logo=readthedocs&amp;logoColor=white"></a>
     <a href="https://useterse.ai"><img alt="Terse website" src="https://img.shields.io/badge/website-useterse.ai-000000"></a>
     <a href="https://www.linkedin.com/company/terse-inc"><img alt="Terse on LinkedIn" src="https://img.shields.io/badge/LinkedIn-Terse-0a66c2"></a>
   </p>
 
-  <p>
+  <p align="center">
     <a href="#local-development">Quickstart</a> ·
     <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/reference/typescript.md">SDK</a> ·
     <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.md">HTTP API</a> ·
