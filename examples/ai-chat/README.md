@@ -29,36 +29,14 @@ Open [localhost:3000](http://127.0.0.1:3000), send a message, and reload after t
 
 ## Save the conversation
 
-[ChatHistory](src/actors.ts) keeps one conversation per actor ID:
+[ChatHistory](src/actors.ts) stores messages in one `@Persisted` array. The [backend](src/backend.ts) streams the model's reply, then saves the user message and completed reply together in one actor call.
 
-```ts
-import type { UIMessage } from "ai"
-import { Actor, Persisted } from "durable-actors"
-
-export class ChatHistory extends Actor {
-    @Persisted private messages: UIMessage[] = []
-
-    async load() {
-        return this.messages
-    }
-
-    async append(message: UIMessage) {
-        this.messages.push(message)
-        return this.messages
-    }
-}
-```
-
-## Stream the reply
-
-The [Express backend](src/backend.ts) appends the user message, sends the saved conversation to the model, and streams the reply. It saves the assistant message when the reply completes.
-
-The [React client](src/Chat.tsx) loads saved messages and uses `useChat` to display the stream. In-progress streams are not resumed after a reload.
+Failed or interrupted attempts are not saved. The [React client](src/Chat.tsx) shows the error and uses the AI SDK's built-in retry action. Reloading restores only completed exchanges; streams are not resumed.
 
 The lobby is shared and has no authentication. Add authentication and chat ownership checks before using it for private conversations.
 
 ## Development
 
-Both processes read `.env`; actor state lives in `.durable-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
+Both processes read `.env`; actor state lives in `.durable-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](https://github.com/TerseAI/durable-actors/tree/main/examples#run-the-examples-together).
 
 `npm run build` checks TypeScript and builds the frontend.

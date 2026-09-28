@@ -8,8 +8,7 @@ export class ChatHistory extends Actor {
         return this.messages
     }
 
-    async append(message: UIMessage) {
-        this.messages.push(message)
-        return this.messages
+    async append(...messages: UIMessage[]) {
+        this.messages.push(...messages)
     }
 }

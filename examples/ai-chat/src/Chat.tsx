@@ -6,7 +6,7 @@ import type { UIMessage } from "ai"
 const initialMessages: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
 
 function Chat() {
-    const { messages, sendMessage, status, error } = useChat({ id: "lobby", messages: initialMessages })
+    const { messages, sendMessage, regenerate, status, error } = useChat({ id: "lobby", messages: initialMessages })
     const busy = status === "submitted" || status === "streaming"
 
     return (
@@ -29,7 +29,14 @@ function Chat() {
                 </label>
                 <button disabled={busy}>{busy ? "Thinking…" : "Send"}</button>
             </form>
-            {error && <p role="alert">{error.message}</p>}
+            {error && (
+                <p role="alert">
+                    {error.message}{" "}
+                    <button onClick={() => regenerate()} disabled={busy}>
+                        Retry
+                    </button>
+                </p>
+            )}
         </main>
     )
 }

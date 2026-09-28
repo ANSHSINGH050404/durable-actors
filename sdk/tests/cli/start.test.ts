@@ -167,4 +167,20 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         env: { ...env, TEST_WATCH_SOURCE: source }
     })
     assert.deepEqual(JSON.parse(notWatching.stdout).updates, [], "--no-watch prevents source-triggered redeployments")
+
+    const watchLimit = path.join(directory, "watch-limit.mjs")
+    await writeFile(
+        watchLimit,
+        `import fs from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
+fs.watch = () => { throw Object.assign(new Error("too many open files"), { code: "EMFILE" }) }
+syncBuiltinESMExports()
+`
+    )
+    const limited = await run(process.execPath, ["--import", watchLimit, ...args], {
+        cwd: directory,
+        env: { ...env, TEST_WATCH_SOURCE: source }
+    })
+    assert.deepEqual(JSON.parse(limited.stdout).updates, [], "watch exhaustion must keep the runtime running")
+    assert.match(limited.stderr, /EMFILE.*Automatic reload is disabled/)
 })

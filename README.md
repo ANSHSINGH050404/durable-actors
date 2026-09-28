@@ -1,8 +1,8 @@
-<div align="center">
+<div align="left">
   <h1>Durable Actors</h1>
 
   <p><strong>Durable state for collaborative apps and AI agents.</strong></p>
-  <p>TypeScript actors. Rust runtime. Built by Terse.</p>
+  <p>TypeScript actors. Rust runtime.</p>
 
   <p>
     <a href="https://github.com/TerseAI/durable-actors/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/TerseAI/durable-actors?style=flat&amp;logo=github&amp;color=f5a623"></a>
@@ -30,25 +30,21 @@
 
 ---
 
-> [!TIP]
-> Get started by pasting this into your agent.
+Durable Actors is an open-source TypeScript SDK and Rust runtime for building apps and AI agents that share persistent state.
+
+### Start with a coding agent
+
+Paste this prompt into your coding agent:
+
 ```text
-Go to https://github.com/TerseAI/durable-actors, follow the readme and build a sample project. Get the development server running and ask the user where they would like to invoke their actors from.
+Go to https://github.com/TerseAI/durable-actors, follow the README and build a sample project. Get the development server running and ask me where I would like to invoke my actors from.
 ```
 
-Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
+Give each conversation, document, or agent a TypeScript actor: its saved state survives restarts, and its methods run one at a time by default so concurrent callers can update it safely.
 
-Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
+The SDK provides actor classes, type-safe clients, and WebSocket support. The runtime loads actors on demand and persists fields marked `@Persisted`. Develop locally with one command, then self-host the runtime for production.
 
-Durable Actors is a primitive to help developers build the next generation of collaborative software. We provide a mechanism to serve shared, concurrency safe state to your app.
-
-Based on the Actor principle from Erlang, all state is durably persisted for you. Only one Agent/person can be in the actor at a time, protecting you from race conditions.
-
-We are fully serverless, and instances go dormant when not in use. Only pay for what your users are using.
-
-We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
-
-Getting started is easy, build your actors, generate your type-safe client, test locally and self host the production version.
+For example, a chat actor can keep a conversation across server restarts, or a document actor can coordinate edits from several people and agents without each caller managing database locks.
 
 ## Local development
 
@@ -65,8 +61,6 @@ npm install
 npx durable-actors dev # Run the server locally on your machine
 ```
 
-Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
-
 ## Define an Actor
 
 Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
@@ -74,7 +68,7 @@ Define and export actors in your actor project’s `src/actors.ts`, the default 
 ```ts
 import { openai } from "@ai-sdk/openai"
 import { streamText } from "ai"
-import { Actor, Persisted, type ActorSocket } from "durable-actors"
+import { Actor, Persisted, Reentrant, type ActorSocket } from "durable-actors"
 
 type Member = { name: string }
 type Message = { role: "user" | "assistant"; content: string }
@@ -197,7 +191,7 @@ For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborativ
 
 Here's what it looks like in action:
 
-<div align="center">
+<div align="left">
   <a href="https://github.com/TerseAI/durable-actors/blob/main/.github/assets/team-agent.gif">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset=".github/assets/team-agent.png">

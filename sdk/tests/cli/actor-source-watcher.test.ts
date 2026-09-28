@@ -1,3 +1,5 @@
+import { FSWatcher } from "chokidar"
+import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -7,7 +9,53 @@ import path from "node:path"
 import { test } from "node:test"
 import { promisify } from "node:util"
 
-import { watchActorSources } from "../../src/cli/actor-source-watcher.js"
+import { ActorSourceWatcher, watchActorSources } from "../../src/cli/actor-source-watcher.js"
+
+for (const code of ["EMFILE", "ENFILE", "ENOSPC"]) {
+    test(`${code} disables reload and cancels pending updates`, async t => {
+        const source = new FSWatcher()
+        const close = t.mock.method(source, "close")
+        const refresh = t.mock.fn(async () => {})
+        const warnings: string[] = []
+        const watcher = new ActorSourceWatcher(
+            { projectDirectory: "/project" },
+            refresh,
+            () => source,
+            message => warnings.push(message)
+        )
+        const started = watcher.start()
+        const error = Object.assign(new Error("watch limit reached"), { code })
+        source.emit("ready")
+        await started
+        source.emit("all", "change", "/project/src/actors.ts")
+        source.emit("error", error)
+        await watcher.close()
+        source.emit("error", error)
+        assert.equal(close.mock.callCount(), 1)
+        assert.equal(refresh.mock.callCount(), 0)
+        assert.equal(warnings.length, 1)
+        assert.match(warnings[0]!, new RegExp(code))
+        assert.match(warnings[0]!, /automatic reload.*disabled/i)
+        assert.match(warnings[0]!, /restart.*changes/i)
+        assert.match(warnings[0]!, /--no-watch/)
+    })
+}
+
+test("unexpected watcher startup failures still surface", async t => {
+    const source = new FSWatcher()
+    const close = t.mock.method(source, "close")
+    const watcher = new ActorSourceWatcher(
+        { projectDirectory: "/project" },
+        async () => {},
+        () => source,
+        assert.fail
+    )
+    const started = watcher.start()
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" })
+    source.emit("error", error)
+    await assert.rejects(started, error)
+    assert.equal(close.mock.callCount(), 1)
+})
 
 test("reloads nested sources in projects containing sockets and FIFOs", { timeout: 10_000 }, async t => {
     const root = await mkdtemp(path.join(tmpdir(), "aw-"))

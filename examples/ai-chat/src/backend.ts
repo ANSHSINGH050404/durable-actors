@@ -19,7 +19,8 @@ app.post("/api/chat", async (request, response) => {
     const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
     if (message.role !== "user") return response.sendStatus(400)
     const chat = ChatHistory.get(request.body.id)
-    const messages = await chat.append(message)
+    const messages = [...(await chat.load()), message]
+    let failed = false
     const result = streamText({
         model: openai("gpt-5-mini"),
         messages: await convertToModelMessages(messages)
@@ -30,8 +31,12 @@ app.post("/api/chat", async (request, response) => {
             stream: result.stream,
             originalMessages: messages,
             generateMessageId: generateId,
+            onError: () => {
+                failed = true
+                return "Reply failed. Check the API key and try again."
+            },
             onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(responseMessage)
+                if (!failed && outcome.status === "completed") await chat.append(message, responseMessage)
             }
         })
     })

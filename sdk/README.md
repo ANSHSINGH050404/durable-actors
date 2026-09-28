@@ -1,4 +1,4 @@
-<div align="center">
+<div align="left">
   <a href="https://github.com/TerseAI/durable-actors/blob/main/.github/assets/team-agent.gif">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/TerseAI/durable-actors/main/.github/assets/team-agent.png">
@@ -9,7 +9,7 @@
   <h1>Durable Actors</h1>
 
   <p><strong>Durable state for collaborative apps and AI agents.</strong></p>
-  <p>TypeScript actors. Rust runtime. Built by Terse.</p>
+  <p>TypeScript actors. Rust runtime.</p>
 
   <p>
     <a href="https://github.com/TerseAI/durable-actors/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/TerseAI/durable-actors?style=flat&amp;logo=github&amp;color=f5a623"></a>
@@ -97,17 +97,9 @@ console.log(await counter.increment())
 
 For complete sample applications, see [AI Chat](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat), [Collaborative documents](https://github.com/TerseAI/durable-actors/tree/main/examples/documents), and [Chatroom](https://github.com/TerseAI/durable-actors/tree/main/examples/chat).
 
-## Define an Actor
+## Define an actor
 
-Install `ai` in your actor project:
-
-```sh
-pnpm install ai
-# Or with npm:
-npm install ai
-```
-
-Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
+Install `ai` in your actor project, then define actors in `src/actors.ts`. This chat history stores completed exchanges in one persisted array:
 
 ```ts
 import type { UIMessage } from "ai"
@@ -120,16 +112,15 @@ export class ChatHistory extends Actor {
         return this.messages
     }
 
-    async append(message: UIMessage) {
-        this.messages.push(message)
-        return this.messages
+    async append(...messages: UIMessage[]) {
+        this.messages.push(...messages)
     }
 }
 ```
 
-## Stream from the backend (Express)
+## Stream from your backend
 
-After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
+Generate a type-safe client with `npx durable-actors generate`. In your Express backend, load the conversation, stream a reply, and save the prompt and reply together when the stream succeeds:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
@@ -149,7 +140,8 @@ app.post("/api/chat", async (request, response) => {
     const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
     if (message.role !== "user") return response.sendStatus(400)
     const chat = actors.ChatHistory.get(request.body.id)
-    const messages = await chat.append(message)
+    const messages = [...(await chat.load()), message]
+    let failed = false
     const result = streamText({
         model: openai("gpt-5-mini"),
         messages: await convertToModelMessages(messages)
@@ -160,15 +152,23 @@ app.post("/api/chat", async (request, response) => {
             stream: result.stream,
             originalMessages: messages,
             generateMessageId: generateId,
+            onError: () => {
+                failed = true
+                return "Reply failed. Check the API key and try again."
+            },
             onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(responseMessage)
+                if (!failed && outcome.status === "completed") await chat.append(message, responseMessage)
             }
         })
     })
 })
 ```
 
-## Connect the frontend (React)
+Failed or interrupted attempts are not saved. Each completed exchange is persisted in one actor call.
+
+## Connect the frontend
+
+The AI SDK's `useChat` handles streaming and retries:
 
 ```tsx
 import { useChat } from "@ai-sdk/react"
@@ -177,7 +177,7 @@ import type { UIMessage } from "ai"
 const history: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
 
 function Chat() {
-    const { messages, sendMessage, status } = useChat({ id: "lobby", messages: history })
+    const { messages, sendMessage, regenerate, status, error } = useChat({ id: "lobby", messages: history })
     const busy = status === "submitted" || status === "streaming"
 
     return (
@@ -187,14 +187,11 @@ function Chat() {
                     {message.role}: {message.parts.map(part => (part.type === "text" ? part.text : "")).join("")}
                 </p>
             ))}
-            <form
-                action={async form => {
-                    await sendMessage({ text: String(form.get("message")) })
-                }}
-            >
+            <form action={async form => { await sendMessage({ text: String(form.get("message")) }) }}>
                 <input name="message" aria-label="Message" required disabled={busy} />
                 <button disabled={busy}>Send</button>
             </form>
+            {error && <p role="alert">{error.message} <button onClick={() => regenerate()} disabled={busy}>Retry</button></p>}
         </>
     )
 }
