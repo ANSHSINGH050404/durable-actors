@@ -56,6 +56,7 @@ impl HostProvisioner for UnavailableProvisioner {
         _region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         anyhow::bail!("host creation is outside this test")
     }
@@ -98,6 +99,7 @@ impl HostProvisioner for FakeRetiringProvisioner {
         _region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         anyhow::bail!("host creation is outside this test")
     }
@@ -147,6 +149,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             _: &str,
             _actor: &ActorKey,
             _new_actor: bool,
+            _owner_hint: Option<&crate::bucket::OwnershipHint>,
         ) -> Result<(HostLease, u64)> {
             Ok((self.0.clone(), 42))
         }
@@ -492,6 +495,7 @@ impl HostProvisioner for LosingActivation {
         region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         let host = HostId::new(format!("host.v3.{}.winner", spec.host_config_key()));
         let mut lease = test_lease(&host);
@@ -592,6 +596,7 @@ impl HostProvisioner for FakeRoutingProvisioner {
         region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         self.calls.lock().unwrap().push(region.to_owned());
         ensure!(
@@ -705,6 +710,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
                 &spec,
                 before.as_ref(),
                 &select_target_region(before.as_ref(), reported)?,
+                None,
             )
             .await;
         assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);

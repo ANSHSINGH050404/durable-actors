@@ -289,6 +289,7 @@ impl LocalFixture {
     fn request(&self, id: &str) -> EnsureHostRequest {
         EnsureHostRequest {
             actor_is_new: true,
+            owner_hint: None,
             actor: Some(ActorKey {
                 project_id: "test".into(),
                 actor_name: "Counter".into(),
@@ -392,6 +393,7 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     provider.shutdown().await;
     let request = EnsureHostRequest {
         actor_is_new: true,
+        owner_hint: Some("{\"generation\":17,\"record\":{\"epoch\":3}}".into()),
         actor: None,
         code_snapshot: None,
         spare: None,
@@ -421,6 +423,10 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     assert_eq!(
         host_environment(&request, &directory).get("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"),
         Some(&"300000".to_owned())
+    );
+    assert_eq!(
+        host_environment(&request, &directory).get("DURABLE_ACTORS_OWNER_HINT"),
+        request.owner_hint.as_ref()
     );
     let error = provider.ensure_host(&request).await.unwrap_err();
     assert!(error.to_string().contains("shutting down"), "{error:#}");

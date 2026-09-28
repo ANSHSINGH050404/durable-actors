@@ -337,6 +337,7 @@ impl HostProvisioner for InvocationProvisioner {
         _: &str,
         _: &ActorKey,
         _: bool,
+        _: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         Ok((
             HostLease {

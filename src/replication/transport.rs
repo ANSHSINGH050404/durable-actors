@@ -13,6 +13,7 @@ use super::ReplicationTicket;
 
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
+    uploads: tokio_util::task::TaskTracker,
     bucket: Arc<dyn SnapshotWriter>,
     transport: Arc<dyn StateTransport>,
     failures: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -21,10 +22,16 @@ pub struct ReplicatedStateTransport {
 impl ReplicatedStateTransport {
     pub fn new(bucket: Arc<dyn SnapshotWriter>, transport: Arc<dyn StateTransport>) -> Self {
         Self {
+            uploads: tokio_util::task::TaskTracker::new(),
             bucket,
             transport,
             failures: None,
         }
+    }
+
+    pub(crate) fn with_upload_tracker(mut self, uploads: tokio_util::task::TaskTracker) -> Self {
+        self.uploads = uploads;
+        self
     }
 
     pub fn with_failure_reports(
@@ -39,6 +46,8 @@ impl ReplicatedStateTransport {
 #[async_trait]
 impl SnapshotWriter for ReplicatedStateTransport {
     async fn write_snapshot(&self, ticket: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
+        let _writing = self.uploads.token();
+        ensure!(!self.uploads.is_closed(), "snapshot uploads stopped");
         let Some(replication) = &ticket.replication else {
             return self.bucket.write_snapshot(ticket, bytes).await;
         };
@@ -63,6 +72,8 @@ impl ReplicatedStateTransport {
         bytes: Vec<u8>,
         ready: impl Future<Output = Result<WritePlan>> + Send,
     ) -> Result<StateWrite> {
+        let _writing = self.uploads.token();
+        ensure!(!self.uploads.is_closed(), "snapshot uploads stopped");
         let started = Instant::now();
         let replica_bytes = bytes.clone();
         let replicas = async {
@@ -95,7 +106,7 @@ impl ReplicatedStateTransport {
         let bucket = self.bucket.clone();
         let plan = ticket.clone();
         let object = ticket.object_name.clone();
-        let bucket_task = tokio::spawn(async move {
+        let bucket_task = self.uploads.spawn(async move {
             let result = bucket.write_snapshot(&plan, bytes).await;
             tracing::info!(event = "object_storage_upload", %object, uploaded = result.is_ok(),
                 upload_ms = started.elapsed().as_secs_f64() * 1000.0);

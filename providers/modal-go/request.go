@@ -7,6 +7,7 @@ import (
 )
 
 type ensureRequest struct {
+	OwnerHint             string          `json:"ownerHint"`
 	ActorIsNew            bool            `json:"actorIsNew"`
 	Actor                 json.RawMessage `json:"actor"`
 	CodeSnapshot          string          `json:"codeSnapshot"`
@@ -91,6 +92,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 	}
 	env["DURABLE_ACTORS_ACTOR"] = string(r.Actor)
 	env["DURABLE_ACTORS_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)
+	if r.OwnerHint != "" {
+		env["DURABLE_ACTORS_OWNER_HINT"] = r.OwnerHint
+	}
 	if r.RuntimeConfig != "" {
 		env["DURABLE_ACTORS_RUNTIME_CONFIG"] = r.RuntimeConfig
 	}

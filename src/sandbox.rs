@@ -96,6 +96,8 @@ pub struct BuiltActorCode {
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
     pub actor_is_new: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_hint: Option<String>,
     pub actor: Option<crate::actor::ActorKey>,
     pub code_snapshot: Option<String>,
     pub spare: Option<SpareHandle>,

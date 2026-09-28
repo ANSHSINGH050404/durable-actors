@@ -52,6 +52,8 @@ mod repair_tests;
 pub struct RuntimeStorage {
     clock: Arc<dyn crate::clock::Clock>,
     owned: Mutex<HashMap<String, Ownership>>,
+    uploads: tokio_util::task::TaskTracker,
+    uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
     sessions: Mutex<HashMap<String, Vec<ReplicaTarget>>>,
     authority: Arc<dyn Bucket>,
     fleet: Arc<dyn ReplicaProvisioner>,
@@ -62,6 +64,8 @@ pub struct RuntimeStorage {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    #[serde(default)]
+    sealed: bool,
     inventory: ActivationInventory,
     lease: HostLease,
     mutation: String,
@@ -71,9 +75,26 @@ struct Ownership {
     base: Option<SnapshotRef>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OwnershipHint {
+    generation: i64,
+    record: Ownership,
+}
+
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
+}
+
+#[derive(Default)]
+struct UploadedSnapshots {
+    started: u64,
+    completed: u64,
+    latest: Option<SnapshotRef>,
+}
+
+struct SessionCheckpoint {
+    snapshot: Option<SnapshotRef>,
 }
 
 struct LoadedSnapshot {
@@ -133,6 +154,8 @@ impl RuntimeStorage {
         Ok(Self {
             clock,
             owned: Mutex::new(HashMap::new()),
+            uploads: tokio_util::task::TaskTracker::new(),
+            uploaded: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             authority,
             fleet,
@@ -156,11 +179,17 @@ impl RuntimeStorage {
 
 #[async_trait]
 impl ObjectPlacementStore for RuntimeStorage {
-    async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        Ok(self
-            .load(object)
-            .await?
-            .map(|(_, record)| record.placement()))
+    async fn get_owner_with_hint(
+        &self,
+        object: &ActorStorageKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        Ok(match self.load(object).await? {
+            Some((generation, record)) => (
+                Some(record.placement()),
+                Some(OwnershipHint { generation, record }),
+            ),
+            None => (None, None),
+        })
     }
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         match self.load(object).await? {
@@ -179,6 +208,10 @@ impl SnapshotReader for RuntimeStorage {
 }
 
 impl RuntimeStorage {
+    pub(crate) fn upload_tracker(&self) -> tokio_util::task::TaskTracker {
+        self.uploads.clone()
+    }
+
     pub async fn read_url(&self, region: &str, object: &str) -> Result<String> {
         self.access.url(
             &self.origin,
@@ -307,10 +340,15 @@ impl RuntimeStorage {
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let bucket = &self.authority;
-        let stream = record.stream()?;
-        let newest = bucket
-            .list(&stream.prefix)
+        let newest = self.latest_snapshot_key(record).await?;
+        let replicas = self.replica_members(&record.scope()).await?;
+        self.load_latest(record, known, newest, &replicas).await
+    }
+
+    async fn latest_snapshot_key(&self, record: &Ownership) -> Result<Option<String>> {
+        Ok(self
+            .authority
+            .list(&record.stream()?.prefix)
             .await?
             .into_iter()
             .filter_map(|key| {
@@ -318,11 +356,29 @@ impl RuntimeStorage {
                     .filter(|(epoch, _)| *epoch == record.epoch)
                     .map(|position| (position, key))
             })
-            .max_by_key(|(position, _)| *position);
+            .max_by_key(|(position, _)| *position)
+            .map(|(_, key)| key))
+    }
+
+    async fn load_latest(
+        &self,
+        record: &Ownership,
+        known: Option<LoadedSnapshot>,
+        newest: Option<String>,
+        replicas: &[ReplicaTarget],
+    ) -> Result<Option<LoadedSnapshot>> {
+        let stream = record.stream()?;
         let mut loaded = match newest {
-            Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => known,
-            Some((_, key)) => {
-                let object = bucket
+            Some(key)
+                if known.as_ref().is_some_and(|s| {
+                    snapshot_position(&s.reference.object) >= snapshot_position(&key)
+                }) =>
+            {
+                known
+            }
+            Some(key) => {
+                let object = self
+                    .authority
                     .get(&key)
                     .await?
                     .context("listed snapshot disappeared")?;
@@ -332,9 +388,8 @@ impl RuntimeStorage {
         };
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
-        let replicas = self.replica_members(&record.scope()).await?;
         let mut pending = JoinSet::new();
-        for target in &replicas {
+        for target in replicas {
             let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
             pending.spawn(async move { peers.head(&target, &stream).await });
         }
@@ -353,7 +408,7 @@ impl RuntimeStorage {
         if let Some(snapshot) = candidate
             && loaded.as_ref().is_none_or(|s| s.reference != snapshot)
         {
-            let bytes = self.recover_snapshot(&replicas, &snapshot).await?;
+            let bytes = self.recover_snapshot(replicas, &snapshot).await?;
             loaded = Some(LoadedSnapshot {
                 reference: snapshot,
                 bytes: bytes.into(),
@@ -529,7 +584,17 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             snapshot.object == plan.object_name && snapshot.state_version == plan.state_version,
             "write plan does not match snapshot"
         );
+        self.uploaded
+            .lock()
+            .unwrap()
+            .entry(stream.session.clone())
+            .or_default()
+            .started += 1;
         self.persist(&snapshot.object, bytes).await?;
+        let mut uploaded = self.uploaded.lock().unwrap();
+        let uploaded = uploaded.entry(stream.session.clone()).or_default();
+        advance(&mut uploaded.latest, Some(snapshot))?;
+        uploaded.completed += 1;
         Ok(crate::state_transport::StateWrite::Written)
     }
 }

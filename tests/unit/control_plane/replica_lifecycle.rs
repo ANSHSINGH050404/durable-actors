@@ -157,7 +157,7 @@ async fn repair_survives_controller_restart_and_cleanup_waits_for_membership_swi
         let directory = tempfile::tempdir()?;
         let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
         let storage = RuntimeStorage::new(Arc::new(FileBucket::new(directory.path().into())?), Arc::new(ReplicaSet(first.clone())), Arc::new(Peers), access, "http://control".into(), Arc::new(SystemClock))?;
-        let _lease = storage.register_activation(&scope.actor, &HostLeaseRequest { id: scope.host.clone(), session_id: scope.session.clone(), route: "http://primary".into(), duration_ms: 60_000 }, &scope.region, true).await?.placement.lease;
+        let _lease = storage.register_activation(&scope.actor, &HostLeaseRequest { id: scope.host.clone(), session_id: scope.session.clone(), route: "http://primary".into(), duration_ms: 60_000 }, &scope.region, true, None).await?.placement.lease;
         let initial = storage.replace_replicas(&scope, first.clone(), None, &GrpcStateTransport::new()).await?;
         storage.enable_replication(initial)?;
         let group = restarted.store.prepare(&scope, &restarted.replica_regions, "image", &[]).await?;

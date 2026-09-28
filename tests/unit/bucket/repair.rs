@@ -114,6 +114,7 @@ impl Fixture {
                 },
                 &scope.region,
                 true,
+                None,
             )
             .await?
             .placement

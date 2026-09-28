@@ -619,7 +619,7 @@ impl Stack {
                 Default::default(),
             )
             .await?
-            .with_actor(Some(actor.clone()), true),
+            .with_actor(Some(actor.clone()), true, None),
         );
         storage
             .register(&HostLeaseRequest {
@@ -918,6 +918,7 @@ impl HostProvisioner for SocketTestProvisioner {
         _region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
+        _owner_hint: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         anyhow::bail!("fixture host must be active")
     }

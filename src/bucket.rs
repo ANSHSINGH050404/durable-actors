@@ -12,7 +12,7 @@ pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmGcs;
 pub use peers::{GrpcReplicaPeers, ReplicaPeers};
 pub(crate) use runtime::ActorStateReader;
-pub use runtime::{LoadedActor, ReplicaMembership, RuntimeStorage};
+pub use runtime::{LoadedActor, OwnershipHint, ReplicaMembership, RuntimeStorage};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

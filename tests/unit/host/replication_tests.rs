@@ -191,6 +191,7 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
         region: scope.region.clone(),
         actor: Some(scope.actor.clone()),
         new_actor: true,
+        owner_hint: None,
         activation: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),

@@ -35,6 +35,7 @@ async fn inventory_reads_and_streams_filter_projects_before_grouping() -> Result
                 },
                 "north-america-east",
                 true,
+                None,
             )
             .await?;
     }
@@ -282,7 +283,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     };
     fixture
         .store
-        .register_activation(&actor, &request, "north-america-east", true)
+        .register_activation(&actor, &request, "north-america-east", true, None)
         .await?;
     let mut stream = fixture
         .get("/v1/projects/default/observe/events")
@@ -806,6 +807,7 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
             },
             "north-america-east",
             true,
+            None,
         )
         .await?;
     for version in 1..=3 {

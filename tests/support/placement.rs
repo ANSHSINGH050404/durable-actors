@@ -13,6 +13,16 @@ pub(crate) struct LocalObjectPlacementStore {
 
 #[async_trait]
 impl ObjectPlacementStore for LocalObjectPlacementStore {
+    async fn get_owner_with_hint(
+        &self,
+        object: &ActorStorageKey,
+    ) -> Result<(
+        Option<ObjectPlacement>,
+        Option<crate::bucket::OwnershipHint>,
+    )> {
+        Ok((self.get(object).await?, None))
+    }
+
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         Ok(self
             .placements

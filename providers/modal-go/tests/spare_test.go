@@ -75,6 +75,7 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
 	request.HostIdleTimeoutMS = 75000
 	request.ActorIsNew = true
+	request.OwnerHint = `{"generation":17,"record":{"epoch":3}}`
 	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
@@ -88,6 +89,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_ACTORS_ACTOR_IS_NEW"] != "true" {
 		t.Fatal("ownership epoch missing")
+	}
+	if sb.assignment["DURABLE_ACTORS_OWNER_HINT"] != request.OwnerHint {
+		t.Fatal("owner hint missing from assignment")
 	}
 	if api.creates != 0 {
 		t.Fatal("claimed spare was replaced by a new sandbox")

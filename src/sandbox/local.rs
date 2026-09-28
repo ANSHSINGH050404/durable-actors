@@ -418,6 +418,9 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
         "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
         request.actor_is_new.to_string(),
     );
+    if let Some(hint) = &request.owner_hint {
+        environment.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.clone());
+    }
     for (key, value) in [
         ("DURABLE_ACTORS_PROCESS_ROLE", "host".to_owned()),
         ("DURABLE_ACTORS_LOG_MODE", "development".into()),

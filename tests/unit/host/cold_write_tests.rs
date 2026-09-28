@@ -211,6 +211,7 @@ impl Fixture {
             region: scope.region.clone(),
             actor: Some(scope.actor.clone()),
             new_actor: true,
+            owner_hint: None,
             activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
@@ -366,6 +367,13 @@ async fn initial_replicas_accept_a_later_full_snapshot_and_recover_a_replica_onl
     f.storage
         .unregister(&f.scope.host, &f.scope.session)
         .await?;
+    let owner_key = crate::storage_paths::owner(&f.scope.actor.storage_key())?;
+    let owner: serde_json::Value =
+        serde_json::from_slice(&f.bucket.get(&owner_key).await?.unwrap().bytes)?;
+    assert_eq!(
+        owner["sealed"], false,
+        "failed uploads must retain crash recovery"
+    );
     f.bucket.reject_snapshots.store(false, Ordering::SeqCst);
     f.storage.runtime.retire_replication(&f.scope).await?;
     let recovered = f
@@ -396,5 +404,37 @@ async fn benchmark_cold_write() -> Result<()> {
             elapsed[10], elapsed[18]
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn clean_shutdown_waits_for_replica_acked_uploads_and_checkpoints_the_owner() -> Result<()> {
+    use crate::placement::ObjectPlacementStore;
+    let f = Fixture::new(0, 0, true).await?;
+    assert_eq!(f.write().await?, StateWrite::Replicated);
+    let mut shutdown = Box::pin(f.storage.unregister(&f.scope.host, &f.scope.session));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), shutdown.as_mut())
+            .await
+            .is_err(),
+        "shutdown must drain the GCS upload before releasing ownership"
+    );
+    f.bucket.snapshots.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), shutdown).await??;
+    let owner = f
+        .storage
+        .runtime
+        .get_owner(&f.scope.actor.storage_key())
+        .await?
+        .unwrap();
+    assert_eq!(owner.lease.expires_at_ms, 0);
+    assert_eq!(owner.state_version, 1);
+    let session_key = format!(
+        "{}.json",
+        crate::storage_paths::session(&f.scope.host, &f.scope.session)
+    );
+    let session: serde_json::Value =
+        serde_json::from_slice(&f.bucket.get(&session_key).await?.unwrap().bytes)?;
+    assert_eq!(session["state"], "Sealed");
     Ok(())
 }

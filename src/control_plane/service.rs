@@ -7,6 +7,7 @@ use tracing::{info, warn};
 
 use crate::{
     actor::{ActorKey, ActorSocketEvent},
+    bucket::OwnershipHint,
     grpc::proto::{
         ControlPlaneReply, ControlPlaneRequest,
         actor_control_plane_service_server::{
@@ -590,7 +591,10 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
-        let current = self.placements.get_owner(&actor.storage_key()).await?;
+        let (current, owner_hint) = self
+            .placements
+            .get_owner_with_hint(&actor.storage_key())
+            .await?;
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
@@ -610,7 +614,13 @@ impl ControlPlaneService {
             return Ok(target);
         }
         let (region, lease, owner_epoch) = match self
-            .ensure_actor_host(actor, &spec, current.as_ref(), &storage_region)
+            .ensure_actor_host(
+                actor,
+                &spec,
+                current.as_ref(),
+                &storage_region,
+                owner_hint.as_ref(),
+            )
             .await
         {
             Ok(target) => target,
@@ -658,13 +668,14 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
         current: Option<&ObjectPlacement>,
         requested_region: &str,
+        owner_hint: Option<&OwnershipHint>,
     ) -> Result<(String, HostLease, u64)> {
         let region = current
             .map(|p| p.home_region.clone())
             .unwrap_or_else(|| requested_region.to_owned());
         let (lease, epoch) = self
             .provisioner
-            .ensure_actor_host(spec, &region, actor, current.is_none())
+            .ensure_actor_host(spec, &region, actor, current.is_none(), owner_hint)
             .await?;
         Ok((region, lease, epoch))
     }
@@ -776,6 +787,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
     ) -> Result<(HostLease, u64)>;
     async fn terminate_hosts(
         &self,
@@ -912,8 +924,10 @@ impl HostProvisioner for SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
-        self.launch(spec, region, actor, new_actor).await
+        self.launch(spec, region, actor, new_actor, owner_hint)
+            .await
     }
 
     async fn terminate_hosts(
@@ -943,10 +957,12 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
+        request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
         if let Some(access) = &self.runtime_access {
             access.prewarm(crate::replication::ReplicaScope {
                 actor: actor.clone(),
@@ -1109,6 +1125,7 @@ impl SandboxHostProvisioner {
             .token;
         Ok(EnsureHostRequest {
             actor_is_new: false,
+            owner_hint: None,
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
             spare: None,

@@ -41,6 +41,7 @@ impl ActorReplication {
                 storage.runtime.clone(),
                 Arc::new(storage.transport.clone()),
             )
+            .with_upload_tracker(storage.runtime.upload_tracker())
             .with_failure_reports(failures),
             storage,
             writing: Mutex::new(()),

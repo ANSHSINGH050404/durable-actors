@@ -39,6 +39,7 @@ pub(crate) struct HostStorage {
     region: String,
     actor: Option<ActorKey>,
     new_actor: bool,
+    owner_hint: Option<crate::bucket::OwnershipHint>,
     activation: Mutex<Option<ActorActivation>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
@@ -90,15 +91,22 @@ impl HostStorage {
             region: config.region,
             actor: None,
             new_actor: false,
+            owner_hint: None,
             activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         })
     }
 
-    pub(crate) fn with_actor(mut self, actor: Option<ActorKey>, new_actor: bool) -> Self {
+    pub(crate) fn with_actor(
+        mut self,
+        actor: Option<ActorKey>,
+        new_actor: bool,
+        owner_hint: Option<crate::bucket::OwnershipHint>,
+    ) -> Self {
         self.actor = actor;
         self.new_actor = new_actor;
+        self.owner_hint = owner_hint;
         self
     }
 
@@ -268,7 +276,13 @@ impl HostLeaseRegistry for HostStorage {
         let lease = if first {
             let loaded = self
                 .runtime
-                .register_activation(actor, request, &self.region, self.new_actor)
+                .register_activation(
+                    actor,
+                    request,
+                    &self.region,
+                    self.new_actor,
+                    self.owner_hint.as_ref(),
+                )
                 .await?;
             let lease = loaded.placement.lease;
             *self.activation.lock().unwrap() = Some(ActorActivation {
@@ -297,13 +311,20 @@ impl HostLeaseRegistry for HostStorage {
             "host lease scope mismatch"
         );
         self.fence.lock().unwrap().fenced = true;
-        self.runtime
-            .release_activation(
-                self.actor.as_ref().context("host actor identity missing")?,
-                host,
-                session,
-            )
-            .await?;
+        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let completed = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.runtime.finish_activation(actor, host, session),
+        )
+        .await
+        .context("snapshot drain timed out")
+        .and_then(|result| result);
+        if let Err(error) = completed {
+            tracing::warn!(%error, "clean session shutdown deferred to recovery");
+            self.runtime
+                .release_activation(actor, host, session)
+                .await?;
+        }
         self.notify_observer();
         Ok(())
     }

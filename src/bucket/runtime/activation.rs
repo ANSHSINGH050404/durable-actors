@@ -3,6 +3,13 @@ use std::time::Instant;
 use super::*;
 use crate::host_leases::HostLeaseRequest;
 
+#[derive(Default)]
+struct ActivationRecovery {
+    snapshot: Option<LoadedSnapshot>,
+    session_ms: Option<f64>,
+    snapshot_ms: Option<f64>,
+}
+
 impl RuntimeStorage {
     pub async fn register_activation(
         &self,
@@ -10,75 +17,82 @@ impl RuntimeStorage {
         request: &HostLeaseRequest,
         region: &str,
         new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
     ) -> Result<LoadedActor> {
         actor.validate()?;
         crate::placement::validate_region(region)?;
         request.validate_duration()?;
         let started = Instant::now();
-        let current = if new_actor {
-            None
-        } else {
-            self.load(&actor.storage_key()).await?
-        };
-        let ownership_read_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        let mut session_recovery_ms = None;
-        let mut snapshot_load_ms = None;
-        let recovered = match &current {
-            Some((_, record)) => {
-                ensure!(
-                    record.actor == *actor && record.region == region,
-                    "ownership scope cannot change"
-                );
-                ensure!(
-                    record.lease.id != request.id || record.lease.session_id != request.session_id,
-                    "activation session cannot be reused"
-                );
-                ensure!(
-                    record.lease.expires_at_ms <= self.clock.now_ms()?,
-                    "previous owner lease is still active"
-                );
-                let recovery_started = Instant::now();
-                let recovered = self.recover_session(record).await?;
-                session_recovery_ms = Some(recovery_started.elapsed().as_secs_f64() * 1_000.0);
-                let snapshot_started = Instant::now();
-                let snapshot = self.latest(record, recovered).await?;
-                snapshot_load_ms = Some(snapshot_started.elapsed().as_secs_f64() * 1_000.0);
-                snapshot
+        let now = self.clock.now_ms()?;
+        // Unsealed recovery can fence a live session if the hinted lease was renewed.
+        let owner_hint = owner_hint.filter(|hint| {
+            hint.record.sealed
+                && hint.generation > 0
+                && hint.record.actor == *actor
+                && hint.record.region == region
+                && hint.record.lease.expires_at_ms <= now
+                && (hint.record.lease.id != request.id
+                    || hint.record.lease.session_id != request.session_id)
+        });
+        for hint in [owner_hint, None] {
+            let read_started = Instant::now();
+            let current = if let Some(hint) = hint {
+                Some((hint.generation, hint.record.clone()))
+            } else if new_actor && owner_hint.is_none() {
+                None
+            } else {
+                self.load(&actor.storage_key()).await?
+            };
+            let ownership_read_ms = read_started.elapsed().as_secs_f64() * 1_000.0;
+            let recovery = self
+                .recover_activation(
+                    actor,
+                    request,
+                    region,
+                    current.as_ref().map(|(_, record)| record),
+                )
+                .await?;
+            let mut record = Ownership {
+                sealed: false,
+                inventory: ActivationInventory::default(),
+                actor: actor.clone(),
+                epoch: current
+                    .as_ref()
+                    .map_or(Some(1), |(_, record)| record.epoch.checked_add(1))
+                    .context("owner epoch overflow")?,
+                region: region.into(),
+                base: recovery
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.reference.clone()),
+                lease: self.new_lease(request)?,
+                mutation: String::new(),
+            };
+            let write_started = Instant::now();
+            if !self
+                .replace_activation(&mut record, current.map(|(generation, _)| generation))
+                .await?
+            {
+                ensure!(hint.is_some(), "actor activation changed concurrently");
+                continue;
             }
-            None => None,
-        };
-        let mut record = Ownership {
-            inventory: ActivationInventory::default(),
-            actor: actor.clone(),
-            epoch: current
-                .as_ref()
-                .map_or(Some(1), |(_, record)| record.epoch.checked_add(1))
-                .context("owner epoch overflow")?,
-            region: region.into(),
-            base: recovered
-                .as_ref()
-                .map(|snapshot| snapshot.reference.clone()),
-            lease: self.new_lease(request)?,
-            mutation: String::new(),
-        };
-        let write_started = Instant::now();
-        self.save_activation(&mut record, current.map(|(generation, _)| generation))
-            .await?;
-        tracing::info!(
-            event = "actor_activation_storage",
-            project_id = %actor.project_id,
-            actor_name = %actor.actor_name,
-            actor_id = %actor.actor_id,
-            host_id = %request.id,
-            session_id = %request.session_id,
-            new_actor,
-            ownership_read_ms,
-            session_recovery_ms,
-            snapshot_load_ms,
-            ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
-            duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
-        );
-        Ok(self.remember(record, recovered))
+            tracing::info!(
+                event = "actor_activation_storage",
+                project_id = %actor.project_id,
+                actor_name = %actor.actor_name,
+                actor_id = %actor.actor_id,
+                host_id = %request.id,
+                session_id = %request.session_id,
+                new_actor,
+                ownership_read_ms,
+                session_recovery_ms = recovery.session_ms,
+                snapshot_load_ms = recovery.snapshot_ms,
+                ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
+                duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            );
+            return Ok(self.remember(record, recovery.snapshot));
+        }
+        anyhow::bail!("actor activation changed concurrently")
     }
 
     pub async fn renew_activation(
@@ -119,6 +133,17 @@ impl RuntimeStorage {
         host: &HostId,
         session: &str,
     ) -> Result<()> {
+        self.release_with_checkpoint(actor, host, session, None)
+            .await
+    }
+
+    pub(super) async fn release_with_checkpoint(
+        &self,
+        actor: &ActorKey,
+        host: &HostId,
+        session: &str,
+        checkpoint: Option<SessionCheckpoint>,
+    ) -> Result<()> {
         for _ in 0..3 {
             let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
                 return Ok(());
@@ -130,6 +155,10 @@ impl RuntimeStorage {
                 return Ok(());
             }
             record.lease.expires_at_ms = 0;
+            if let Some(checkpoint) = &checkpoint {
+                record.base = checkpoint.snapshot.clone();
+                record.sealed = true;
+            }
             if self
                 .replace_activation(&mut record, Some(generation))
                 .await?
@@ -138,6 +167,56 @@ impl RuntimeStorage {
             }
         }
         anyhow::bail!("actor activation kept changing during release")
+    }
+
+    async fn recover_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        current: Option<&Ownership>,
+    ) -> Result<ActivationRecovery> {
+        let Some(record) = current else {
+            return Ok(ActivationRecovery::default());
+        };
+        ensure!(
+            record.actor == *actor && record.region == region,
+            "ownership scope cannot change"
+        );
+        ensure!(
+            record.lease.id != request.id || record.lease.session_id != request.session_id,
+            "activation session cannot be reused"
+        );
+        ensure!(
+            record.lease.expires_at_ms <= self.clock.now_ms()?,
+            "previous owner lease is still active"
+        );
+        if record.sealed {
+            let started = Instant::now();
+            return Ok(ActivationRecovery {
+                snapshot: self.load_latest(record, None, None, &[]).await?,
+                snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+                session_ms: None,
+            });
+        }
+        let mut recovery = ActivationRecovery::default();
+        let recover = async {
+            let started = Instant::now();
+            let recovered = self.recover_session(record).await;
+            recovery.session_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+            recovered
+        };
+        let list = async {
+            let started = Instant::now();
+            let newest = self.latest_snapshot_key(record).await;
+            recovery.snapshot_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+            newest
+        };
+        let (recovered, newest) = tokio::try_join!(recover, list)?;
+        let load_started = Instant::now();
+        recovery.snapshot = self.load_latest(record, recovered, newest, &[]).await?;
+        *recovery.snapshot_ms.as_mut().unwrap() += load_started.elapsed().as_secs_f64() * 1_000.0;
+        Ok(recovery)
     }
 
     fn new_lease(&self, request: &HostLeaseRequest) -> Result<HostLease> {

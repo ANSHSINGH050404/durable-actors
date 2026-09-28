@@ -23,8 +23,16 @@ pub struct ObjectPlacement {
 #[async_trait]
 pub trait ObjectPlacementStore: Send + Sync {
     async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        self.get(object).await
+        Ok(self.get_owner_with_hint(object).await?.0)
     }
+
+    async fn get_owner_with_hint(
+        &self,
+        object: &ActorStorageKey,
+    ) -> Result<(
+        Option<ObjectPlacement>,
+        Option<crate::bucket::OwnershipHint>,
+    )>;
 
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;
 }

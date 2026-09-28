@@ -150,7 +150,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         actor_id: "one".into(),
     };
     let first = runtime
-        .register_activation(&actor, &request("old"), "us-east", true)
+        .register_activation(&actor, &request("old"), "us-east", true, None)
         .await?
         .placement;
     enable_replicas(&runtime, &actor, &first.lease).await?;
@@ -183,7 +183,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     *peers.unavailable.lock().unwrap() = vec!["a".into(), "b".into()];
     assert!(
         runtime
-            .register_activation(&actor, &request("new"), "us-east", false)
+            .register_activation(&actor, &request("new"), "us-east", false, None)
             .await
             .is_err()
     );
@@ -202,7 +202,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     runtime.retire_replication(&scope).await?;
     assert!(runtime.replica_members(&scope).await?.is_empty());
     let next = runtime
-        .register_activation(&actor, &request("new"), "us-east", false)
+        .register_activation(&actor, &request("new"), "us-east", false, None)
         .await?
         .placement;
     assert_eq!(next.state_version, 1);
@@ -269,7 +269,7 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
         actor_id: "new".into(),
     };
     let placement = runtime
-        .register_activation(&actor, &request("session"), "us-east", true)
+        .register_activation(&actor, &request("session"), "us-east", true, None)
         .await?
         .placement;
     assert_eq!(placement.state_version, 0);
@@ -418,8 +418,8 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         actor_id: "race".into(),
     };
     let (first, second) = tokio::join!(
-        runtime.register_activation(&actor, &left, "us-east", false),
-        runtime.register_activation(&actor, &right, "us-east", false)
+        runtime.register_activation(&actor, &left, "us-east", false, None),
+        runtime.register_activation(&actor, &right, "us-east", false, None)
     );
     assert_ne!(first.is_ok(), second.is_ok());
     let winner = first.or(second)?.placement;
@@ -495,7 +495,7 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
         actor_id: "http".into(),
     };
     let first = runtime
-        .register_activation(&actor, &request("old"), "us-east", true)
+        .register_activation(&actor, &request("old"), "us-east", true, None)
         .await?
         .placement;
     enable_replicas(&runtime, &actor, &first.lease).await?;
@@ -533,7 +533,7 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
     assert!(bucket.get(&ticket.object_name).await?.is_none());
     clock.0.store(20_000, Ordering::SeqCst);
     let next = runtime
-        .register_activation(&actor, &request("new"), "us-east", false)
+        .register_activation(&actor, &request("new"), "us-east", false, None)
         .await?
         .placement;
     assert_eq!(next.state_version, 1);
@@ -642,7 +642,7 @@ async fn recovery_retries_failed_checkpoint_and_reuses_sealed_state_after_a_fail
         actor_id: "one".into(),
     };
     let placement = old
-        .register_activation(&actor, &request("old"), "us-east", true)
+        .register_activation(&actor, &request("old"), "us-east", true, None)
         .await?
         .placement;
     enable_replicas(&old, &actor, &placement.lease).await?;
@@ -664,7 +664,7 @@ async fn recovery_retries_failed_checkpoint_and_reuses_sealed_state_after_a_fail
     clock.0.store(20_000, Ordering::SeqCst);
     bucket.reject_snapshots.store(true, Ordering::SeqCst);
     assert!(
-        old.register_activation(&actor, &request("new"), "us-east", false)
+        old.register_activation(&actor, &request("new"), "us-east", false, None)
             .await
             .is_err()
     );
@@ -680,7 +680,7 @@ async fn recovery_retries_failed_checkpoint_and_reuses_sealed_state_after_a_fail
     bucket.reads.lock().unwrap().clear();
     let next = runtime()?;
     assert!(
-        next.register_activation(&actor, &request("new"), "us-east", false)
+        next.register_activation(&actor, &request("new"), "us-east", false, None)
             .await
             .is_err()
     );
@@ -703,7 +703,7 @@ async fn recovery_retries_failed_checkpoint_and_reuses_sealed_state_after_a_fail
     let seals = peers.seals.load(Ordering::SeqCst);
     *peers.unavailable.lock().unwrap() = vec!["a".into(), "b".into()];
     let restored = runtime()?
-        .register_activation(&actor, &request("new"), "us-east", false)
+        .register_activation(&actor, &request("new"), "us-east", false, None)
         .await?;
     assert_eq!(restored.placement.state_version, 1);
     assert_eq!(restored.state.unwrap().as_ref(), bytes);
@@ -750,7 +750,7 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         actor_id: "delayed".into(),
     };
     let first = runtime
-        .register_activation(&actor, &request("old"), "us-east", true)
+        .register_activation(&actor, &request("old"), "us-east", true, None)
         .await?
         .placement;
     let task = {
@@ -762,7 +762,7 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         .forget();
     clock.0.store(20_000, Ordering::SeqCst);
     let next = runtime
-        .register_activation(&actor, &request("new"), "us-east", false)
+        .register_activation(&actor, &request("new"), "us-east", false, None)
         .await?
         .placement;
     assert_eq!(next.owner_epoch, 2);
@@ -817,7 +817,13 @@ async fn same_named_actors_in_different_projects_recover_independent_state() -> 
             actor_id: "same".into(),
         };
         let placement = runtime
-            .register_activation(&actor, &request(&format!("old-{project}")), "us-east", true)
+            .register_activation(
+                &actor,
+                &request(&format!("old-{project}")),
+                "us-east",
+                true,
+                None,
+            )
             .await?
             .placement;
         enable_replicas(&runtime, &actor, &placement.lease).await?;
@@ -845,6 +851,7 @@ async fn same_named_actors_in_different_projects_recover_independent_state() -> 
                 &request(&format!("new-{}", actor.project_id)),
                 "us-east",
                 false,
+                None,
             )
             .await?;
         assert_eq!(restored.placement.state_version, 1);

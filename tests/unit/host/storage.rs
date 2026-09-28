@@ -78,6 +78,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
             actor_id: "one".into(),
         }),
         new_actor: true,
+        owner_hint: None,
         activation: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),

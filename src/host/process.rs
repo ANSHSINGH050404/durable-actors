@@ -34,6 +34,7 @@ pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
+    owner_hint: Option<crate::bucket::OwnershipHint>,
     ready_file: Option<PathBuf>,
     pub control_plane_url: String,
     pub host_token: String,
@@ -303,6 +304,9 @@ impl ActorHostConfig {
                 .transpose()?
                 .unwrap_or(false),
             actor,
+            owner_hint: get("DURABLE_ACTORS_OWNER_HINT")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
             runtime_config,
             control_plane_url,
@@ -506,7 +510,11 @@ async fn prepare_storage(
             transport,
         )
         .await?
-        .with_actor(config.actor.clone(), config.new_actor),
+        .with_actor(
+            config.actor.clone(),
+            config.new_actor,
+            config.owner_hint.clone(),
+        ),
     );
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint.clone(),
