@@ -7,13 +7,22 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2"
 	modal "github.com/modal-labs/modal-client/go"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
-type sdkAPI struct{ client *modal.Client }
+type sdkAPI struct {
+	client     *modal.Client
+	appMu      sync.Mutex
+	app        *modal.App
+	imageLoads singleflight.Group
+	images     *lru.Cache[string, *modal.Image]
+}
 
 func newModalAPI() (modalAPI, func(), error) {
 	mutable := false
@@ -34,7 +43,15 @@ func newModalAPI() (modalAPI, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &networkPolicyAPI{modalAPI: &sdkAPI{client: client}, mutable: mutable}, client.Close, nil
+	return &networkPolicyAPI{modalAPI: newSDKAPI(client), mutable: mutable}, client.Close, nil
+}
+
+func newSDKAPI(client *modal.Client) *sdkAPI {
+	images, err := lru.New[string, *modal.Image](128)
+	if err != nil {
+		panic(err)
+	}
+	return &sdkAPI{client: client, images: images}
 }
 
 func (a *sdkAPI) Resolve(ctx context.Context, imageID string) (*modal.App, *modal.Image, error) {
@@ -43,12 +60,50 @@ func (a *sdkAPI) Resolve(ctx context.Context, imageID string) (*modal.App, *moda
 	var image *modal.Image
 	group.Go(func() error {
 		var err error
-		app, err = a.client.Apps.FromName(ctx, appName, &modal.AppFromNameParams{CreateIfMissing: true})
+		app, err = a.resolveApp(ctx)
 		return err
 	})
-	group.Go(func() error { var err error; image, err = a.client.Images.FromID(ctx, imageID, nil); return err })
+	group.Go(func() error { var err error; image, err = a.resolveImage(ctx, imageID); return err })
 	err := group.Wait()
 	return app, image, err
+}
+
+func (a *sdkAPI) resolveApp(ctx context.Context) (*modal.App, error) {
+	a.appMu.Lock()
+	defer a.appMu.Unlock()
+	if a.app != nil {
+		return a.app, nil
+	}
+	app, err := a.client.Apps.FromName(ctx, appName, &modal.AppFromNameParams{CreateIfMissing: true})
+	if err == nil {
+		a.app = app
+	}
+	return app, err
+}
+
+func (a *sdkAPI) resolveImage(ctx context.Context, id string) (*modal.Image, error) {
+	if image, ok := a.images.Get(id); ok {
+		return image, nil
+	}
+	result := a.imageLoads.DoChan(id, func() (any, error) {
+		if image, ok := a.images.Get(id); ok {
+			return image, nil
+		}
+		image, err := a.client.Images.FromID(ctx, id, nil)
+		if err == nil {
+			a.images.Add(id, image)
+		}
+		return image, err
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-result:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return result.Val.(*modal.Image), nil
+	}
 }
 
 func (a *sdkAPI) Create(ctx context.Context, app *modal.App, image *modal.Image, params *modal.SandboxCreateParams) (sandbox, error) {
@@ -90,17 +145,16 @@ func (s *sdkSandbox) Terminate(ctx context.Context) error {
 func (s *sdkSandbox) Ready(ctx context.Context) error {
 	return s.sb.WaitUntilReady(ctx, time.Minute, nil)
 }
-func (s *sdkSandbox) Route(ctx context.Context) (string, error)        { return s.route(ctx, 7101) }
-func (s *sdkSandbox) ControlRoute(ctx context.Context) (string, error) { return s.route(ctx, 7102) }
-func (s *sdkSandbox) route(ctx context.Context, port int) (string, error) {
+func (s *sdkSandbox) Routes(ctx context.Context) (string, string, error) {
 	tunnels, err := s.sb.Tunnels(ctx, 50*time.Second, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if tunnel := tunnels[port]; tunnel != nil {
-		return tunnel.URL(), nil
+	route, control := tunnels[7101], tunnels[7102]
+	if route == nil || control == nil {
+		return "", "", fmt.Errorf("Modal did not create the durable-actors HTTP/2 tunnels")
 	}
-	return "", fmt.Errorf("Modal did not create the durable-actors HTTP/2 tunnel")
+	return route.URL(), control.URL(), nil
 }
 
 func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {

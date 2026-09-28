@@ -55,7 +55,7 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		spare = *request.Spare
 		phases.Reused = true
 	} else {
-		sb, spare, err = p.startSpare(ctx, spareRequest{Kind: "actor", Name: "do-actor-" + request.SessionID, ImageRef: request.ImageRef, CanonicalRegion: request.CanonicalRegion, Resources: request.Resources}, request.SecretRefs)
+		sb, spare, err = p.createSpareSandbox(ctx, spareRequest{Kind: "actor", Name: "do-actor-" + request.SessionID, ImageRef: request.ImageRef, CanonicalRegion: request.CanonicalRegion, Resources: request.Resources}, request.SecretRefs)
 	}
 	if err != nil {
 		return hostHandle{}, err
@@ -68,13 +68,18 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		}
 	}()
 	phases.SandboxScheduledAtMS = p.elapsed()
-	environment := hostEnvironment(request)
-	environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
-	environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 	group, assignmentContext := errgroup.WithContext(ctx)
 	group.Go(func() error { return sb.Mount(assignmentContext, request.CodeSnapshot) })
 	var handle hostHandle
 	group.Go(func() error {
+		if request.Spare == nil {
+			if err := readySpare(assignmentContext, sb, &spare); err != nil {
+				return err
+			}
+		}
+		environment := hostEnvironment(request)
+		environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
+		environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 		var err error
 		handle, err = p.assigner.Assign(assignmentContext, spare, environment)
 		return err
@@ -98,8 +103,13 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 }
 
 func (p *provider) createSpare(ctx context.Context, request spareRequest) (spareHandle, error) {
-	sb, handle, err := p.startSpare(ctx, request, nil)
+	sb, handle, err := p.createSpareSandbox(ctx, request, nil)
 	if err != nil {
+		return spareHandle{}, err
+	}
+	if err := readySpare(ctx, sb, &handle); err != nil {
+		terminateForCleanup(sb)
+		sb.Detach()
 		return spareHandle{}, err
 	}
 	if request.Kind == "actor" {
@@ -113,7 +123,7 @@ func (p *provider) createSpare(ctx context.Context, request spareRequest) (spare
 	return handle, nil
 }
 
-func (p *provider) startSpare(ctx context.Context, request spareRequest, secrets []string) (sandbox, spareHandle, error) {
+func (p *provider) createSpareSandbox(ctx context.Context, request spareRequest, secrets []string) (sandbox, spareHandle, error) {
 	params, err := spareParams(request)
 	if err != nil {
 		return nil, spareHandle{}, err
@@ -133,26 +143,24 @@ func (p *provider) startSpare(ctx context.Context, request spareRequest, secrets
 	if err != nil {
 		return nil, spareHandle{}, err
 	}
-	ready := false
-	defer func() {
-		if !ready {
-			terminateForCleanup(sb)
-			sb.Detach()
+	return sb, spareHandle{Name: request.Name, ResourceID: sb.ID(), CanonicalRegion: request.CanonicalRegion, ControlToken: params.Env["DURABLE_ACTORS_SPARE_TOKEN"]}, nil
+}
+
+func readySpare(ctx context.Context, sb sandbox, handle *spareHandle) error {
+	group, ctx := errgroup.WithContext(ctx)
+	group.Go(func() error { return sb.Ready(ctx) })
+	group.Go(func() error {
+		route, control, err := sb.Routes(ctx)
+		if err != nil {
+			return err
 		}
-	}()
-	if err := sb.Ready(ctx); err != nil {
-		return nil, spareHandle{}, err
-	}
-	route, err := sb.Route(ctx)
-	if err != nil || route == "" {
-		return nil, spareHandle{}, fmt.Errorf("spare route unavailable: %v", err)
-	}
-	controlRoute, err := sb.ControlRoute(ctx)
-	if err != nil || controlRoute == "" {
-		return nil, spareHandle{}, fmt.Errorf("spare control route unavailable: %v", err)
-	}
-	ready = true
-	return sb, spareHandle{Name: request.Name, ResourceID: sb.ID(), Route: route, CanonicalRegion: request.CanonicalRegion, ControlRoute: controlRoute, ControlToken: params.Env["DURABLE_ACTORS_SPARE_TOKEN"]}, nil
+		if route == "" || control == "" {
+			return fmt.Errorf("spare routes unavailable")
+		}
+		handle.Route, handle.ControlRoute = route, control
+		return nil
+	})
+	return group.Wait()
 }
 
 func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {

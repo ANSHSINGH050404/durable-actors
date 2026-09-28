@@ -6,6 +6,7 @@ import (
 	"errors"
 	modal "github.com/modal-labs/modal-client/go"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -101,6 +102,8 @@ func (a *fakeAPI) Find(_ context.Context, name string) (sandbox, error) {
 }
 
 type fakeSandbox struct {
+	callsMu           sync.Mutex
+	startup           func(context.Context) error
 	mounted           string
 	assignment        map[string]string
 	mountErr          error
@@ -138,25 +141,34 @@ func TestSocketCredentialsRequireTheResolvedHostSession(t *testing.T) {
 }
 
 func (s *fakeSandbox) Connect(context.Context) (socketCredentials, error) {
-	s.calls = append(s.calls, "connect")
+	s.recordCall("connect")
 	return socketCredentials{URL: "https://connect.test", Token: "connect-token"}, nil
 }
 
 func (s *fakeSandbox) ID() string { return "sb-test" }
-func (s *fakeSandbox) Route(context.Context) (string, error) {
-	s.calls = append(s.calls, "route")
-	return "https://host.test", nil
+func (s *fakeSandbox) Routes(ctx context.Context) (string, string, error) {
+	defer s.recordCall("route")
+	return "https://host.test", "https://control.test", s.waitForStartup(ctx)
 }
-func (s *fakeSandbox) Ready(context.Context) error { s.calls = append(s.calls, "ready"); return nil }
+func (s *fakeSandbox) Ready(ctx context.Context) error {
+	defer s.recordCall("ready")
+	return s.waitForStartup(ctx)
+}
+func (s *fakeSandbox) waitForStartup(ctx context.Context) error {
+	if s.startup != nil {
+		return s.startup(ctx)
+	}
+	return nil
+}
 func (s *fakeSandbox) Metadata(context.Context) ([]byte, error) {
-	s.calls = append(s.calls, "metadata")
+	s.recordCall("metadata")
 	return json.RawMessage(s.metadata), nil
 }
 func (s *fakeSandbox) Terminate(context.Context) error {
-	s.calls = append(s.calls, "terminate")
+	s.recordCall("terminate")
 	return nil
 }
-func (s *fakeSandbox) Detach() { s.calls = append(s.calls, "detach") }
+func (s *fakeSandbox) Detach() { s.recordCall("detach") }
 
 func TestMutableNetworkIsOptIn(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
@@ -209,20 +221,16 @@ func (s *fakeSandbox) assign(ctx context.Context, environment map[string]string)
 	return nil
 }
 func (s *fakeSandbox) Snapshot(context.Context) (string, error) {
-	s.calls = append(s.calls, "snapshot")
+	s.recordCall("snapshot")
 	return "im-code", s.snapshotErr
 }
 
 func (s *fakeSandbox) BuildCode(_ context.Context, directory, entrypoint string) (json.RawMessage, error) {
-	s.calls = append(s.calls, "build:"+directory+":"+entrypoint)
+	s.recordCall("build:" + directory + ":" + entrypoint)
 	if s.contract != nil {
 		return s.contract, s.buildErr
 	}
 	return json.RawMessage(`{"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}}`), s.buildErr
-}
-
-func (s *fakeSandbox) ControlRoute(context.Context) (string, error) {
-	return "https://control.test", nil
 }
 
 type fakeAssigner struct{ api modalAPI }
@@ -273,3 +281,9 @@ func (w *warmCounter) Assign(context.Context, spareHandle, map[string]string) (h
 func (w *warmCounter) Warm(context.Context, spareHandle) { w.count++ }
 
 func (fakeAssigner) Warm(context.Context, spareHandle) {}
+
+func (s *fakeSandbox) recordCall(call string) {
+	s.callsMu.Lock()
+	defer s.callsMu.Unlock()
+	s.calls = append(s.calls, call)
+}

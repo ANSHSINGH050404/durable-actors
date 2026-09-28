@@ -25,9 +25,8 @@ type modalAPI interface {
 
 type sandbox interface {
 	ID() string
-	Route(context.Context) (string, error)
+	Routes(context.Context) (string, string, error)
 	Connect(context.Context) (socketCredentials, error)
-	ControlRoute(context.Context) (string, error)
 	Mount(context.Context, string) error
 	Snapshot(context.Context) (string, error)
 	BuildCode(context.Context, string, string) (json.RawMessage, error)
