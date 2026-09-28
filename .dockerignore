@@ -42,3 +42,9 @@
 !examples/ai-chat/package.json
 !examples/documents
 !examples/documents/package.json
+!sdk-python
+!sdk-python/pyproject.toml
+!sdk-python/src
+!sdk-python/src/**
+!sdk-python/README.md
+!sdk-python/LICENSE.md

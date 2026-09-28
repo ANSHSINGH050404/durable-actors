@@ -17,7 +17,7 @@ try {
     Object.assign(process.env, actorEnvironment(process.env))
     const program = new Command()
         .name("durable-actors")
-        .description("Run durable TypeScript actors locally or in the cloud")
+        .description("Run durable TypeScript and Python actors locally or in the cloud")
         .version(await version())
         .enablePositionalOptions()
         .addHelpCommand(false)
@@ -27,7 +27,7 @@ try {
         .description("Create a sample actor project")
         .addOption(
             new Option("--template <name>", "project template")
-                .choices(["actor", "chat", "ai-chat", "documents"])
+                .choices(["actor", "chat", "ai-chat", "documents", "python"])
                 .default("actor")
         )
         .action(initializeProject)
@@ -54,6 +54,8 @@ async function initializeProject(directory: string, options: { template: string 
             force: false
         })
         await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
+        if (options.template === "python")
+            await rename(path.join(destination, ".env.example"), path.join(destination, ".env"))
         await nameProject(destination)
     } catch (error) {
         await rm(destination, { recursive: true, force: true })
@@ -76,6 +78,16 @@ async function nameProject(destination: string): Promise<void> {
 }
 
 function projectInstructions(destination: string, template: string): string {
+    if (template === "python")
+        return `Created Python actors in ${destination}.
+
+From that directory, run:
+  pnpm install
+  uv sync
+  pnpm exec durable-actors dev
+
+Edit src/actors.py. The CLI checks types before starting and reloading.
+Generate typed Python clients with: pnpm exec durable-actors generate`
     if (template === "actor") return actorProjectInstructions(destination)
 
     return `Created ${template} app in ${destination}.

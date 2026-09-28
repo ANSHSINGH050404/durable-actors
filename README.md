@@ -2,7 +2,7 @@
   <h1 align="center">Durable Actors</h1>
 
   <p align="center"><strong>Durable state for collaborative apps and AI agents.</strong></p>
-  <p align="center">TypeScript actors. Rust runtime.</p>
+  <p align="center">TypeScript and Python actors. Rust runtime.</p>
 
   <p align="center">
     <a href="https://github.com/TerseAI/durable-actors/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/TerseAI/durable-actors?style=flat&amp;logo=github&amp;color=f5a623"></a>
@@ -30,7 +30,7 @@
 
 ---
 
-Durable Actors is an open-source TypeScript SDK and Rust runtime for building apps and AI agents that share persistent state.
+Durable Actors provides open-source TypeScript and Python SDKs with a Rust runtime for building apps and AI agents that share persistent state.
 
 ### Start with a coding agent
 
@@ -45,6 +45,10 @@ Give each conversation, document, or agent a TypeScript actor: its saved state s
 The SDK provides actor classes, type-safe clients, and WebSocket support. The runtime loads actors on demand and persists fields marked `@Persisted`. Develop locally with one command, then self-host the runtime for production.
 
 For example, a chat actor can keep a conversation across server restarts, or a document actor can coordinate edits from several people and agents without each caller managing database locks.
+
+## Python
+
+Define actors in Python and generate typed Python clients using the `little-actors` Python package and the shared `durable-actors` CLI. See the [Python quickstart](sdk-python/README.md), [reference](docs/reference/python.md), and [runnable example](examples/python).
 
 ## Local development
 

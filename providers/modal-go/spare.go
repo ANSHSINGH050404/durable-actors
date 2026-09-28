@@ -243,7 +243,7 @@ func validateAssignment(request ensureRequest) error {
 		return fmt.Errorf("published code snapshot is required")
 	}
 	entrypoint := request.ActorEntrypoint
-	if request.WorkingDirectory != "/customer" || entrypoint == "" || strings.HasPrefix(entrypoint, "/") || path.Clean(entrypoint) != entrypoint || strings.HasPrefix(entrypoint, "../") || !strings.HasSuffix(entrypoint, ".mjs") {
+	if request.WorkingDirectory != "/customer" || entrypoint == "" || strings.HasPrefix(entrypoint, "/") || path.Clean(entrypoint) != entrypoint || strings.HasPrefix(entrypoint, "../") || (!strings.HasSuffix(entrypoint, ".mjs") && !strings.HasSuffix(entrypoint, ".pyz")) {
 		return fmt.Errorf("customer entrypoint must be a compiled module under /customer")
 	}
 	return nil
@@ -268,7 +268,8 @@ func (p *provider) buildCode(ctx context.Context, request buildCodeRequest) (map
 	if err != nil {
 		return nil, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
+	lifetime := actorBuildTimeout + time.Minute
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", fmt.Sprint(int(lifetime.Seconds()))}, Timeout: lifetime, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
 	if err != nil {
 		return nil, err
 	}

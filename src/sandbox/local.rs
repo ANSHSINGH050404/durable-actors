@@ -406,7 +406,7 @@ fn handle(lease: crate::host_leases::HostLease, region: &str, owner_epoch: u64) 
 
 fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap<String, String> {
     let mut environment = std::env::vars()
-        .filter(|(key, _)| !key.starts_with("DURABLE_ACTORS_"))
+        .filter(|(key, _)| !key.starts_with("DURABLE_ACTORS_") || key == "DURABLE_ACTORS_PYTHON")
         .collect::<HashMap<_, _>>();
     if let Some(actor) = &request.actor {
         environment.insert(

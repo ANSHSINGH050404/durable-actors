@@ -2,7 +2,6 @@ import WebSocket from "ws"
 import { z } from "zod"
 
 import { projectActorPath, validateActorComponent } from "../actor/identity.js"
-import { currentActorInvocation } from "../actor/invocationContext.js"
 import { socketMessage } from "../actor/socket.js"
 import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
@@ -22,11 +21,7 @@ class RemoteActorClient extends HttpActorClient {
     constructor(options?: DurableActorsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
         super(options, {
             ...dependencies,
-            telemetry: dependencies.telemetry ?? stderrTelemetry,
-            beforeInvoke: requestId => {
-                if (currentActorInvocation() !== undefined)
-                    throw new ActorInvocationError("actor_error", requestId, "actor-to-actor calls are not available")
-            }
+            telemetry: dependencies.telemetry ?? stderrTelemetry
         })
         this.connectWebSocket = dependencies.connectWebSocket ?? openWebSocket
     }
@@ -37,12 +32,6 @@ class RemoteActorClient extends HttpActorClient {
         schemas: ActorSchemas = {}
     ): Promise<ActorConnection> {
         const requestId = validateActorComponent("request ID", this.requestId())
-        if (currentActorInvocation() !== undefined)
-            throw new ActorInvocationError(
-                "actor_error",
-                requestId,
-                "actor-to-actor socket connections are not available"
-            )
         const actor = {
             projectId: this.settings.projectId,
             actorName: validateActorComponent("actor name", actorName),
@@ -73,12 +62,6 @@ class RemoteActorClient extends HttpActorClient {
 
     async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
         const requestId = validateActorComponent("request ID", this.requestId())
-        if (currentActorInvocation() !== undefined)
-            throw new ActorInvocationError(
-                "actor_error",
-                requestId,
-                "actor-to-actor socket broadcasts are not available"
-            )
         const actor = {
             requestId,
             projectId: this.settings.projectId,

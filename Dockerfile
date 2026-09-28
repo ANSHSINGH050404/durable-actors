@@ -40,14 +40,21 @@ RUN pnpm --dir packages/observer-ui build \
     && pnpm --dir sdk build:client \
     && pnpm --dir sdk exec tsc -p tsconfig.build.json
 
+FROM python:3.13-slim-bookworm AS python-sdk
+WORKDIR /build
+COPY sdk-python/pyproject.toml sdk-python/README.md sdk-python/LICENSE.md ./
+COPY sdk-python/src ./src
+RUN pip install --no-cache-dir .
+
 FROM oven/bun:1.4.2 AS bun
 
-FROM debian:bookworm-slim
+FROM python:3.13-slim-bookworm
 
 RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=python-sdk /usr/local /usr/local
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY --from=modal-builder /out/durable-actors-modal-go /usr/local/bin/durable-actors-modal-go
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun

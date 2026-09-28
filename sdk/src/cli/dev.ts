@@ -11,6 +11,7 @@ import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
 
 import { type ActorSourceWatcher, watchActorSources } from "./actor-source-watcher.js"
 import { ControlPlaneClient } from "./control-plane.js"
+import { checkPython, pythonExecutable } from "./python.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
@@ -44,6 +45,9 @@ Run from your actor project directory; dev loads src/actors.ts by default.
 No configuration is required. Optional overrides in .env:
   DURABLE_ACTORS_PROJECT     project directory (default: current directory)
   DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: src/actors.ts)
+
+Python projects: durable-actors init my-project --template python
+DURABLE_ACTORS_PYTHON selects an interpreter; otherwise dev uses the project .venv.
 
 Create a project with: durable-actors init my-project`
         )
@@ -83,6 +87,7 @@ const developmentEnvironment = z.object({
 
 async function runDev(options: DevOptions): Promise<number> {
     const project = await developmentProject(options)
+    if (options.entrypoint.endsWith(".py")) return runDevRuntime(options, project)
     const local = await projectSdkModule(project, "./cli/dev.js", import.meta.url, options.sdkResolveFrom)
     if (local !== undefined) return (await import(local)).runDev({ ...options, project })
     return runDevRuntime(options, project)
@@ -115,11 +120,13 @@ async function developmentPathStats(candidate: string) {
 }
 
 async function runDevRuntime(options: DevOptions, project: string): Promise<number> {
+    const python = options.entrypoint.endsWith(".py") ? await pythonExecutable(project) : undefined
+    if (python) await checkPython(project, [options.entrypoint], python)
     const executable = await fetchRuntimeExecutablePath()
     const runtime = startRustRuntime(
         executable,
         [...devArguments(options), "--ready-fd", "3"],
-        runtimeEnvironment(executable),
+        { ...runtimeEnvironment(executable), ...(python ? { DURABLE_ACTORS_PYTHON: python } : {}) },
         true,
         true
     )
@@ -163,6 +170,7 @@ async function publishLocalCode(
     project: string,
     client: Pick<ControlPlaneClient, "registerDeployment">
 ): Promise<void> {
+    if (options.entrypoint.endsWith(".py")) await checkPython(project, [options.entrypoint])
     await client.registerDeployment({
         imageRef: "local",
         workingDirectory: project,

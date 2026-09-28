@@ -937,6 +937,15 @@ impl HostProvisioner for SandboxHostProvisioner {
             })
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
+        let artifact = if input
+            .actor_entrypoint
+            .as_deref()
+            .is_some_and(|entrypoint| entrypoint.ends_with(".py"))
+        {
+            "actors.pyz"
+        } else {
+            "actors.mjs"
+        };
         let prepared = HostLaunchSpec {
             sandboxes: Default::default(),
             project_id: source.project_id.clone(),
@@ -944,7 +953,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             image_ref: image.clone(),
             code_snapshot: Some(built.code_snapshot),
             working_directory: "/customer".into(),
-            actor_entrypoint: Some("actors.mjs".into()),
+            actor_entrypoint: Some(artifact.into()),
             secret_refs: source.secret_refs.clone(),
         };
         prepared.validate()?;

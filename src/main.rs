@@ -73,7 +73,7 @@ async fn run(cli: Cli) -> Result<()> {
 #[derive(Parser)]
 #[command(
     version,
-    about = "Run durable TypeScript actors locally or in the cloud"
+    about = "Run durable TypeScript and Python actors locally or in the cloud"
 )]
 struct Cli {
     #[command(subcommand)]

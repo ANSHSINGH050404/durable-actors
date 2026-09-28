@@ -40,7 +40,7 @@ test("CI and release validate the Go provider before publishing", () => {
         assert.match(workflow, /go-version: "1\.27\.1"/)
     }
     for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) {
-        for (const check of ["rust", "npm-ci", "go-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
+        for (const check of ["rust", "npm-ci", "go-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
     }
 })
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -190,5 +191,52 @@ func waitSignal(t *testing.T, signal <-chan struct{}) {
 	case <-signal:
 	case <-time.After(5 * time.Second):
 		t.Fatal("operation timed out")
+	}
+}
+
+type buildDeadlineSandbox struct{ fakeSandbox }
+
+func (s *buildDeadlineSandbox) BuildCode(ctx context.Context, directory, entrypoint string) (json.RawMessage, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) < 11*time.Minute {
+		return nil, errors.New("build request does not allow dependency installation and snapshotting")
+	}
+	return s.fakeSandbox.BuildCode(ctx, directory, entrypoint)
+}
+
+func TestBuildBudgetCoversDependencyInstallationThroughBothProviderTransports(t *testing.T) {
+	for _, mode := range []string{"command", "server"} {
+		t.Run(mode, func(t *testing.T) {
+			api := &fakeAPI{created: &buildDeadlineSandbox{}}
+			factory := func() (modalAPI, func(), error) { return api, func() {}, nil }
+			input := `{"operation":"build_code","request":{"imageRef":"im-customer","workingDirectory":"/project","actorEntrypoint":"src/actors.py","canonicalRegion":"north-america-east"}}`
+			var output bytes.Buffer
+			if mode == "command" {
+				if err := runCommand(context.Background(), strings.NewReader(input), &output, factory, time.Now); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				client, _ := startProviderServer(t, factory)
+				reply, err := client.Post("http://provider/", "application/json", strings.NewReader(input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reply.Body.Close()
+				if _, err := io.Copy(&output, reply.Body); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var reply response
+			if err := json.Unmarshal(output.Bytes(), &reply); err != nil || reply.Status != "success" {
+				t.Fatalf("build failed: %s (%v)", output.String(), err)
+			}
+			if api.params.Timeout < 11*time.Minute {
+				t.Fatal("builder sandbox expires before build completion")
+			}
+			seconds, err := strconv.Atoi(api.params.Command[1])
+			if err != nil || seconds < 660 {
+				t.Fatal("builder process exits before build completion")
+			}
+		})
 	}
 }

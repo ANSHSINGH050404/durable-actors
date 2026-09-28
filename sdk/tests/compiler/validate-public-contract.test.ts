@@ -29,6 +29,8 @@ test("contract parsing reports invalid embedded schemas at their contract paths"
 
 test("codegen rejects malformed contracts and unsafe type overrides", async () => {
     const cases: [string, (document: typeof fixture) => void, RegExp][] = [
+        ["invalid actor documentation", document => (document.actors[0].description = 42), /Invalid/],
+        ["invalid RPC documentation", document => (document.actors[0].rpc.methods[0].description = 42), /Invalid/],
         ["duplicate actors", document => document.actors.push(document.actors[0]), /duplicate actor/],
         ["path traversal", document => (document.actors[0].actorName = "../outside"), /Invalid/],
         ["keyword actor", document => (document.actors[0].actorName = "class"), /identifier/],
@@ -120,6 +122,9 @@ test("published declarations and type dependency requirements survive remote cod
         'import type { UIMessage } from "ai"; export declare const schemaVersion = 1; ' +
         document.typescript.declarations
     document.typescript.dependencies = { ai: "7.0.97" }
+    document.actors[0].description = "A documented actor."
+    document.actors[0].rpc.methods[0].description = "A documented RPC."
+    assert.deepEqual(parsePublicContract(document), document)
     const files = await generateClientArtifacts(JSON.parse(JSON.stringify(document)))
     assert.match(files.get("types.d.ts")!, /import type \{ UIMessage \} from "ai"/)
     assert.match(files.get("types.d.ts")!, /export declare const schemaVersion = 1/)

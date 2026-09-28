@@ -332,7 +332,7 @@ async fn local_routes(
     .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
         project.to_owned(),
         directory.canonicalize()?.join("code"),
-        Arc::new(super::local_build::BunCodeCompiler::new(
+        Arc::new(super::local_build::ActorCodeCompiler::new(
             options.sdk_host.clone(),
         )),
     )))

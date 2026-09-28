@@ -25,8 +25,6 @@ func main() {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
 	if err := runCommand(ctx, os.Stdin, os.Stdout, newModalAPI, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

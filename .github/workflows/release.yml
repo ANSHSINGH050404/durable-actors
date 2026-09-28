@@ -180,13 +180,17 @@ jobs:
               working-directory: .
               run: node --test tests/scripts/release-workflow.test.mjs
 
+    python-ci:
+        needs: preflight
+        uses: ./.github/workflows/python.yml
+
     native:
         needs: preflight
         uses: ./.github/workflows/native-build.yml
 
     native-publish:
         name: Verify and publish native runtime (${{ matrix.runner }})
-        needs: [preflight, rust, npm-ci, go-ci, native]
+        needs: [preflight, rust, npm-ci, go-ci, python-ci, native]
         strategy:
             fail-fast: false
             matrix:
@@ -277,6 +281,13 @@ jobs:
                       org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
                       org.opencontainers.image.licenses=MIT
 
+            - name: Check Python actors in the release image
+              env:
+                  IMAGE_ARCH_TAG: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
+              run: |
+                  docker load --input "${{ runner.temp }}/runtime-image.tar"
+                  docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" "$IMAGE_ARCH_TAG" /tmp/image_smoke.py
+
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: runtime-image-${{ matrix.arch }}
@@ -287,7 +298,7 @@ jobs:
 
     image-push:
         name: Push runtime image (${{ matrix.arch }})
-        needs: [preflight, rust, npm-ci, go-ci, image-build]
+        needs: [preflight, rust, npm-ci, go-ci, python-ci, image-build]
         strategy:
             fail-fast: false
             matrix:
@@ -446,3 +457,19 @@ jobs:
                       echo "::error::crates.io returned HTTP $status"
                       exit 1
                   fi
+
+    python:
+        name: Publish Python SDK
+        needs: [preflight, python-ci, image, native-publish]
+        runs-on: ubuntu-latest
+        environment: pypi
+        permissions:
+            id-token: write
+        steps:
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: python-package
+                  path: dist
+            - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+              with:
+                  skip-existing: true

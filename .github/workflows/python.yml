@@ -1,0 +1,77 @@
+name: Python SDK
+
+on:
+    workflow_call:
+
+permissions:
+    contents: read
+
+jobs:
+    python:
+        name: Python ${{ matrix.python }}
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        strategy:
+            fail-fast: false
+            matrix:
+                python: ["3.11", "3.13", "3.14"]
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+              with:
+                  python-version: ${{ matrix.python }}
+                  enable-cache: true
+                  cache-dependency-glob: sdk-python/uv.lock
+            - name: Install Rust toolchain
+              run: rustup toolchain install 1.89.0 --profile minimal && rustup default 1.89.0
+            - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+              with:
+                  shared-key: validation-ubuntu-24.04
+            - name: Build native runtime
+              run: cargo build --locked
+            - name: Install Python dependencies
+              working-directory: sdk-python
+              run: uv sync --locked --all-extras
+            - name: Check source and generated client types
+              working-directory: sdk-python
+              run: |
+                  uv run --locked ruff check src tests
+                  uv run --locked ruff format --check src tests
+                  uv run --locked mypy src/little_actors
+                  uv run --locked pyright
+            - name: Test Python actors against the Rust runtime
+              working-directory: sdk-python
+              env:
+                  LITTLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
+              run: uv run --locked pytest -q
+            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+              with:
+                  version: 10.17.1
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: "22.19.0"
+                  cache: pnpm
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
+            - name: Build shared CLI and test Python workflows
+              env:
+                  LITTLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
+                  LITTLE_ACTORS_TEST_PYTHON: ${{ github.workspace }}/sdk-python/.venv/bin/python
+              run: |
+                  pnpm install --frozen-lockfile
+                  pnpm --dir sdk build
+                  pnpm --dir sdk exec tsc -p tsconfig.test.json
+                  node --test sdk/.test-dist/tests/cli/python.test.js
+            - name: Build distributions
+              if: matrix.python == '3.13'
+              working-directory: sdk-python
+              run: |
+                  uv build --no-sources
+                  uv run --isolated --no-project --with ./dist/little_actors-*.whl python -c 'from pathlib import Path; import little_actors; assert Path(little_actors.__file__).with_name("py.typed").is_file()'
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              if: matrix.python == '3.13'
+              with:
+                  name: python-package
+                  path: sdk-python/dist/*
+                  if-no-files-found: error
+                  retention-days: 7

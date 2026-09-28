@@ -31,7 +31,7 @@ func serveProvider(ctx context.Context, socket string, ready io.Writer, factory 
 	go runner.handles.maintain(lifetime)
 	server := &http.Server{
 		Handler: providerHandler(runner), ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 120 * time.Second, WriteTimeout: 125 * time.Second, MaxHeaderBytes: 8192,
+		ReadTimeout: providerRequestTimeout, WriteTimeout: actorBuildRequestTimeout + 5*time.Second, MaxHeaderBytes: 8192,
 		BaseContext: func(net.Listener) context.Context { return lifetime },
 	}
 	defer server.Close()
@@ -47,13 +47,11 @@ func providerHandler(runner *commandRunner) http.Handler {
 			http.NotFound(w, request)
 			return
 		}
-		ctx, cancel := context.WithTimeout(request.Context(), 120*time.Second)
-		defer cancel()
 		started := runner.now()
 		cmd, err := readCommand(request.Body)
 		var result any
 		if err == nil {
-			result, err = runner.execute(ctx, cmd, started, elapsed(started, runner.now()))
+			result, err = runner.execute(request.Context(), cmd, started, elapsed(started, runner.now()))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := writeReply(w, result, err); err != nil {

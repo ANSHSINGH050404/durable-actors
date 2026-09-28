@@ -1,0 +1,8 @@
+[project]
+name = "little-actors-example"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["little-actors[codegen]"]
+
+[tool.mypy]
+strict = true

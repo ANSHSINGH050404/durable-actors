@@ -810,7 +810,7 @@ components:
                     type: [string, "null"]
                     minLength: 1
                     default: null
-                    description: Source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
+                    description: TypeScript or Python source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
                 secretRefs:
                     type: array
                     maxItems: 16
@@ -835,7 +835,7 @@ components:
         PublicActorContract:
             type: object
             additionalProperties: false
-            required: [version, actors, typescript]
+            required: [version, actors]
             properties:
                 typescript:
                     type: object
@@ -855,6 +855,7 @@ components:
                         required: [actorName, socket, rpc]
                         properties:
                             actorName: { type: string }
+                            description: { type: string, description: Actor documentation for generated clients. }
                             sandbox: { $ref: "#/components/schemas/SandboxOptions" }
                             socket:
                                 type: object
@@ -895,6 +896,7 @@ components:
             required: [name, parameters, result]
             properties:
                 name: { type: string }
+                description: { type: string, description: Method documentation for generated clients. }
                 parameters:
                     type: array
                     items:

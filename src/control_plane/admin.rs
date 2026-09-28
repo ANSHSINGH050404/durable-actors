@@ -85,7 +85,7 @@ impl HostLaunchSpec {
             );
             let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
             ensure!(
-                entrypoint.ends_with(".mjs")
+                (entrypoint.ends_with(".mjs") || entrypoint.ends_with(".pyz"))
                     && !std::path::Path::new(entrypoint)
                         .components()
                         .any(|part| matches!(

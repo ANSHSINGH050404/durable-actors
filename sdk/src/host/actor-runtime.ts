@@ -4,7 +4,6 @@ import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
-import { runInActorInvocation } from "../actor/invocationContext.js"
 import { Persistence } from "../actor/schema.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { ActorSocketScope } from "../actor/socket.js"
@@ -98,8 +97,7 @@ class ActorRuntime {
             const operation = await runWithActorSockets(
                 instance,
                 this.connections,
-                async () =>
-                    runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
+                async () => Reflect.apply(method, instance, command.args) as Promise<unknown>,
                 this.publish,
                 this.schemas
             )
@@ -138,7 +136,7 @@ class ActorRuntime {
                         throw new ActorProtocolError(
                             `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
                         )
-                    await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
+                    await (Reflect.apply(method, instance, args) as Promise<unknown>)
                 },
                 command.event.type === "connect" ? undefined : this.publish,
                 this.schemas

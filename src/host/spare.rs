@@ -3,7 +3,7 @@ use std::{future::Future, path::Path, time::Duration};
 use anyhow::{Context, Result, ensure};
 use tokio::net::TcpListener;
 
-use super::process::{ActorHostConfig, serve_assigned_host, spawn_javascript_process};
+use super::process::{ActorHostConfig, serve_assigned_host, spawn_executor_process};
 use crate::actor::{ActorExecutorListener, WarmExecutor};
 use crate::bucket::WarmGcs;
 
@@ -43,7 +43,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let bind = std::env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:7101".into());
     let listener = TcpListener::bind(bind).await?;
     let ipc = ActorExecutorListener::bind(&socket).await?;
-    let mut javascript = spawn_javascript_process(true, &socket)?;
+    let mut javascript = spawn_executor_process(true, &socket, None)?;
     let (warmed, control_plane) = tokio::join!(
         async {
             tokio::try_join!(
@@ -57,7 +57,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         },
         prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
     );
-    let (executor, storage) = warmed?;
+    let (mut executor, storage) = warmed?;
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
@@ -80,12 +80,19 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         .clone();
     ensure!(
         entrypoint.starts_with("/customer/")
-            && entrypoint.ends_with(".mjs")
+            && (entrypoint.ends_with(".mjs") || entrypoint.ends_with(".pyz"))
             && !Path::new(&entrypoint)
                 .components()
                 .any(|part| matches!(part, std::path::Component::ParentDir)),
         "customer entrypoint must be a compiled module under /customer"
     );
+    if entrypoint.ends_with(".pyz") {
+        javascript.kill().await?;
+        drop(executor);
+        let ipc = ActorExecutorListener::bind(&socket).await?;
+        javascript = spawn_executor_process(true, &socket, Some(&entrypoint))?;
+        executor = tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await??;
+    }
     let warm = WarmHost {
         readiness: Some(assigned.ready),
         listener,

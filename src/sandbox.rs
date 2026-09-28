@@ -17,6 +17,7 @@ pub(crate) mod pool;
 pub(crate) use local::LocalSandboxProvider;
 
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const PROVIDER_BUILD_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,7 +339,12 @@ impl CommandSandboxProvider {
             started_at,
             timings,
         );
-        tokio::time::timeout(PROVIDER_REQUEST_TIMEOUT, execution)
+        let timeout = if operation == "build_code" {
+            PROVIDER_BUILD_TIMEOUT
+        } else {
+            PROVIDER_REQUEST_TIMEOUT
+        };
+        tokio::time::timeout(timeout, execution)
             .await
             .context("sandbox provider command timed out; outcome may be unknown")?
     }

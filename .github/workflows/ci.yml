@@ -9,6 +9,9 @@ permissions:
     contents: read
 
 jobs:
+    python:
+        uses: ./.github/workflows/python.yml
+
     image:
         name: Runtime image (${{ matrix.arch }})
         strategy:
@@ -39,7 +42,9 @@ jobs:
                   load: true
                   tags: durable-actors:ci
             - name: Check the image executable
-              run: docker run --rm durable-actors:ci --version
+              run: |
+                  docker run --rm durable-actors:ci --version
+                  docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" durable-actors:ci /tmp/image_smoke.py
 
     go:
         name: Modal Go provider

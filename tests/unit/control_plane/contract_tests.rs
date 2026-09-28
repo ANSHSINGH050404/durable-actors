@@ -18,9 +18,11 @@ fn published_declarations_and_dependencies_are_preserved_and_hashed() -> Result<
     ))?;
     let original = PublicActorContract::new(document.clone())?;
     document["typescript"]["dependencies"] = json!({"ai": "7.0.97"});
+    document["actors"][0]["description"] = json!("A documented actor.");
+    document["actors"][0]["rpc"]["methods"][0]["description"] = json!("A documented RPC.");
     let changed = PublicActorContract::new(document.clone())?;
     assert_ne!(original.hash(), changed.hash());
-    assert_eq!(changed.document()["typescript"], document["typescript"]);
+    assert_eq!(changed.document(), &document);
     document["typescript"]["declarations"] = json!("");
     assert!(PublicActorContract::new(document).is_err());
     Ok(())
@@ -306,4 +308,15 @@ fn spec() -> HostLaunchSpec {
         actor_entrypoint: None,
         secret_refs: vec![],
     }
+}
+
+#[test]
+fn python_contracts_publish_without_typescript_declarations() -> Result<()> {
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    document.as_object_mut().unwrap().remove("typescript");
+    let contract = PublicActorContract::new(document.clone())?;
+    assert_eq!(contract.document(), &document);
+    Ok(())
 }

@@ -644,7 +644,9 @@ async fn connect_executor(
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(socket).await?;
-    let javascript = spawn_javascript_process(false, &socket.display().to_string())?;
+    let entrypoint = std::env::var("DURABLE_ACTORS_ENTRYPOINT").ok();
+    let javascript =
+        spawn_executor_process(false, &socket.display().to_string(), entrypoint.as_deref())?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -727,16 +729,33 @@ async fn stop_host_tasks(
     .await;
 }
 
-pub(super) fn spawn_javascript_process(
+pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
+    entrypoint: Option<&str>,
 ) -> Result<tokio::process::Child> {
-    Command::new("bun")
-        .args([
+    let mut command = if entrypoint.is_some_and(|path| path.ends_with(".pyz")) {
+        let mut command = Command::new(
+            std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
+        );
+        command.args(["-m", "little_actors.host"]);
+        if generic {
+            command.arg("--generic");
+        }
+        command
+    } else {
+        let mut command = Command::new("bun");
+        command.args([
             "--eval",
             "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
-        ])
-        .env("DURABLE_ACTORS_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
+        ]);
+        command
+    };
+    command
+        .env(
+            "DURABLE_ACTORS_GENERIC_EXECUTOR",
+            if generic { "1" } else { "0" },
+        )
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
         .stdin(Stdio::null())
@@ -744,7 +763,7 @@ pub(super) fn spawn_javascript_process(
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
-        .context("start JavaScript actor executor")
+        .context("start actor executor")
 }
 
 fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

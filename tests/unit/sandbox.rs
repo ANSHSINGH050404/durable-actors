@@ -182,3 +182,26 @@ fn test_provider() -> Result<(tempfile::TempDir, CommandSandboxProvider)> {
         CommandSandboxProvider::new("modal".into(), path.display().to_string(), HashMap::new())?;
     Ok((directory, provider))
 }
+
+#[tokio::test]
+async fn actor_builds_outlive_ordinary_provider_requests_but_remain_bounded() -> Result<()> {
+    let (directory, provider) = test_provider()?;
+    let marker = directory.path().join("building.pid");
+    let request = serde_json::json!({"marker": marker});
+    let mut build = Box::pin(provider.execute::<_, serde_json::Value>("build_code", &request));
+    let started = async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        result = &mut build => panic!("build should still be running: {result:?}"),
+        result = tokio::time::timeout(PROCESS_DEADLINE, started) => result?,
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(180)).await;
+    assert!(futures_util::poll!(&mut build).is_pending());
+    tokio::time::advance(Duration::from_secs(600)).await;
+    assert!(build.await.unwrap_err().to_string().contains("timed out"));
+    Ok(())
+}

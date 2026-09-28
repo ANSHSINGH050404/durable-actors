@@ -19,7 +19,6 @@ import type { TelemetrySink } from "./telemetry.js"
 const TARGET_EXPIRATION_SAFETY_MS = 5_000
 
 export class HttpActorClient {
-    private readonly beforeInvoke: (requestId: string) => void
     private settingsValue: RemoteActorSettings | undefined
     protected readonly environment: Environment
     protected readonly fetchRequest: typeof globalThis.fetch
@@ -31,7 +30,6 @@ export class HttpActorClient {
     protected readonly targets = new Map<string, TargetResolution>()
 
     constructor(options?: DurableActorsClientOptions, dependencies: HttpActorClientDependencies = {}) {
-        this.beforeInvoke = dependencies.beforeInvoke ?? (() => {})
         this.environment = dependencies.environment ?? runtimeEnvironment()
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
@@ -48,7 +46,6 @@ export class HttpActorClient {
         const timeline = new LatencyTimeline(this.monotonicNow)
         let outcome = "failed"
         try {
-            this.beforeInvoke(requestId)
             const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
             const result = await this.invokeAttempt(invocation, true, timeline)
@@ -323,6 +320,5 @@ export interface HttpActorClientDependencies {
     readonly now?: () => number
     readonly monotonicNow?: () => number
     readonly telemetry?: TelemetrySink
-    readonly beforeInvoke?: (requestId: string) => void
 }
 export type { DurableActorsClientOptions }

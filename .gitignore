@@ -13,3 +13,10 @@ dist-runtime/
 !.env.example
 .DS_Store
 Thumbs.db
+
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+sdk-python/dist/

@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+const providerRequestTimeout = 2 * time.Minute
+const actorBuildTimeout = 10 * time.Minute
+const actorBuildRequestTimeout = actorBuildTimeout + 2*time.Minute
 const maximumCommandBytes = 1024 * 1024
 const maximumContractBytes = 4 * 1024 * 1024
 const maximumResponseBytes = maximumContractBytes + 1024*1024
@@ -57,6 +60,12 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 }
 
 func (r *commandRunner) execute(ctx context.Context, cmd command, started time.Time, parsed int64) (any, error) {
+	timeout := providerRequestTimeout
+	if cmd.Operation == "build_code" {
+		timeout = actorBuildRequestTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	p := &provider{assigner: r.assigner, api: r.api, handles: r.handles, now: r.now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, r.now())}
 	switch cmd.Operation {
 	case "create_spare":

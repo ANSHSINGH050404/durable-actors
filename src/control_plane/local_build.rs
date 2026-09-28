@@ -64,7 +64,17 @@ impl LocalBuilds {
             .await?;
         let mut spec = source.clone();
         spec.source = Some(DeploymentSource::from(source));
-        spec.actor_entrypoint = Some(directory.path().join("actors.mjs").display().to_string());
+        spec.actor_entrypoint = Some(
+            directory
+                .path()
+                .join(if entrypoint.ends_with(".py") {
+                    "actors.pyz"
+                } else {
+                    "actors.mjs"
+                })
+                .display()
+                .to_string(),
+        );
         Ok(PreparedLocalBuild {
             spec,
             contract,
@@ -101,32 +111,46 @@ impl PreparedLocalBuild {
     }
 }
 
-pub(super) struct BunCodeCompiler {
+pub(super) struct ActorCodeCompiler {
     sdk_host: Option<PathBuf>,
 }
 
-impl BunCodeCompiler {
+impl ActorCodeCompiler {
     pub fn new(sdk_host: Option<PathBuf>) -> Self {
         Self { sdk_host }
     }
 }
 
 #[async_trait]
-impl LocalCodeCompiler for BunCodeCompiler {
+impl LocalCodeCompiler for ActorCodeCompiler {
     async fn compile(
         &self,
         project: &Path,
         entrypoint: &str,
         output: &Path,
     ) -> Result<PublicActorContract> {
-        let mut command = Command::new("bun");
-        command.current_dir(project)
-            .args(["--eval", "await import(new URL('compiler/deployment-build.js', import.meta.resolve(process.env.DURABLE_ACTORS_SDK_HOST ?? 'durable-actors/host')).href)"])
-            .arg("durable-actors-build").arg(project).arg(entrypoint).arg(output).arg("local")
+        let mut command = if entrypoint.ends_with(".py") {
+            let mut command = Command::new(
+                std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
+            );
+            command.args(["-m", "little_actors.build"]);
+            command
+        } else {
+            let mut command = Command::new("bun");
+            command.args(["--eval", "await import(new URL('compiler/deployment-build.js', import.meta.resolve(process.env.DURABLE_ACTORS_SDK_HOST ?? 'durable-actors/host')).href)"])
+                .arg("durable-actors-build");
+            if let Some(host) = &self.sdk_host {
+                command.env("DURABLE_ACTORS_SDK_HOST", host);
+            }
+            command
+        };
+        command
+            .current_dir(project)
+            .arg(project)
+            .arg(entrypoint)
+            .arg(output)
+            .arg("local")
             .kill_on_drop(true);
-        if let Some(host) = &self.sdk_host {
-            command.env("DURABLE_ACTORS_SDK_HOST", host);
-        }
         let result = command.output().await.context("run local actor build")?;
         ensure!(
             result.status.success(),
