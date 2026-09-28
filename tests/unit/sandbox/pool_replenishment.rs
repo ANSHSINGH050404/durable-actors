@@ -188,6 +188,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let spec = HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "project".into(), source: None, image_ref: "im-runtime".into(),
             code_snapshot: Some("im-code".into()), working_directory: "/customer".into(),
             actor_entrypoint: Some("actors.mjs".into()), secret_refs: vec![],
@@ -201,7 +202,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         let guard = stop.clone().drop_guard();
         let key = pool.key("im-runtime", "fast");
         wait_for_ready(&database, &key).await?;
-        assert!(pool.claim(&spec, "fast", "host").await?.is_some());
+        assert!(pool.claim(&spec, "fast", "host", &pool.config.resources).await?.is_some());
         wait_for_ready(&database, &key).await?;
         assert_eq!(database.query_one("SELECT count(*) FROM durable_actors_spares WHERE pool_key = $1 AND status = 'starting'", &[&pool.key("im-runtime", "slow")]).await?.get::<_, i64>(0), 1);
         drop(guard);

@@ -9,6 +9,21 @@ import ts from "typescript"
 
 import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
 import { generateClientArtifacts } from "../../src/compiler/generators/client-artifacts.js"
+import { parsePublicContract } from "../../src/compiler/validate-public-contract.js"
+
+test("sandbox overrides survive compilation and public contract transport", async t => {
+    const project = await createProject(t)
+    await project.write(`import { Sandbox as S } from "durable-actors"
+        @S({ cpu: 1.5, memoryMiB: 2048, regions: ["canada"], idleTimeoutMs: 60000 })
+        export class Room extends Actor { async read() { return 1 } }
+        export class Plain extends Actor { async read() { return 2 } }
+        throw new Error("must not execute actor code")`)
+    const deployment = new ActorCompiler().compileDeployment(project.entrypoint)
+    const transported = parsePublicContract(JSON.parse(JSON.stringify(deployment.contract)))
+    const options = { cpu: 1.5, memoryMiB: 2048, regions: ["canada"], idleTimeoutMs: 60000 }
+    assert.deepEqual(transported.actors.find(actor => actor.actorName === "Room")?.sandbox, options)
+    assert.equal(transported.actors.find(actor => actor.actorName === "Plain")?.sandbox, undefined)
+})
 
 test("public contracts survive JSON transport without actor source and with explicit dependency imports", async t => {
     const project = await createProject(t)

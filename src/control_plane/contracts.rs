@@ -13,6 +13,15 @@ pub(crate) struct PublicActorContract {
 }
 
 impl PublicActorContract {
+    pub(crate) fn sandboxes(&self) -> Result<BTreeMap<String, SandboxOptions>> {
+        let document: ContractDocument = serde_json::from_value(self.document.clone())?;
+        Ok(document
+            .actors
+            .into_iter()
+            .filter_map(|actor| actor.sandbox.map(|options| (actor.actor_name, options)))
+            .collect())
+    }
+
     pub(crate) fn new(document: Value) -> Result<Self> {
         let parsed: ContractDocument =
             serde_json::from_value(document.clone()).context("invalid public actor contract")?;
@@ -115,6 +124,9 @@ impl ContractDocument {
         );
         let mut names = HashSet::new();
         for actor in &self.actors {
+            if let Some(sandbox) = &actor.sandbox {
+                sandbox.validate()?;
+            }
             validate_actor_name(&actor.actor_name)?;
             ensure!(
                 names.insert(&actor.actor_name),
@@ -152,8 +164,71 @@ impl ContractDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActorApi {
     actor_name: String,
+    sandbox: Option<SandboxOptions>,
     socket: SocketContract,
     rpc: RpcContract,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SandboxOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<serde_json::Number>,
+    #[serde(default, rename = "memoryMiB", skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_ms: Option<u64>,
+}
+
+impl SandboxOptions {
+    pub(crate) fn resources(
+        &self,
+        mut defaults: crate::sandbox::ResourceLimits,
+    ) -> crate::sandbox::ResourceLimits {
+        if let Some(cpu) = self.cpu.as_ref().and_then(serde_json::Number::as_f64) {
+            defaults.cpu_millis = (cpu * 1000.0).round() as u32;
+        }
+        if let Some(memory) = self.memory_mib {
+            defaults.memory_mib = memory;
+        }
+        defaults
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if let Some(cpu) = &self.cpu {
+            let cpu = cpu.as_f64().context("invalid sandbox CPU")?;
+            ensure!(
+                (0.1..=64.0).contains(&cpu) && (cpu * 1000.0 - (cpu * 1000.0).round()).abs() < 1e-8,
+                "sandbox CPU must be 0.1–64 cores in increments of 0.001"
+            );
+        }
+        if let Some(memory) = self.memory_mib {
+            ensure!(
+                (128..=262144).contains(&memory),
+                "sandbox memory must be 128–262144 MiB"
+            );
+        }
+        if let Some(timeout) = self.idle_timeout_ms {
+            ensure!(
+                (1..=86400000).contains(&timeout),
+                "sandbox idle timeout must be 1–86400000 ms"
+            );
+        }
+        if let Some(regions) = &self.regions {
+            let unique: HashSet<_> = regions.iter().collect();
+            ensure!(
+                !regions.is_empty()
+                    && unique.len() == regions.len()
+                    && regions
+                        .iter()
+                        .all(|region| super::regions::ALL.contains(&region.as_str())),
+                "sandbox regions must be a nonempty list of unique supported regions"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]

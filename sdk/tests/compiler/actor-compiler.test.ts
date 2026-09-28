@@ -8,6 +8,20 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("rejects invalid or dynamic sandbox overrides", () => {
+    for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
+        const result = analyze(`import { Actor, Sandbox } from "./sdk.js"
+            const defaults = { cpu: 1 }
+            @Sandbox(${settings}) export class Room extends Actor { async read() {} }`)
+        assert.ok(result.diagnostics.length > 0, settings)
+    }
+    for (const declaration of [
+        "@Sandbox({}) @Sandbox({}) export class Room extends Actor {}",
+        "export class Room extends Actor { @Sandbox({}) async read() {} }"
+    ])
+        assert.ok(analyze(`import { Actor, Sandbox } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
+})
+
 test("recognizes aliased reentrant async methods", () => {
     const result = analyze(`import { Actor, Reentrant as R } from "./sdk.js"
         export class Room extends Actor { @R async stream() {} async read() {} }`)
@@ -449,6 +463,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Reentrant(...args: unknown[]) {}
+            export function Sandbox(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])

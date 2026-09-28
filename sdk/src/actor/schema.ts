@@ -1,5 +1,7 @@
 import type { SocketContract } from "../wire/contract.js"
 
+import type { SandboxOptions } from "./sandbox.js"
+
 const ACTOR_ARTIFACT_VERSION = 1
 
 enum Persistence {
@@ -18,6 +20,7 @@ interface ActorFieldSchema {
 interface ActorSchema {
     readonly actorName: string
     readonly fields: readonly ActorFieldSchema[]
+    readonly sandbox?: SandboxOptions
     readonly reentrantMethods?: readonly string[]
     readonly contract?: SocketContract
 }

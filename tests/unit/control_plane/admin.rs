@@ -46,6 +46,12 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let registry = PostgresAdminRegistry::from_database(database.clone());
         let mut deployment = spec("image-1");
+        let initial_key = deployment.host_config_key();
+        deployment.sandboxes.insert(
+            "Counter".into(),
+            serde_json::from_value(serde_json::json!({"cpu":2,"regions":["canada"]}))?,
+        );
+        assert_ne!(initial_key, deployment.host_config_key());
         deployment.secret_refs = vec!["project-secrets".into()];
         deployment.source = Some(DeploymentSource {
             image_ref: "im-source".into(),
@@ -72,6 +78,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         code_snapshot: None,

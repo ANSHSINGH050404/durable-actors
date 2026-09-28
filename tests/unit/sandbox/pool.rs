@@ -17,6 +17,24 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
 }
 
 #[tokio::test]
+async fn custom_resources_cannot_claim_default_sized_spares() -> Result<()> {
+    with_postgres(async |fixture| {
+        let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
+        let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+            "projectId":"default","imageRef":"im-runtime","codeSnapshot":"im-code","workingDirectory":"/customer","secretRefs":[]
+        }))?;
+        let key = pool.key("im-runtime", "canada");
+        let name = reserve(&pool.store, &key, 1).await?.unwrap();
+        let spare = SpareHandle {name, resource_id:"sb-test".into(), route:"https://host.test".into(), canonical_region:"canada".into(), control_route:String::new(), control_token:String::new()};
+        pool.store.publish(&key, &spare, 600).await?;
+        let larger = ResourceLimits {cpu_millis:2000, memory_mib:4096};
+        assert!(pool.claim(&spec, "canada", "custom", &larger).await?.is_none());
+        assert!(pool.claim(&spec, "canada", "default", &pool.config.resources).await?.is_some());
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
 async fn only_live_claims_can_become_routable() -> Result<()> {
     with_postgres(async |fixture| {
         let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
@@ -161,6 +179,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
         for (project, image) in [("team-a", "im-a"), ("team-b", "im-b")] {
             registry
                 .register_test_deployment(&HostLaunchSpec {
+                    sandboxes: Default::default(),
                     project_id: project.into(),
                     source: None,
                     image_ref: image.into(),

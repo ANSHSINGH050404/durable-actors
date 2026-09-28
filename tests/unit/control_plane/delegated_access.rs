@@ -159,6 +159,7 @@ async fn fixture(
     let registry = Arc::new(LocalAdminRegistry::default());
     let admin = AdminService::new(api_key.map(str::to_owned), registry.clone(), issuer.clone())?;
     let spec = HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         image_ref: "im-runtime".into(),

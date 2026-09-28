@@ -855,6 +855,7 @@ components:
                         required: [actorName, socket, rpc]
                         properties:
                             actorName: { type: string }
+                            sandbox: { $ref: "#/components/schemas/SandboxOptions" }
                             socket:
                                 type: object
                                 additionalProperties: false
@@ -871,6 +872,23 @@ components:
                                 properties:
                                     schema: { type: object, description: JSON Schema for RPC types. }
                                     methods: { type: array, items: { $ref: "#/components/schemas/RpcMethod" } }
+        SandboxOptions:
+            type: object
+            additionalProperties: false
+            description: Optional actor sandbox overrides compiled from the class decorator. Omitted fields inherit deployment defaults.
+            properties:
+                cpu: { type: number, minimum: 0.1, maximum: 64, multipleOf: 0.001 }
+                memoryMiB: { type: integer, minimum: 128, maximum: 262144 }
+                idleTimeoutMs: { type: integer, minimum: 1, maximum: 86400000 }
+                regions:
+                    type: array
+                    minItems: 1
+                    maxItems: 7
+                    uniqueItems: true
+                    description: Allowed compute regions. Order is not a preference; existing actors retain their saved home.
+                    items:
+                        type: string
+                        enum: [canada, north-america-east, north-america-central, north-america-south, north-america-west, europe-west, asia-southeast]
         RpcMethod:
             type: object
             additionalProperties: false

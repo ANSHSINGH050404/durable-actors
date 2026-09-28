@@ -115,6 +115,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             code_snapshot: None,

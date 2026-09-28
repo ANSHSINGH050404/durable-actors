@@ -179,6 +179,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             code_snapshot: None,
@@ -259,6 +260,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         provisioner.clone(),
     );
     let first = HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         code_snapshot: None,
@@ -428,6 +430,11 @@ fn existing_actors_stay_pinned_to_the_assigned_region() -> Result<()> {
         "north-america-east"
     );
     for (reported, expected) in [
+        ("canada", "canada"),
+        ("northamerica-northeast1", "canada"),
+        ("northamerica-northeast1-b", "canada"),
+        ("northamerica-northeast2", "canada"),
+        ("northamerica-northeast2-a", "canada"),
         ("us-east-1", "north-america-east"),
         ("us-west-2", "north-america-west"),
         ("us-central1", "north-america-central"),
@@ -462,6 +469,146 @@ fn execution_regions_do_not_require_separate_buckets() -> Result<()> {
         "north-america-south"
     );
     assert_eq!(select_target_region(None, "europe-west")?, "europe-west");
+    Ok(())
+}
+
+#[tokio::test]
+async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
+    for (existing, assigned, failures, succeeds, attempts) in [
+        (None, None, vec![], true, 1),
+        (None, Some("canada"), vec![], true, 1),
+        (None, Some("europe-west"), vec![], false, 0),
+        (Some("canada"), None, vec![], true, 1),
+        (Some("europe-west"), None, vec![], false, 0),
+        (None, None, vec!["north-america-east"], true, 2),
+        (None, None, vec!["north-america-east", "canada"], false, 2),
+        (Some("canada"), None, vec!["canada"], false, 1),
+    ] {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "invocation",
+            ActorTokenPurpose::Invocation,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+            "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
+            "sandboxes":{"Counter":{"regions":["canada","north-america-east"]}}
+        }))?;
+        registry.register_test_deployment(&spec).await?;
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        if let Some(region) = existing {
+            placements.set_owner(
+                &actor.storage_key(),
+                test_lease(&HostId::new("old-host")),
+                region,
+            )?;
+        }
+        let provisioner = Arc::new(FakeRoutingProvisioner {
+            failed_regions: failures,
+            calls: Mutex::new(vec![]),
+        });
+        let mut service =
+            ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+        service.region = Some("north-america-east".into());
+        let result = service
+            .route_actor(&actor, "north-america-east", assigned, None)
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            succeeds,
+            "existing={existing:?}, assigned={assigned:?}"
+        );
+        let calls = provisioner.calls.lock().unwrap();
+        assert_eq!(calls.len(), attempts);
+        assert!(
+            calls
+                .iter()
+                .all(|region| ["canada", "north-america-east"].contains(&region.as_str()))
+        );
+        if succeeds {
+            if let Some(region) = existing.or(assigned) {
+                assert_eq!(calls[0], region);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
+    let provider = Arc::new(crate::sandbox::CommandSandboxProvider::new(
+        "test".into(),
+        "false".into(),
+        Default::default(),
+    )?);
+    let provisioner = SandboxHostProvisioner::new(
+        provider,
+        HostSandboxRuntimeConfig {
+            control_plane_url: "http://control".into(),
+            jwt_issuer: "issuer".into(),
+            invocation_jwt_audience: "invocation".into(),
+            host_idle_timeout_ms: 10_000,
+        },
+        test_issuer()?,
+        None,
+    );
+    let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+        "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
+        "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
+    }))?;
+    let pool = crate::sandbox::pool::SparePool::new(
+        crate::postgres::PostgresDatabase::lazy("postgresql://localhost:1/unavailable")?,
+        provisioner.provider.clone(),
+        crate::sandbox::pool::PoolConfig {
+            control_plane_url: None,
+            kind: crate::sandbox::SpareKind::Actor,
+            idle: 0,
+            fleet_maximum: 64,
+            max_starting: 8,
+            idle_ttl_seconds: 600,
+            regions: vec!["north-america-east".into()],
+            resources: crate::sandbox::ResourceLimits {
+                cpu_millis: 4000,
+                memory_mib: 8192,
+            },
+        },
+    );
+    let provisioner = provisioner.with_pool(pool);
+    for (actor_name, cpu_millis, memory_mib) in [
+        ("Counter", 2500, 8192),
+        ("Room", 4000, 4096),
+        ("Plain", 4000, 8192),
+    ] {
+        let actor = ActorKey {
+            project_id: "default".into(),
+            actor_name: actor_name.into(),
+            actor_id: "one".into(),
+        };
+        let request = provisioner.request(&spec, "canada", &actor)?;
+        assert_eq!(
+            request.resources,
+            crate::sandbox::ResourceLimits {
+                cpu_millis,
+                memory_mib
+            }
+        );
+        assert_eq!(
+            request.host_idle_timeout_ms,
+            if actor_name == "Counter" {
+                60_000
+            } else {
+                10_000
+            }
+        );
+    }
     Ok(())
 }
 
@@ -526,6 +673,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             image_ref: "im-runtime".into(),
@@ -665,6 +813,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
                 code_snapshot: None,
@@ -715,8 +864,8 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
             .await;
         assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);
         if let Some(region) = expected_region {
-            let (selected, _, _) = result?;
-            assert_eq!(selected, region);
+            let selected = result?;
+            assert_eq!(selected.placement.home_region, region);
             assert_eq!(placements.get(&actor.storage_key()).await?, before);
         } else {
             assert!(result.is_err());
@@ -743,6 +892,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             code_snapshot: None,
@@ -848,6 +998,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             image_ref: "im-runtime".into(),
@@ -999,6 +1150,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
             HostLaunchSpec {
+                sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
                 image_ref: "im-runtime".into(),
@@ -1129,6 +1281,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     admin
         .register_test_deployment(&HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
             code_snapshot: None,
@@ -1560,6 +1713,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
 
 fn fixture_host(suffix: &str) -> HostId {
     let spec = HostLaunchSpec {
+        sandboxes: Default::default(),
         source: None,
         code_snapshot: None,
         project_id: "default".into(),
@@ -1588,6 +1742,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 let registry = Arc::new(LocalAdminRegistry::default());
                 registry
                     .register_test_deployment(&HostLaunchSpec {
+                        sandboxes: Default::default(),
                         project_id: project.into(),
                         source: None,
                         code_snapshot: None,

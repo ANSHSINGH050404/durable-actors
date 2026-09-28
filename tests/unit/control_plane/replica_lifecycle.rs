@@ -68,6 +68,7 @@ async fn an_unreachable_pending_assignment_is_replaced_after_controller_restart(
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
                 image_ref: "image".into(),
@@ -142,6 +143,7 @@ async fn repair_survives_controller_restart_and_cleanup_waits_for_membership_swi
         let provider = Arc::new(Provider::default());
         let registry = Arc::new(LocalAdminRegistry::default());
         registry.register_test_deployment(&HostLaunchSpec {
+    sandboxes: Default::default(),
     project_id: "default".into(), source: None, image_ref: "image".into(), code_snapshot: None, working_directory: "/app".into(), actor_entrypoint: None, secret_refs: vec![] }).await?;
         let fleet = || ActorReplicaFleet { provider: provider.clone(), registry: registry.clone(), store: Store(db.clone()), secret: "secret".into(), replica_regions: vec!["us-east".into(), "us-central".into()] };
         let original = fleet();

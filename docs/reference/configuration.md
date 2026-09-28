@@ -63,8 +63,31 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `1000`               | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
 | `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `1024`               | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
-| `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
+| `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
+
+### Per-actor sandbox overrides
+
+```ts
+import { Actor, Sandbox } from "durable-actors"
+
+@Sandbox({
+    cpu: 2,
+    memoryMiB: 2048,
+    regions: ["canada"],
+    idleTimeoutMs: 60_000,
+})
+export class CustomerAgent extends Actor {}
+```
+
+| Option | Meaning | Default when omitted |
+| --- | --- | --- |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 1. |
+| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 1024. |
+| `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
+| `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
+
+Supported regions: `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, `asia-southeast`.
 
 ### Authentication and callbacks
 

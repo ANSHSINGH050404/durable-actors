@@ -77,6 +77,17 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
         *malformed.pointer_mut(pointer).expect(pointer) = replacement;
         assert!(PublicActorContract::new(malformed).is_err(), "{pointer}");
     }
+    for sandbox in [
+        json!({"cpu":0}),
+        json!({"memoryMiB":127}),
+        json!({"idleTimeoutMs":0}),
+        json!({"regions":["unknown"]}),
+        json!({"regions":["canada","canada"]}),
+    ] {
+        let mut malformed = valid.clone();
+        malformed["actors"][0]["sandbox"] = sandbox;
+        assert!(PublicActorContract::new(malformed).is_err());
+    }
     let mut duplicate = valid.clone();
     duplicate["actors"]
         .as_array_mut()
@@ -286,6 +297,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
 
 fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         code_snapshot: None,

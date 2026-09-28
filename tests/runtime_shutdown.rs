@@ -325,9 +325,15 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             .spawn()?;
         let mut output = BufReader::new(runtime.stdout.take().context("runtime stdout")?);
         let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
+        let logs = tokio::spawn(async move {
+            let mut remaining = String::new();
+            output.read_to_string(&mut remaining).await?;
+            Ok::<_, std::io::Error>(remaining)
+        });
         assert!(!shell_directory.path().join("state/runtime.json").exists());
         let result = timeout(
-            Duration::from_secs(30),
+            // Each pass runs four builds and starts hosts for three projects.
+            Duration::from_secs(60),
             Command::new("node")
                 .arg(&script)
                 .arg(before.to_string())
@@ -338,14 +344,20 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
                 .kill_on_drop(true)
                 .output(),
         )
-        .await?;
+        .await;
         drop(runtime.stdin.take());
         let status = timeout(Duration::from_secs(10), runtime.wait()).await??;
-        ensure!(status.success(), "local runtime shutdown failed: {status}");
-        let result = result?;
+        let logs = logs.await??;
+        ensure!(
+            status.success(),
+            "local runtime shutdown failed: {status}\n{logs}"
+        );
+        let result = result.with_context(|| {
+            format!("deployment checks timed out on restart pass {before}\n{logs}")
+        })??;
         ensure!(
             result.status.success(),
-            "actor calls failed: {}",
+            "actor calls failed: {}\n{logs}",
             String::from_utf8_lossy(&result.stderr)
         );
     }

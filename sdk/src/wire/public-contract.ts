@@ -1,5 +1,7 @@
 import type { JSONSchema7 } from "json-schema"
 
+import type { SandboxOptions } from "../actor/sandbox.js"
+
 import type { SocketContract } from "./contract.js"
 
 interface PublicActorContract {
@@ -15,6 +17,7 @@ interface TypeScriptContract {
 
 interface ActorApi {
     readonly actorName: string
+    readonly sandbox?: SandboxOptions
     readonly socket: SocketContract
     readonly rpc: RpcContract
 }

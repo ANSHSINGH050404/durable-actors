@@ -9,6 +9,7 @@ import type { PublicActorContract } from "../wire/public-contract.js"
 import { DeclarationCompiler } from "./declarations.js"
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
 import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
+import { readSandbox, validateSandbox } from "./features/sandbox.js"
 import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
@@ -51,6 +52,7 @@ class ActorCompiler {
                 )
                 .map(schema => ({
                     actorName: schema.actorName,
+                    ...(schema.sandbox === undefined ? {} : { sandbox: schema.sandbox }),
                     socket: {
                         ...schema.contract,
                         schema: extractPublicSchema(schema.contract.schema, [
@@ -297,6 +299,8 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readEmission(use)
         case sdk.Reentrant:
             return readReentrancy(use)
+        case sdk.Sandbox:
+            return readSandbox(use)
         default:
             return { annotations: [], diagnostics: [] }
     }
@@ -311,9 +315,12 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...persistence.diagnostics)
         const reentrancy = validateReentrancy(actor)
         diagnostics.push(...reentrancy.diagnostics)
+        const sandbox = validateSandbox(actor)
+        diagnostics.push(...sandbox.diagnostics)
         schemas.push({
             actorName: actor.name,
             fields: persistence.fields,
+            ...(sandbox.options === undefined ? {} : { sandbox: sandbox.options }),
             ...(reentrancy.methods.length ? { reentrantMethods: reentrancy.methods } : {})
         })
     }
@@ -329,11 +336,13 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         return canonicalSymbol(checker, symbol)
     }
     const reentrant = exports.find(symbol => symbol.name === "Reentrant")
+    const sandbox = exports.find(symbol => symbol.name === "Sandbox")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
+        ...(sandbox === undefined ? {} : { Sandbox: canonicalSymbol(checker, sandbox) }),
         ...(reentrant === undefined ? {} : { Reentrant: canonicalSymbol(checker, reentrant) })
     }
 }

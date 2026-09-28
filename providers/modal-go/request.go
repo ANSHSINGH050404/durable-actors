@@ -71,7 +71,7 @@ func validateEnsure(request ensureRequest) error {
 }
 
 func modalRegion(region string) (string, error) {
-	regions := map[string]string{"north-america-east": "us-east", "north-america-central": "us-central", "north-america-south": "us-south", "north-america-west": "us-west", "europe-west": "eu-west", "asia-southeast": "ap-southeast"}
+	regions := map[string]string{"canada": "ca", "north-america-east": "us-east", "north-america-central": "us-central", "north-america-south": "us-south", "north-america-west": "us-west", "europe-west": "eu-west", "asia-southeast": "ap-southeast"}
 	if placement, ok := regions[region]; ok {
 		return placement, nil
 	}

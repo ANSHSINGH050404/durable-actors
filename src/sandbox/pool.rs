@@ -51,8 +51,12 @@ impl SparePool {
         spec: &HostLaunchSpec,
         region: &str,
         host: &str,
+        resources: &ResourceLimits,
     ) -> Result<Option<SpareHandle>> {
-        if spec.code_snapshot.is_none() || !spec.secret_refs.is_empty() {
+        if spec.code_snapshot.is_none()
+            || !spec.secret_refs.is_empty()
+            || resources != &self.config.resources
+        {
             return Ok(None);
         }
         let result = self

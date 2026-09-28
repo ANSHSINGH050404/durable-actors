@@ -149,7 +149,7 @@ impl ControlPlaneService {
             Some(builds) => Some(builds.prepare(source).await?),
             None => None,
         };
-        let (prepared, mut compiled_contract) = match &local_build {
+        let (mut prepared, mut compiled_contract) = match &local_build {
             Some(build) => (build.spec.clone(), Some(build.contract.clone())),
             None => {
                 self.provisioner
@@ -174,13 +174,12 @@ impl ControlPlaneService {
                 "supplied actor contract differs from compiled actor code"
             );
         }
-        let changed = self
-            .register_deployment(
-                admin,
-                &prepared,
-                compiled_contract.as_ref().or(supplied_contract),
-            )
-            .await?;
+        let contract = compiled_contract.as_ref().or(supplied_contract);
+        prepared.sandboxes = contract
+            .map(|contract| contract.sandboxes())
+            .transpose()?
+            .unwrap_or_default();
+        let changed = self.register_deployment(admin, &prepared, contract).await?;
         if let Some(build) = local_build {
             build.commit().await;
         }
@@ -247,11 +246,6 @@ impl ControlPlaneService {
     pub(super) fn validate_home_region(&self, assignment: Option<&str>) -> Result<()> {
         if let Some(assignment) = assignment {
             crate::placement::validate_region(assignment)?;
-        }
-        if let (Some(local), Some(assignment)) = (&self.region, assignment) {
-            if assignment != local {
-                return Err(RegionConflict.into());
-            }
         }
         Ok(())
     }
@@ -329,8 +323,7 @@ impl ControlPlaneService {
         grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
-        let idle_expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?
-            .saturating_add(self.provisioner.host_idle_timeout_ms());
+        let requested_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
         let target = self
             .route_actor(
                 actor,
@@ -339,6 +332,14 @@ impl ControlPlaneService {
                 timings.as_deref_mut(),
             )
             .await?;
+        let idle_expires_at_ms = requested_at_ms.saturating_add(
+            target
+                .spec
+                .sandboxes
+                .get(&actor.actor_name)
+                .and_then(|options| options.idle_timeout_ms)
+                .unwrap_or_else(|| self.provisioner.host_idle_timeout_ms()),
+        );
         let issued = self.host_token_issuer.issue_invocation_target(
             actor,
             &target.lease.id,
@@ -580,14 +581,19 @@ impl ControlPlaneService {
         mut timings: Option<&mut TargetResolutionTimings>,
     ) -> Result<RoutedActor> {
         self.validate_home_region(home_region)?;
-        let storage_region = match home_region {
-            Some(region) => region.to_owned(),
-            None => select_target_region(None, storage_region)?,
-        };
         let spec = self
             .runtime_deployment(&actor.project_id)
             .await?
             .context("project has no registered actor code")?;
+        let overrides_regions = spec
+            .sandboxes
+            .get(&actor.actor_name)
+            .is_some_and(|options| options.regions.is_some());
+        if !overrides_regions && let (Some(default), Some(assigned)) = (&self.region, home_region) {
+            if default != assigned {
+                return Err(RegionConflict.into());
+            }
+        }
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
@@ -600,6 +606,8 @@ impl ControlPlaneService {
         {
             return Err(RegionConflict.into());
         }
+        let regions =
+            placement_regions(&spec, actor, storage_region, home_region, current.as_ref())?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
         }
@@ -613,53 +621,55 @@ impl ControlPlaneService {
         if let Some(target) = active {
             return Ok(target);
         }
-        let (region, lease, owner_epoch) = match self
-            .ensure_actor_host(
+        let target = self
+            .provision_in_regions(
                 actor,
                 &spec,
                 current.as_ref(),
-                &storage_region,
                 owner_hint.as_ref(),
+                &regions,
             )
-            .await
-        {
-            Ok(target) => target,
-            Err(error) => {
-                let current = self.placements.get_owner(&actor.storage_key()).await?;
-                if let Some(target) = self.active_target(&current, &spec).await? {
-                    if home_region.is_some_and(|region| region != target.placement.home_region) {
-                        return Err(RegionConflict.into());
-                    }
-                    return Ok(target);
-                }
-                return Err(error);
-            }
-        };
+            .await?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.host_ensured_at_ms = Some(timings.elapsed_ms());
         }
-        ensure!(
-            owner_epoch > 0,
-            "host readiness returned no ownership epoch"
-        );
-        let placement = ObjectPlacement {
-            lease: lease.clone(),
-            object: actor.storage_key(),
-            owner: lease.id.clone(),
-            owner_epoch,
-            home_region: region,
-            state_version: 0,
-            state_object: None,
-            last_request_id: None,
-        };
         if let Some(timings) = timings {
             timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
         }
-        Ok(RoutedActor {
-            placement,
-            lease,
-            spec,
-        })
+        Ok(target)
+    }
+
+    async fn provision_in_regions(
+        &self,
+        actor: &ActorKey,
+        spec: &HostLaunchSpec,
+        current: Option<&ObjectPlacement>,
+        owner_hint: Option<&OwnershipHint>,
+        regions: &[String],
+    ) -> Result<RoutedActor> {
+        let mut last_error = None;
+        for region in regions {
+            match self
+                .ensure_actor_host(actor, spec, current, region, owner_hint)
+                .await
+            {
+                Ok(target) => return Ok(target),
+                Err(error) => {
+                    let current = self.placements.get_owner(&actor.storage_key()).await?;
+                    if let Some(placement) = &current {
+                        if !regions.contains(&placement.home_region) {
+                            return Err(RegionConflict.into());
+                        }
+                        if let Some(target) = self.active_target(&current, spec).await? {
+                            return Ok(target);
+                        }
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.context("actor has no eligible sandbox region")?)
     }
 
     async fn ensure_actor_host(
@@ -669,15 +679,32 @@ impl ControlPlaneService {
         current: Option<&ObjectPlacement>,
         requested_region: &str,
         owner_hint: Option<&OwnershipHint>,
-    ) -> Result<(String, HostLease, u64)> {
+    ) -> Result<RoutedActor> {
         let region = current
             .map(|p| p.home_region.clone())
             .unwrap_or_else(|| requested_region.to_owned());
-        let (lease, epoch) = self
+        let (lease, owner_epoch) = self
             .provisioner
             .ensure_actor_host(spec, &region, actor, current.is_none(), owner_hint)
             .await?;
-        Ok((region, lease, epoch))
+        ensure!(
+            owner_epoch > 0,
+            "host readiness returned no ownership epoch"
+        );
+        Ok(RoutedActor {
+            placement: ObjectPlacement {
+                lease: lease.clone(),
+                object: actor.storage_key(),
+                owner: lease.id.clone(),
+                owner_epoch,
+                home_region: region,
+                state_version: 0,
+                state_object: None,
+                last_request_id: None,
+            },
+            lease,
+            spec: spec.clone(),
+        })
     }
 
     async fn require_active_host(&self, principal: &ActorPrincipal) -> Result<HostLease> {
@@ -742,13 +769,46 @@ fn select_target_region(current: Option<&ObjectPlacement>, requested: &str) -> R
     Ok(region.into())
 }
 
+fn placement_regions(
+    spec: &HostLaunchSpec,
+    actor: &ActorKey,
+    requested: &str,
+    assignment: Option<&str>,
+    current: Option<&ObjectPlacement>,
+) -> Result<Vec<String>> {
+    let allowed = spec
+        .sandboxes
+        .get(&actor.actor_name)
+        .and_then(|options| options.regions.as_ref());
+    if let Some(region) =
+        assignment.or_else(|| current.map(|placement| placement.home_region.as_str()))
+    {
+        if allowed.is_some_and(|regions| !regions.iter().any(|allowed| allowed == region)) {
+            return Err(RegionConflict.into());
+        }
+        return Ok(vec![region.into()]);
+    }
+    let requested = select_target_region(None, requested)?;
+    let Some(allowed) = allowed else {
+        return Ok(vec![requested]);
+    };
+    let mut regions = allowed.clone();
+    regions.sort_by_cached_key(|region| {
+        let identity =
+            serde_json::to_vec(&(actor, region)).expect("placement identity is serializable");
+        let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &identity);
+        (region != &requested, digest.as_ref().to_vec())
+    });
+    Ok(regions)
+}
+
 #[derive(Debug)]
 pub(super) struct RegionConflict;
 
 impl std::fmt::Display for RegionConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
-            "homeRegion conflicts with the control-plane region or existing actor ownership",
+            "homeRegion conflicts with the control-plane region, allowed sandbox regions, or existing actor ownership",
         )
     }
 }
@@ -878,6 +938,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
         let prepared = HostLaunchSpec {
+            sandboxes: Default::default(),
             project_id: source.project_id.clone(),
             source: Some(input),
             image_ref: image.clone(),
@@ -979,7 +1040,10 @@ impl SandboxHostProvisioner {
         };
         let spare = async {
             match &self.pool {
-                Some(pool) => pool.claim(spec, region, request.host_id.as_str()).await,
+                Some(pool) => {
+                    pool.claim(spec, region, request.host_id.as_str(), &request.resources)
+                        .await
+                }
                 None => Ok(None),
             }
         };
@@ -1004,9 +1068,6 @@ impl SandboxHostProvisioner {
                 return Err(error);
             }
         };
-        if let Some(pool) = &self.pool {
-            request.resources = pool.config.resources.clone();
-        }
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -1116,6 +1177,17 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
     ) -> Result<EnsureHostRequest> {
+        let options = spec
+            .sandboxes
+            .get(&actor.actor_name)
+            .cloned()
+            .unwrap_or_default();
+        options.validate()?;
+        let defaults = self
+            .pool
+            .as_ref()
+            .map(|pool| pool.config.resources.clone())
+            .unwrap_or_default();
         let config_key = spec.host_config_key();
         let host_id = HostId::new(format!("host.v3.{}.{}", config_key, uuid::Uuid::new_v4()));
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -1129,7 +1201,7 @@ impl SandboxHostProvisioner {
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
             spare: None,
-            resources: Default::default(),
+            resources: options.resources(defaults),
             runtime_config: None,
             host_config_key: config_key,
             canonical_region: region.to_owned(),
@@ -1148,7 +1220,9 @@ impl SandboxHostProvisioner {
                 .clone()
                 .or_else(|| spec.code_snapshot.as_ref().map(|_| "actors.mjs".into())),
             secret_refs: spec.secret_refs.clone(),
-            host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
+            host_idle_timeout_ms: options
+                .idle_timeout_ms
+                .unwrap_or(self.runtime.host_idle_timeout_ms),
         })
     }
 }

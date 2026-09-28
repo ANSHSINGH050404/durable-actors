@@ -1,4 +1,5 @@
 pub(super) const ALL: &[&str] = &[
+    "canada",
     "north-america-east",
     "north-america-central",
     "north-america-south",
@@ -15,6 +16,8 @@ pub(super) fn storage_region(region: &str) -> Result<&str> {
             if matches!(
                 base,
                 "us-east1"
+                    | "northamerica-northeast1"
+                    | "northamerica-northeast2"
                     | "us-east4"
                     | "us-east5"
                     | "us-central1"
@@ -35,12 +38,14 @@ pub(super) fn storage_region(region: &str) -> Result<&str> {
         _ => region,
     };
     match location {
-        "north-america-east"
+        "canada"
+        | "north-america-east"
         | "north-america-central"
         | "north-america-south"
         | "north-america-west"
         | "europe-west"
         | "asia-southeast" => Ok(region),
+        "northamerica-northeast1" | "northamerica-northeast2" => Ok("canada"),
         "us-east-1" | "us-east-2" | "us-east1" | "us-east4" | "us-east5" | "us-ashburn-1"
         | "eastus" | "eastus2" => Ok("north-america-east"),
         "us-central1" | "us-chicago-1" | "centralus" | "northcentralus" => {
