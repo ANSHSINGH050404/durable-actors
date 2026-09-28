@@ -1,10 +1,17 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
+use async_trait::async_trait;
 use gcp_auth::TokenProvider;
 use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     clock::{Clock, SystemClock},
@@ -44,12 +51,10 @@ impl std::fmt::Debug for StorageToken {
 }
 
 pub(crate) struct RuntimeAccess {
-    credentials: Option<StorageCredentials>,
-    http: reqwest::Client,
     location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
-    tokens: moka::future::Cache<(), StorageToken>,
+    tokens: Option<StorageTokens>,
     storage: Arc<super::RuntimeStorage>,
     initial: moka::future::Cache<String, super::ReplicaMembership>,
     targets: moka::future::Cache<String, Vec<ReplicaTarget>>,
@@ -63,13 +68,19 @@ impl RuntimeAccess {
         storage: Arc<super::RuntimeStorage>,
     ) -> Result<Self> {
         Ok(Self {
-            credentials: match &location {
-                BucketLocation::Gcs { .. } => Some(StorageCredentials::new()?),
+            tokens: match &location {
+                BucketLocation::Gcs { bucket } => Some(StorageTokens::new(
+                    Arc::new(GcsTokenSource {
+                        bucket: bucket.clone(),
+                        credentials: StorageCredentials::new()?,
+                        http: reqwest::Client::builder()
+                            .timeout(Duration::from_secs(20))
+                            .build()?,
+                    }),
+                    Arc::new(SystemClock),
+                )),
                 BucketLocation::File { .. } => None,
             },
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(20))
-                .build()?,
             location,
             fleet,
             replicas,
@@ -80,10 +91,6 @@ impl RuntimeAccess {
                 .build(),
             targets: moka::future::Cache::builder()
                 .max_capacity(10_000)
-                .time_to_live(Duration::from_secs(300))
-                .build(),
-            tokens: moka::future::Cache::builder()
-                .max_capacity(1)
                 .time_to_live(Duration::from_secs(300))
                 .build(),
         })
@@ -142,33 +149,111 @@ impl RuntimeAccess {
     }
 
     pub async fn issue(&self) -> Result<Option<StorageToken>> {
-        if matches!(self.location, BucketLocation::File { .. }) {
-            return Ok(None);
+        match &self.tokens {
+            Some(tokens) => tokens.issue().await.map(Some),
+            None => Ok(None),
         }
-        if let Some(token) = self.tokens.get(&()).await {
-            if token.expires_at_ms > SystemClock.now_ms()? + 60_000 {
-                return Ok(Some(token));
-            }
-            self.tokens.invalidate(&()).await;
+    }
+}
+
+const TOKEN_MIN_LIFETIME_MS: u64 = 60_000;
+const TOKEN_REFRESH_MARGIN_MS: u64 = 120_000;
+const TOKEN_REFRESH_RETRY: Duration = Duration::from_secs(10);
+
+struct StorageTokens {
+    cache: Arc<TokenCache>,
+    _refresh: AbortOnDropHandle<()>,
+}
+
+impl StorageTokens {
+    fn new(source: Arc<dyn StorageTokenSource>, clock: Arc<dyn Clock>) -> Self {
+        let cache = Arc::new(TokenCache {
+            source,
+            clock,
+            token: RwLock::new(None),
+            exchange: Mutex::new(()),
+        });
+        Self {
+            _refresh: AbortOnDropHandle::new(tokio::spawn(cache.clone().refresh())),
+            cache,
         }
-        self.tokens
-            .try_get_with((), self.exchange())
-            .await
-            .map(Some)
-            .map_err(|error| anyhow::anyhow!("{error:#}"))
     }
 
-    async fn exchange(&self) -> Result<StorageToken> {
-        let BucketLocation::Gcs { bucket } = &self.location else {
-            anyhow::bail!("local buckets do not need credentials")
-        };
-        let boundary = boundary(bucket);
-        let source = self
-            .credentials
+    async fn issue(&self) -> Result<StorageToken> {
+        self.cache.get(TOKEN_MIN_LIFETIME_MS).await
+    }
+}
+
+struct TokenCache {
+    source: Arc<dyn StorageTokenSource>,
+    clock: Arc<dyn Clock>,
+    token: RwLock<Option<StorageToken>>,
+    exchange: Mutex<()>,
+}
+
+impl TokenCache {
+    async fn refresh(self: Arc<Self>) {
+        loop {
+            let delay = match self.refresh_delay().await {
+                Ok(delay) => delay,
+                Err(error) => {
+                    tracing::warn!(%error, "could not refresh scoped GCS credentials");
+                    TOKEN_REFRESH_RETRY
+                }
+            };
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    async fn refresh_delay(&self) -> Result<Duration> {
+        let token = self.get(TOKEN_REFRESH_MARGIN_MS).await?;
+        let remaining = token
+            .expires_at_ms
+            .saturating_sub(self.clock.now_ms()?.saturating_add(TOKEN_REFRESH_MARGIN_MS));
+        Ok(Duration::from_millis(remaining).max(TOKEN_REFRESH_RETRY))
+    }
+
+    async fn get(&self, minimum_lifetime_ms: u64) -> Result<StorageToken> {
+        if let Some(token) = self.cached(minimum_lifetime_ms)? {
+            return Ok(token);
+        }
+        let _exchange = self.exchange.lock().await;
+        if let Some(token) = self.cached(minimum_lifetime_ms)? {
+            return Ok(token);
+        }
+        let token = self.source.exchange().await?;
+        *self.token.write().unwrap() = Some(token.clone());
+        Ok(token)
+    }
+
+    fn cached(&self, minimum_lifetime_ms: u64) -> Result<Option<StorageToken>> {
+        let deadline = self.clock.now_ms()?.saturating_add(minimum_lifetime_ms);
+        Ok(self
+            .token
+            .read()
+            .unwrap()
             .as_ref()
-            .context("GCS credentials missing")?
-            .token()
-            .await?;
+            .filter(|token| token.expires_at_ms > deadline)
+            .cloned())
+    }
+}
+
+#[async_trait]
+trait StorageTokenSource: Send + Sync {
+    async fn exchange(&self) -> Result<StorageToken>;
+}
+
+struct GcsTokenSource {
+    bucket: String,
+    credentials: StorageCredentials,
+    http: reqwest::Client,
+}
+
+#[async_trait]
+impl StorageTokenSource for GcsTokenSource {
+    async fn exchange(&self) -> Result<StorageToken> {
+        let boundary = boundary(&self.bucket);
+        let source = self.credentials.token().await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
             (
