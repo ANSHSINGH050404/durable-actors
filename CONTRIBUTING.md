@@ -6,7 +6,7 @@ Please follow our [code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities 
 
 ## Set up the repository
 
-To use Durable Actors in your own application, start with the [quickstart](README.md#local-development). To develop this repository, install:
+To use Durable Actors in your own application, start with the [language quickstarts](README.md#languages). To develop this repository, install:
 
 - Node.js 22.19+ and pnpm 10.17.1 (the pinned workspace version).
 - Bun 1.3.9+; CI exercises both 1.3.9 and 1.4.2.
@@ -104,7 +104,7 @@ Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip withou
 pnpm --dir sdk exec tsc -p tsconfig.test.json
 DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" node --test sdk/.test-dist/tests/cli/python.test.js
 ```
- The release workflow requires the PyPI trusted publisher described in the [Python reference](docs/reference/python.md#releases).
+The release workflow requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for package `durable-actors`: owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`.
 
 For SDK packaging or documentation changes, run the relevant checks:
 

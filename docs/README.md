@@ -1,8 +1,8 @@
-# Reference
+# Documentation
 
-| Reference     | Where to find it                                                |
-| ------------- | --------------------------------------------------------------- |
-| TypeScript    | [SDK documentation](reference/typescript.md).                    |
-| Python        | [Actor SDK and generated clients](reference/python.md).          |
-| HTTP          | [OpenAPI instructions](reference/openapi.md).                    |
-| Configuration | [Environment variables](reference/configuration.md).             |
+| Language | SDK and quickstart | Reference | Runnable example |
+| --- | --- | --- | --- |
+| TypeScript | [TypeScript SDK](../sdk/README.md) | [API](reference/typescript.md) | [Chatroom](../examples/chat/README.md) |
+| Python | [Python SDK](../sdk-python/README.md) | [API](reference/python.md) | [Chat](../examples/python/README.md) |
+
+[HTTP API](reference/openapi.md) · [Configuration](reference/configuration.md)

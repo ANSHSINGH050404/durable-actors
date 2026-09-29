@@ -1,14 +1,12 @@
-# TypeScript documentation
+# TypeScript reference
 
-Hover over SDK exports in your editor for types and API documentation.
+[Quickstart](../../sdk/README.md#quickstart) · [Runnable example](../../examples/chat/README.md)
 
-To generate browsable TypeDoc documentation, run from the repository root:
+Hover over SDK exports for API documentation, or build the full reference from the repository root:
 
 ```sh
 pnpm install
 pnpm docs:build
 ```
 
-Open `.artifacts/api/index.html` in your browser. The documentation covers the SDK, backend helpers, proxy, and local runtime APIs.
-
-Rerun `pnpm docs:build` after changing the SDK to refresh the documentation.
+Open `.artifacts/api/index.html` for actor, client, backend, proxy, and local runtime APIs.

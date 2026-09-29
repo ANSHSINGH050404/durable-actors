@@ -1,23 +1,39 @@
 # Python chat actor
 
-From the repository root, build the runtime with `cargo build --locked`, install Node dependencies with `pnpm install`, and build the shared CLI with `pnpm --dir sdk build`.
+Persistent messages, typed RPCs, and live state updates.
 
-In this directory:
+[Quickstart](../../sdk-python/README.md#quickstart) · [Reference](../../docs/reference/python.md) · [Actor](actors.py) · [Client](client.py) · [Subscriber](watch.py)
+
+## Run
+
+From the repository root, build the runtime and shared CLI:
 
 ```sh
+cargo build --locked
+pnpm install
+pnpm --dir sdk build
+cd examples/python
 uv sync
-DURABLE_ACTORS_BINARY="$(pwd)/../../target/debug/durable-actors" DURABLE_ACTORS_ENTRYPOINT=actors.py node ../../sdk/dist/cli.js dev
+DURABLE_ACTORS_BINARY="$PWD/../../target/debug/durable-actors" DURABLE_ACTORS_ENTRYPOINT=actors.py node ../../sdk/dist/cli.js dev
 ```
 
-In a second terminal, from this directory:
+In a second terminal, from `examples/python`:
 
 ```sh
 node ../../sdk/dist/cli.js generate
 uv run client.py
+uv run watch.py
 ```
 
-Actor methods, socket hooks, and clients use a synchronous API with ordinary `def`. The shared TypeScript CLI finds `.venv`, runs strict mypy, and generates Python clients. Import `actors` from `generated`, then use `actors.Chat.get("lobby")` with the SDK-managed connection pool. The handle accepts `actors.Chat.Message` and returns typed messages that persist across runtime restarts. `chat.connect(actors.Chat.Metadata(name="Ada"))` opens a typed WebSocket. Actor and method types use the same namespace paths as TypeScript, including `actors.Chat.Stub` and `actors.Chat.Methods.append.Result`.
+The client saves a message; the watcher prints live history until you press Enter. Restart the actor server to verify that messages persist.
 
-Run `uv run watch.py` to subscribe to typed state updates and make an RPC call in the same process. The SDK merges updates and calls the callback in the background. Press Enter to close the subscription.
+## Call the actor
 
-The example uses the repository SDK through `tool.uv.sources`. Remove that table when using the published package.
+```python
+from generated import actors
+
+chat = actors.Chat.get("lobby")
+print(chat.append(actors.Chat.Message(text="Hello from Python")))
+```
+
+This example uses the repository SDK through `tool.uv.sources`; remove that table to use the published package.

@@ -1,6 +1,8 @@
 # Chatroom
 
-An Express + React chatroom backed by a durable actor. Messages appear in every connected tab, and history survives server restarts.
+An Express + React chatroom with shared messages and persistent history.
+
+[Quickstart](../../sdk/README.md#quickstart) · [Reference](../../docs/reference/typescript.md)
 
 ## Run locally
 
@@ -22,11 +24,11 @@ Wait for `Ready`. In another terminal in the same directory:
 npm run dev
 ```
 
-Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Send a message, then restart the actor server and reload to see the saved history.
+Open [localhost:3000](http://127.0.0.1:3000) in two tabs; messages stay saved after an actor server restart.
 
 ## Define the actor
 
-[ChatRoom](src/actors.ts) saves messages and sends the updated history to everyone in the room:
+[ChatRoom](src/actors.ts) saves and broadcasts messages; each room ID has its own history:
 
 ```ts
 import { Actor, Persisted } from "durable-actors"
@@ -49,8 +51,6 @@ type Member = { name: string }
 type ChatMessage = { name: string; text: string }
 ```
 
-Each room ID has its own history.
-
 ## Connect the app
 
 The [Express backend](src/backend.ts) issues a WebSocket URL with `actors.ChatRoom.prepareWebsocket`. The [React client](src/Chat.tsx) connects and sends JSON messages:
@@ -65,10 +65,12 @@ socket.onopen = () => socket.send(JSON.stringify("Hello"))
 socket.onmessage = event => console.log(JSON.parse(event.data))
 ```
 
-Everyone joins as a guest. Add authentication and room access checks before issuing URLs in your app. Reload to reconnect after a disconnect.
+The demo joins as a guest; add authentication and room access checks before issuing URLs in your app. Reload to reconnect.
 
 ## Development
 
-Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](https://github.com/TerseAI/durable-actors/tree/main/examples#run-the-examples-together).
+Actors reload automatically; restart `npm run dev` after changing public actor types. See [port settings](../README.md#run-the-examples-together) to run multiple examples.
 
-`npm run build` generates clients, checks TypeScript, and builds the frontend.
+```sh
+npm run build
+```

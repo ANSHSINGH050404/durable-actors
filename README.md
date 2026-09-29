@@ -46,9 +46,9 @@ The SDK provides actor classes, type-safe clients, and WebSocket support. The ru
 
 For example, a chat actor can keep a conversation across server restarts, or a document actor can coordinate edits from several people and agents without each caller managing database locks.
 
-## Python
+## Languages
 
-Define actors in Python and generate typed Python clients using the `durable-actors` Python package and the shared `durable-actors` CLI. See the [Python quickstart](sdk-python/README.md), [reference](docs/reference/python.md), and [runnable example](examples/python).
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](sdk/README.md) [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](sdk-python/README.md)
 
 ## Local development
 
