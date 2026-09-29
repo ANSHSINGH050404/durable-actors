@@ -34,6 +34,14 @@ messages: actors.Chat.Methods.append.Result = chat.append(actors.Chat.Message(te
 print(messages[0].text)
 ```
 
+If you copy a client into another application, copy the entire generated package, including its helper modules, and install its runtime dependency from that application's root:
+
+```sh
+uv add durable-actors
+```
+
+Each application that runs a generated client must declare `durable-actors`. Its runtime dependencies are installed automatically; the `[codegen]` extras are only needed to generate or regenerate clients, not to run them.
+
 ## State subscriptions
 
 Callbacks receive complete typed snapshots of emitted fields on a background thread. Failures stop the subscription and reach `on_error`; use `with` to close it.

@@ -49,6 +49,16 @@ counter = actors.Counter.get("one")
 print(counter.increment())
 ```
 
+## Use the client in another application
+
+Copy the entire generated package, including its helper modules, into the application. From that application's root, install the client runtime:
+
+```sh
+uv add durable-actors
+```
+
+This installs the runtime dependencies automatically. The `[codegen]` extras are only needed to generate or regenerate clients, not to run them.
+
 ## Subscribe to state
 
 Callbacks receive complete typed snapshots on a background thread. Keep the process running while listening; the context manager closes the subscription.
