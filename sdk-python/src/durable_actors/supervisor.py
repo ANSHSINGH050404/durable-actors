@@ -11,7 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 from .contract import Document
-from .executor_wire import MAX_BYTES, Channel
+from .executor_wire import Channel
 from .runtime import failed
 
 
@@ -205,7 +205,7 @@ class Worker(Channel):
             child.close()
         worker: Worker | None = None
         try:
-            reader, writer = await asyncio.open_connection(sock=parent, limit=MAX_BYTES)
+            reader, writer = await asyncio.open_connection(sock=parent, limit=sys.maxsize)
             worker = cls(reader, writer, process)
             async with asyncio.timeout(60):
                 attach = await worker.read()

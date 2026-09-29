@@ -1,46 +1,36 @@
 use super::*;
 
 #[tokio::test]
-async fn first_write_commits_without_waiting_for_replica_provisioning() -> Result<()> {
-    use crate::{
-        state_log::StateSnapshot,
-        state_transport::{SnapshotWriter, StateWrite},
-    };
-    struct PendingFleet;
-    #[async_trait]
-    impl crate::replication::ReplicaProvisioner for PendingFleet {
-        fn replica_regions(&self) -> Vec<String> {
-            vec!["us-east".into()]
-        }
-        async fn ensure(&self, _: &ReplicaScope) -> Result<Vec<ReplicaTarget>> {
-            std::future::pending().await
-        }
-    }
+async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
     let mut f = Fixture::new()?;
-    f.runtime.fleet = Arc::new(PendingFleet);
-    let activation = f
+    let directory = tempfile::tempdir()?;
+    let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
+    f.runtime = f.runtime.with_persistence(
+        crate::bucket::PersistenceConfig::Local,
+        Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
+    )?;
+    let active = f
         .runtime
         .register_activation(&f.actor, &request("first"), "us-east", true, None)
-        .await?
-        .placement;
-    let plan = tokio::time::timeout(
-        Duration::from_millis(100),
-        f.runtime
-            .prepare_actor_write(&f.actor, &activation.lease, 1, 1),
-    )
-    .await??;
-    assert!(plan.replication.is_none());
-    let bytes = StateSnapshot::new(
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
         1,
         1,
-        "first".into(),
-        serde_json::json!({"count": 1}),
-        serde_json::json!(1),
+        "write".into(),
+        serde_json::json!({"count":42}),
+        serde_json::json!(42),
     )?
     .encode()?;
+    f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+    assert!(f.bucket.get(&plan.object_name).await?.is_none());
     assert_eq!(
-        f.runtime.write_snapshot(&plan, bytes.clone()).await?,
-        StateWrite::Written
+        snapshots.get(&plan.object_name).await?.unwrap().bytes,
+        bytes
     );
     f.clock.0.store(11_000, Ordering::SeqCst);
     let resumed = f
@@ -50,9 +40,8 @@ async fn first_write_commits_without_waiting_for_replica_provisioning() -> Resul
     assert_eq!(resumed.state.unwrap().as_ref(), bytes);
     Ok(())
 }
-use crate::{
-    bucket::FileBucket, clock::Clock, host_leases::HostLeaseRequest, replication::ReplicaSet,
-};
+
+use crate::{bucket::FileBucket, clock::Clock, host_leases::HostLeaseRequest};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 struct TestClock(AtomicU64);
@@ -65,9 +54,6 @@ impl Clock for TestClock {
 struct CountedBucket {
     inner: FileBucket,
     reads: AtomicU64,
-    session_reads: AtomicU64,
-    session_read_wait: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
-    paused_list: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
     writes: AtomicU64,
     lists: AtomicU64,
     lose_reply: AtomicBool,
@@ -78,15 +64,6 @@ struct CountedBucket {
 impl Bucket for CountedBucket {
     async fn get(&self, key: &str) -> Result<Option<super::super::BucketObject>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        let wait = if key.contains("/sessions/") {
-            self.session_reads.fetch_add(1, Ordering::SeqCst);
-            self.session_read_wait.lock().unwrap().take()
-        } else {
-            None
-        };
-        if let Some(wait) = wait {
-            wait.acquire().await?.forget();
-        }
         self.inner.get(key).await
     }
     async fn compare_and_swap(
@@ -111,11 +88,6 @@ impl Bucket for CountedBucket {
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.lists.fetch_add(1, Ordering::SeqCst);
         let keys = self.inner.list(prefix).await?;
-        let paused = self.paused_list.lock().unwrap().take();
-        if let Some((entered, resume)) = paused {
-            entered.add_permits(1);
-            resume.acquire().await?.forget();
-        }
         Ok(keys)
     }
 }
@@ -134,24 +106,13 @@ impl Fixture {
         let bucket = Arc::new(CountedBucket {
             inner: FileBucket::new(directory.path().into())?,
             reads: AtomicU64::new(0),
-            session_reads: AtomicU64::new(0),
-            session_read_wait: Mutex::new(None),
-            paused_list: Mutex::new(None),
             writes: AtomicU64::new(0),
             lists: AtomicU64::new(0),
             lose_reply: AtomicBool::new(false),
             delay_write: Mutex::new(None),
         });
         let clock = Arc::new(TestClock(AtomicU64::new(1000)));
-        let access = ReplicaAccess::new("secret", clock.clone());
-        let runtime = RuntimeStorage::new(
-            bucket.clone(),
-            Arc::new(ReplicaSet::default()),
-            Arc::new(crate::bucket::GrpcReplicaPeers::new(access.clone())?),
-            access,
-            "http://control".into(),
-            clock.clone(),
-        )?;
+        let runtime = RuntimeStorage::new(bucket.clone(), clock.clone())?;
         Ok(Self {
             _directory: directory,
             bucket,
@@ -163,47 +124,6 @@ impl Fixture {
                 actor_id: "one".into(),
             },
         })
-    }
-
-    async fn replicate(&mut self, lease: &HostLease) -> Result<Arc<DiskPeers>> {
-        use crate::replication::FileReplicaStore;
-        let mut stores = HashMap::new();
-        let mut targets = Vec::new();
-        for region in ["us-east", "us-central"] {
-            stores.insert(
-                region.into(),
-                Arc::new(FileReplicaStore::open(self._directory.path().join(region), 4096).await?),
-            );
-            targets.push(ReplicaTarget {
-                host_id: region.into(),
-                url: format!("http://{region}"),
-                region: region.into(),
-            });
-        }
-        let peers = Arc::new(DiskPeers {
-            stores,
-            available: std::sync::atomic::AtomicBool::new(true),
-        });
-        self.runtime.fleet = Arc::new(ReplicaSet(targets));
-        self.runtime.peers = peers.clone();
-        let scope = ReplicaScope {
-            actor: self.actor.clone(),
-            host: lease.id.clone(),
-            session: lease.session_id.clone(),
-            region: "us-east".into(),
-        };
-        let targets = self.runtime.fleet.ensure(&scope).await?;
-        let membership = self
-            .runtime
-            .replace_replicas(
-                &scope,
-                targets,
-                None,
-                &crate::state_transport::GrpcStateTransport::new(),
-            )
-            .await?;
-        self.runtime.enable_replication(membership)?;
-        Ok(peers)
     }
 }
 
@@ -438,175 +358,6 @@ async fn expired_activation_cannot_renew_or_reacquire_with_the_same_session() ->
     Ok(())
 }
 
-struct DiskPeers {
-    stores: HashMap<String, Arc<crate::replication::FileReplicaStore>>,
-    available: std::sync::atomic::AtomicBool,
-}
-
-#[async_trait]
-impl ReplicaPeers for DiskPeers {
-    async fn initialize(&self, target: &ReplicaTarget, session: &str) -> Result<()> {
-        use crate::replication::ReplicaStore;
-        self.stores[&target.host_id]
-            .initialize_session(session)
-            .await
-    }
-    async fn head(
-        &self,
-        target: &ReplicaTarget,
-        stream: &ReplicaStream,
-    ) -> Result<crate::replication::StreamHead> {
-        use crate::replication::ReplicaStore;
-        ensure!(
-            self.available.load(Ordering::SeqCst),
-            "replicas unavailable"
-        );
-        self.stores[&target.host_id].stream_head(stream).await
-    }
-    async fn seal(
-        &self,
-        target: &ReplicaTarget,
-        session: &str,
-    ) -> Result<crate::replication::SessionHead> {
-        use crate::replication::ReplicaStore;
-        ensure!(
-            self.available.load(Ordering::SeqCst),
-            "replicas unavailable"
-        );
-        self.stores[&target.host_id].seal_session(session).await
-    }
-    async fn read(&self, target: &ReplicaTarget, object: &str) -> Result<Vec<u8>> {
-        use crate::replication::ReplicaStore;
-        ensure!(
-            self.available.load(Ordering::SeqCst),
-            "replicas unavailable"
-        );
-        self.stores[&target.host_id]
-            .read(object)
-            .await?
-            .context("snapshot missing")
-    }
-}
-
-#[tokio::test]
-async fn combined_lease_takeover_recovers_replica_only_commits_and_seals_old_writes() -> Result<()>
-{
-    use crate::{replication::ReplicaStore, state_log::StateSnapshot};
-    let mut f = Fixture::new()?;
-    let first = f
-        .runtime
-        .register_activation(&f.actor, &request("first"), "us-east", true, None)
-        .await?
-        .placement;
-    let peers = f.replicate(&first.lease).await?;
-    let plan = f
-        .runtime
-        .prepare_actor_write(&f.actor, &first.lease, 1, 1)
-        .await?;
-    let previous = StateSnapshot::new(
-        1,
-        1,
-        "previous".into(),
-        serde_json::json!({"count": 1}),
-        serde_json::json!(1),
-    )?
-    .encode()?;
-    f.runtime.persist(&plan.object_name, previous).await?;
-    let bytes = StateSnapshot::new(
-        2,
-        1,
-        "committed".into(),
-        serde_json::json!({"count": 42}),
-        serde_json::json!(42),
-    )?
-    .encode()?;
-    for store in peers.stores.values() {
-        store.append(&plan.stream, &bytes).await?;
-    }
-    f.clock.0.store(11_000, Ordering::SeqCst);
-    peers.available.store(false, Ordering::SeqCst);
-    assert!(
-        f.runtime
-            .register_activation(&f.actor, &request("next"), "us-east", false, None)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        f.runtime.get_owner(&f.actor.storage_key()).await?.unwrap(),
-        first
-    );
-    peers.available.store(true, Ordering::SeqCst);
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let resume_list = Arc::new(tokio::sync::Semaphore::new(0));
-    let resume_read = Arc::new(tokio::sync::Semaphore::new(0));
-    *f.bucket.paused_list.lock().unwrap() = Some((entered.clone(), resume_list.clone()));
-    *f.bucket.session_read_wait.lock().unwrap() = Some(resume_read.clone());
-    f.bucket.reads.store(0, Ordering::SeqCst);
-    f.bucket.session_reads.store(0, Ordering::SeqCst);
-    let next = request("next");
-    let activation = f
-        .runtime
-        .register_activation(&f.actor, &next, "us-east", false, None);
-    let release = async {
-        entered.acquire().await?.forget();
-        resume_read.add_permits(1);
-        resume_list.add_permits(1);
-        anyhow::Ok(())
-    };
-    let (recovered, released) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(activation, release)
-    })
-    .await?;
-    released?;
-    let recovered = recovered?;
-    assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 2);
-    assert_eq!(recovered.placement.owner_epoch, 2);
-    assert_eq!(recovered.placement.state_version, 2);
-    assert_eq!(recovered.state.unwrap().as_ref(), bytes);
-    for store in peers.stores.values() {
-        assert!(store.append(&plan.stream, &bytes).await.is_err());
-    }
-    assert!(
-        f.runtime
-            .renew_activation(&f.actor, &request("first"), Default::default())
-            .await
-            .is_err()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn ownership_without_a_combined_lease_is_rejected() -> Result<()> {
-    for missing in [true, false] {
-        let f = Fixture::new()?;
-        let mut owner = serde_json::json!({
-            "actor": f.actor, "owner": "legacy", "session": "legacy",
-            "epoch": 1, "region": "us-east", "base": null, "mutation": "old-write",
-        });
-        if !missing {
-            owner["lease"] = serde_json::Value::Null;
-        }
-        let key = ownership_key(&f.actor.storage_key())?;
-        let bytes = serde_json::to_vec(&owner)?;
-        assert!(
-            f.bucket
-                .inner
-                .compare_and_swap(&key, None, bytes.clone())
-                .await?
-        );
-        assert!(f.runtime.get_owner(&f.actor.storage_key()).await.is_err());
-        assert!(
-            f.runtime
-                .register_activation(&f.actor, &request("next"), "us-east", false, None)
-                .await
-                .is_err()
-        );
-        assert_eq!(f.bucket.inner.get(&key).await?.unwrap().bytes, bytes);
-        assert_eq!(f.bucket.writes.load(Ordering::SeqCst), 0);
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn ambiguous_claim_and_renewal_responses_reconcile_the_exact_record() -> Result<()> {
     let f = Fixture::new()?;
@@ -758,14 +509,12 @@ async fn release_retries_a_concurrent_inventory_renewal() -> Result<()> {
 
 #[tokio::test]
 async fn expired_owner_hint_cannot_fence_a_renewed_session() -> Result<()> {
-    use crate::{replication::ReplicaStore, state_log::StateSnapshot};
-    let mut f = Fixture::new()?;
+    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
+    let f = Fixture::new()?;
     let first = request("first");
-    let loaded = f
-        .runtime
+    f.runtime
         .register_activation(&f.actor, &first, "us-east", true, None)
         .await?;
-    let peers = f.replicate(&loaded.placement.lease).await?;
     let (_, hint) = f
         .runtime
         .get_owner_with_hint(&f.actor.storage_key())
@@ -800,15 +549,7 @@ async fn expired_owner_hint_cannot_fence_a_renewed_session() -> Result<()> {
         serde_json::json!(1),
     )?
     .encode()?;
-    for store in peers.stores.values() {
-        store.append(&plan.stream, &bytes).await?;
-    }
-    let session_key = format!(
-        "{}.json",
-        crate::storage_paths::session(&first.id, &first.session_id)
-    );
-    let session = f.bucket.inner.get(&session_key).await?.unwrap();
-    assert!(serde_json::from_slice::<session::Session>(&session.bytes)?.is_open());
+    f.runtime.write_snapshot(&plan, bytes).await?;
     assert_eq!(
         f.runtime
             .get_owner(&f.actor.storage_key())
@@ -882,93 +623,6 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
 }
 
 #[tokio::test]
-async fn concurrent_session_sealing_refreshes_the_parallel_snapshot_listing() -> Result<()> {
-    use crate::state_log::StateSnapshot;
-    let f = Fixture::new()?;
-    let first = request("first");
-    let loaded = f
-        .runtime
-        .register_activation(&f.actor, &first, "us-east", true, None)
-        .await?;
-    let plan = f
-        .runtime
-        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
-        .await?;
-    let bytes = StateSnapshot::new(
-        1,
-        1,
-        "committed".into(),
-        serde_json::json!({"count": 42}),
-        serde_json::json!(42),
-    )?
-    .encode()?;
-    f.clock.0.store(11_000, Ordering::SeqCst);
-    let (_, hint) = f
-        .runtime
-        .get_owner_with_hint(&f.actor.storage_key())
-        .await?;
-    let hint = hint.unwrap();
-    let scope = hint.record.scope();
-    let session_key = format!(
-        "{}.json",
-        crate::storage_paths::session(&first.id, &first.session_id)
-    );
-    let mut session = session::Session {
-        id: scope.identity(),
-        region: scope.region.clone(),
-        replicas: vec![ReplicaTarget {
-            host_id: "replica".into(),
-            region: "us-east".into(),
-            url: "http://replica".into(),
-        }],
-        state: session::RecoveryState::Recovering,
-    };
-    assert!(
-        f.bucket
-            .inner
-            .compare_and_swap(&session_key, None, serde_json::to_vec(&session)?)
-            .await?
-    );
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let resume_list = Arc::new(tokio::sync::Semaphore::new(0));
-    let resume_read = Arc::new(tokio::sync::Semaphore::new(0));
-    *f.bucket.paused_list.lock().unwrap() = Some((entered.clone(), resume_list.clone()));
-    *f.bucket.session_read_wait.lock().unwrap() = Some(resume_read.clone());
-    let next = request("next");
-    let activation = f
-        .runtime
-        .register_activation(&f.actor, &next, "us-east", false, Some(&hint));
-    let concurrent_recovery = async {
-        entered.acquire().await?.forget();
-        f.runtime.persist(&plan.object_name, bytes.clone()).await?;
-        let generation = f.bucket.inner.get(&session_key).await?.unwrap().generation;
-        session.state = session::RecoveryState::Sealed;
-        assert!(
-            f.bucket
-                .inner
-                .compare_and_swap(
-                    &session_key,
-                    Some(generation),
-                    serde_json::to_vec(&session)?
-                )
-                .await?
-        );
-        resume_read.add_permits(1);
-        resume_list.add_permits(1);
-        anyhow::Ok(())
-    };
-    let (activated, recovered) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(activation, concurrent_recovery)
-    })
-    .await?;
-    recovered?;
-    let activated = activated?;
-    assert_eq!(activated.placement.state_version, 1);
-    assert_eq!(activated.state.unwrap().as_ref(), bytes);
-    Ok(())
-}
-
-#[tokio::test]
 async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_session_reads()
 -> Result<()> {
     use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
@@ -1014,7 +668,6 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .await?;
             assert!(hint.as_ref().unwrap().record.sealed);
             f.bucket.reads.store(0, Ordering::SeqCst);
-            f.bucket.session_reads.store(0, Ordering::SeqCst);
             f.bucket.lists.store(0, Ordering::SeqCst);
             let next = request(session);
             let loaded = f
@@ -1025,11 +678,64 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
             assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_slice()));
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
-            assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 0);
             f.runtime
                 .finish_activation(&f.actor, &next.id, &next.session_id)
                 .await?;
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replicated_resume_seeds_the_new_epoch_before_returning_an_activation() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
+    let mut f = Fixture::new()?;
+    let directory = tempfile::tempdir()?;
+    let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
+    f.runtime = f.runtime.with_persistence(
+        crate::bucket::PersistenceConfig::Replicated {
+            placements: vec!["us-west4-a".into()],
+            durability: crate::bucket::Durability::Zonal,
+        },
+        Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
+    )?;
+    let first = request("first");
+    f.runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let lease = f
+        .runtime
+        .get_owner(&f.actor.storage_key())
+        .await?
+        .unwrap()
+        .lease;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        serde_json::json!({"count":42}),
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes).await?;
+    f.runtime
+        .finish_activation(&f.actor, &first.id, &first.session_id)
+        .await?;
+    let resumed = f
+        .runtime
+        .register_activation(&f.actor, &request("next"), "us-east", false, None)
+        .await?;
+    let key = crate::storage::snapshot_object_name(&f.actor, 1, &format!("{:032x}", 2))?;
+    let stored = snapshots
+        .get(&key)
+        .await?
+        .context("new replica group was not seeded")?;
+    let snapshot = crate::state_log::StateSnapshot::decode(&stored.bytes)?;
+    assert_eq!(snapshot.owner_epoch, 2);
+    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_slice()));
     Ok(())
 }

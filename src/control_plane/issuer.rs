@@ -184,11 +184,20 @@ impl ActorJwtIssuer {
         self.socket_verifier()?.verify_at(token, now_ms)
     }
 
+    pub(crate) fn invocation_verifier(&self) -> Result<super::ActorJwtVerifier> {
+        super::ActorJwtVerifier::for_scope(
+            self.verifier_keys_json()?,
+            self.issuer.clone(),
+            self.invocation_audience.clone(),
+            super::ActorTokenPurpose::Invocation,
+            self.max_lifetime,
+        )
+    }
+
     pub(crate) fn socket_audience(&self) -> String {
         format!("{}:websocket", self.authority_audience)
     }
 
-    #[cfg(test)]
     pub(crate) fn socket_verifier(&self) -> Result<super::socket_ticket::SocketTicketVerifier> {
         super::socket_ticket::SocketTicketVerifier::new(
             &self.verifier_keys_json()?,
@@ -245,6 +254,7 @@ impl ActorJwtIssuer {
         region: &str,
         owner_epoch: u64,
         grant: Option<super::session::InvocationGrant>,
+        route: &str,
     ) -> Result<IssuedActorToken> {
         actor.validate()?;
         validate_region(region)?;
@@ -276,6 +286,7 @@ impl ActorJwtIssuer {
             exp: expires_at,
             actor: actor.clone(),
             invocation: Some(ActorInvocationCapability {
+                route: super::gateway::backend_origin(route)?.to_string(),
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch,

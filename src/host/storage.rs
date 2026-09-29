@@ -15,23 +15,18 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        Bucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage, WarmGcs,
+        Bucket, GcsBucket, RuntimeStorage, WarmGcs,
         access::{HostStorageConfig, StorageToken},
     },
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
-    replication::ReplicaAccess,
     storage::WritePlan,
 };
 
-#[cfg(test)]
-#[path = "../../tests/unit/host/cold_write_tests.rs"]
-mod cold_write_tests;
-
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
-    pub transport: crate::state_transport::GrpcStateTransport,
+    objects: Option<google_cloud_storage::client::Storage>,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
     host: HostId,
@@ -50,42 +45,40 @@ impl HostStorage {
         config: HostStorageConfig,
         host: HostId,
         session: String,
-        origin: String,
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
         warm: Option<WarmGcs>,
-        transport: crate::state_transport::GrpcStateTransport,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
-        let authority: Arc<dyn Bucket> = match config.bucket {
-            crate::bucket::access::BucketLocation::Gcs { bucket } => Arc::new(match warm {
-                Some(warm) => warm.bind(&bucket, credentials.into())?,
-                None => GcsBucket::with_credentials(&bucket, credentials.into()).await?,
-            }),
+        let (authority, clients): (Arc<dyn Bucket>, _) = match config.bucket {
+            crate::bucket::access::BucketLocation::Gcs { bucket, .. } => {
+                let bucket = match warm {
+                    Some(warm) => warm.bind(&bucket, credentials.into())?,
+                    None => GcsBucket::with_credentials(&bucket, credentials.into()).await?,
+                };
+                let clients = bucket.clients();
+                (Arc::new(bucket), Some(clients))
+            }
             crate::bucket::access::BucketLocation::File { directory } => {
-                Arc::new(crate::bucket::FileBucket::new(directory)?)
+                (Arc::new(crate::bucket::FileBucket::new(directory)?), None)
             }
         };
-        let access = ReplicaAccess::new(&config.replica_secret, Arc::new(SystemClock));
-        let runtime = Arc::new(RuntimeStorage::new(
-            authority,
-            Arc::new(super::replica_provisioner::HostReplicaProvisioner {
-                client: client.clone(),
-                regions: config.replica_regions,
-            }),
-            Arc::new(GrpcReplicaPeers::with_transport(
-                access.clone(),
-                transport.clone(),
-            )),
-            access,
-            origin,
-            std::sync::Arc::new(crate::clock::SystemClock),
-        )?);
+        let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
+        if matches!(
+            config.persistence,
+            crate::bucket::PersistenceConfig::Replicated { .. }
+        ) {
+            let snapshots = crate::replicas::directory::DedicatedSnapshots::new(
+                client.clone(),
+                config.replica_token.context("replica capability missing")?,
+            )?;
+            runtime = runtime.with_persistence(config.persistence, Arc::new(snapshots))?;
+        }
         Ok(Self {
+            objects: clients.map(|clients| clients.storage),
             observer: client,
             stop,
-            runtime,
-            transport,
+            runtime: Arc::new(runtime),
             host,
             session,
             region: config.region,
@@ -96,6 +89,20 @@ impl HostStorage {
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         })
+    }
+
+    pub(crate) async fn install_code(
+        &self,
+        artifact: &crate::artifacts::ArtifactManifest,
+    ) -> Result<()> {
+        artifact
+            .install(
+                std::path::Path::new("/customer"),
+                self.objects
+                    .as_ref()
+                    .context("GCS artifact client missing")?,
+            )
+            .await
     }
 
     pub(crate) fn with_actor(
@@ -141,6 +148,10 @@ impl HostStorage {
 #[async_trait]
 impl ActorStorage for HostStorage {
     fn ensure_authority(&self) -> Result<()> {
+        ensure!(
+            !self.stop.is_cancelled(),
+            "host session is permanently fenced"
+        );
         self.fence
             .lock()
             .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
@@ -406,10 +417,6 @@ impl CredentialsProvider for HostCredentials {
         Some("googleapis.com".into())
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/host/replication_tests.rs"]
-mod replication_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/host/storage.rs"]

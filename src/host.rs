@@ -3,10 +3,9 @@ mod actor_runtime;
 mod assignment;
 pub(crate) mod http;
 mod lease_maintenance;
+mod persistence;
 mod process;
 mod queues;
-mod replica_provisioner;
-mod replication;
 pub(crate) mod sockets;
 mod spare;
 pub(crate) mod storage;
@@ -49,3 +48,14 @@ pub(crate) struct HostEndpoint {
     pub id: HostId,
     pub route: String,
 }
+
+pub(super) fn protect_runtime_credentials() -> anyhow::Result<()> {
+    // Customer code shares the pod but must not inspect the Rust process's credentials.
+    #[cfg(target_os = "linux")]
+    nix::sys::prctl::set_dumpable(false)?;
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/unit/host/credentials.rs"]
+mod credentials_tests;

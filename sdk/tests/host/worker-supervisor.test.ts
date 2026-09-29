@@ -130,10 +130,13 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
     const worker = new ActorWorker()
     try {
         await worker.warm()
-        const root = await createTypeScriptConsumer("WarmCounter")
+        const root = await createTypeScriptConsumer(
+            "WarmCounter",
+            'if (process.env.TEST_WARM_SECRET !== "warm-secret") throw new Error("secret missing at import")'
+        )
         try {
             const moduleUrl = await buildConsumer(root)
-            worker.load({ moduleUrl }, () => {})
+            worker.load({ moduleUrl, environment: { TEST_WARM_SECRET: "warm-secret" } }, () => {})
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
             assert.throws(() => worker.load({ moduleUrl }, () => {}), /already assigned/)
             const command = invokeCommand("one", "WarmCounter")

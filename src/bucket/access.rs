@@ -1,8 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -10,29 +6,32 @@ use gcp_auth::TokenProvider;
 use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
-use tokio_util::task::AbortOnDropHandle;
 
-use crate::{
-    clock::{Clock, SystemClock},
-    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaScope, ReplicaTarget},
-};
+use crate::clock::{Clock, SystemClock};
+use crate::postgres::PostgresDatabase;
+mod cache;
+use cache::SharedTokens;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
+    pub persistence: super::PersistenceConfig,
     pub region: String,
-    pub replica_secret: String,
-    pub replica_regions: Vec<String>,
+    pub replica_token: Option<String>,
     pub token: Option<StorageToken>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum BucketLocation {
-    Gcs { bucket: String },
-    File { directory: PathBuf },
+    Gcs {
+        bucket: String,
+        artifact_bucket: String,
+    },
+    File {
+        directory: PathBuf,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -52,207 +51,121 @@ impl std::fmt::Debug for StorageToken {
 
 pub(crate) struct RuntimeAccess {
     location: BucketLocation,
-    fleet: Arc<dyn ReplicaProvisioner>,
-    replicas: ReplicaAccess,
+    replicas: Option<crate::replicas::access::Access>,
     tokens: Option<StorageTokens>,
-    storage: Arc<super::RuntimeStorage>,
-    initial: moka::future::Cache<String, super::ReplicaMembership>,
-    targets: moka::future::Cache<String, Vec<ReplicaTarget>>,
+    persistence: super::PersistenceConfig,
 }
 
 impl RuntimeAccess {
-    pub fn new(
-        location: BucketLocation,
-        fleet: Arc<dyn ReplicaProvisioner>,
-        replicas: ReplicaAccess,
-        storage: Arc<super::RuntimeStorage>,
-    ) -> Result<Self> {
+    pub fn new(location: BucketLocation, persistence: super::PersistenceConfig) -> Result<Self> {
         Ok(Self {
+            replicas: None,
             tokens: match &location {
-                BucketLocation::Gcs { bucket } => Some(StorageTokens::new(
-                    Arc::new(GcsTokenSource {
-                        bucket: bucket.clone(),
+                BucketLocation::Gcs { .. } => Some(StorageTokens {
+                    source: Arc::new(GcsTokenSource {
                         credentials: StorageCredentials::new()?,
                         http: reqwest::Client::builder()
                             .timeout(Duration::from_secs(20))
                             .build()?,
                     }),
-                    Arc::new(SystemClock),
-                )),
+                    shared: None,
+                }),
                 BucketLocation::File { .. } => None,
             },
             location,
-            fleet,
-            replicas,
-            storage,
-            initial: moka::future::Cache::builder()
-                .max_capacity(10_000)
-                .time_to_live(Duration::from_secs(300))
-                .build(),
-            targets: moka::future::Cache::builder()
-                .max_capacity(10_000)
-                .time_to_live(Duration::from_secs(300))
-                .build(),
+            persistence,
         })
     }
 
-    pub async fn bootstrap(&self, region: &str) -> Result<String> {
+    pub fn with_token_cache(
+        mut self,
+        database: PostgresDatabase,
+        issuer: String,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        if let Some(tokens) = &mut self.tokens {
+            let shared = SharedTokens::new(database, issuer, tokens.source.clone());
+            shared.start(stop);
+            tokens.shared = Some(shared);
+        }
+        self
+    }
+
+    pub fn with_replica_secret(mut self, secret: String) -> Result<Self> {
+        self.replicas = Some(crate::replicas::access::Access::new(secret)?);
+        Ok(self)
+    }
+
+    pub async fn bootstrap(
+        &self,
+        region: &str,
+        actor: &crate::actor::ActorKey,
+        code_snapshot: Option<&str>,
+    ) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
+            replica_token: self
+                .replicas
+                .as_ref()
+                .map(|access| access.scoped(actor))
+                .transpose()?,
             bucket: self.location.clone(),
+            persistence: self.persistence.clone(),
             region: region.into(),
-            replica_secret: self.replicas.secret().to_owned(),
-            replica_regions: self.fleet.replica_regions(),
-            token: self.issue().await?,
+            token: self.issue(actor, code_snapshot).await?,
         })?)
     }
 
-    pub fn prewarm(self: &Arc<Self>, scope: ReplicaScope) {
-        if self.fleet.replica_regions().is_empty() {
-            return;
-        }
-        let access = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = access.initial_replicas(&scope).await {
-                tracing::warn!(%error, actor = %scope.actor.storage_key(), "actor replica provisioning failed");
-            }
-        });
-    }
-
-    pub async fn initial_replicas(&self, scope: &ReplicaScope) -> Result<super::ReplicaMembership> {
-        self.initial
-            .try_get_with(scope.identity(), async {
-                let replicas = self.initial_replica_targets(scope).await?;
-                self.storage
-                    .register_initial_replicas(scope, replicas)
-                    .await
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("initial replica registration failed: {error:#}"))
-    }
-
-    pub async fn initial_replica_targets(
+    pub async fn issue(
         &self,
-        scope: &ReplicaScope,
-    ) -> Result<Vec<ReplicaTarget>> {
-        self.targets
-            .try_get_with(scope.identity(), self.fleet.ensure(scope))
-            .await
-            .map_err(|error| anyhow::anyhow!("initial replica assignment failed: {error:#}"))
-    }
-
-    pub async fn replicas(
-        &self,
-        scope: &ReplicaScope,
-        failed: &[String],
-    ) -> Result<Vec<ReplicaTarget>> {
-        self.fleet.repair(scope, failed).await
-    }
-
-    pub async fn issue(&self) -> Result<Option<StorageToken>> {
-        match &self.tokens {
-            Some(tokens) => tokens.issue().await.map(Some),
-            None => Ok(None),
-        }
+        actor: &crate::actor::ActorKey,
+        code_snapshot: Option<&str>,
+    ) -> Result<Option<StorageToken>> {
+        let BucketLocation::Gcs {
+            bucket,
+            artifact_bucket,
+        } = &self.location
+        else {
+            return Ok(None);
+        };
+        let code = code_snapshot
+            .map(crate::artifacts::ArtifactManifest::decode)
+            .transpose()?;
+        let boundary = boundary(
+            bucket,
+            &self.persistence,
+            Some(artifact_bucket),
+            actor,
+            code.as_ref(),
+        )?;
+        let tokens = self
+            .tokens
+            .as_ref()
+            .context("storage token issuer missing")?;
+        Ok(Some(match &tokens.shared {
+            Some(shared) => shared.issue(&boundary).await?,
+            None => tokens.source.exchange(&boundary).await?,
+        }))
     }
 }
-
-const TOKEN_MIN_LIFETIME_MS: u64 = 60_000;
-const TOKEN_REFRESH_MARGIN_MS: u64 = 120_000;
-const TOKEN_REFRESH_RETRY: Duration = Duration::from_secs(10);
 
 struct StorageTokens {
-    cache: Arc<TokenCache>,
-    _refresh: AbortOnDropHandle<()>,
-}
-
-impl StorageTokens {
-    fn new(source: Arc<dyn StorageTokenSource>, clock: Arc<dyn Clock>) -> Self {
-        let cache = Arc::new(TokenCache {
-            source,
-            clock,
-            token: RwLock::new(None),
-            exchange: Mutex::new(()),
-        });
-        Self {
-            _refresh: AbortOnDropHandle::new(tokio::spawn(cache.clone().refresh())),
-            cache,
-        }
-    }
-
-    async fn issue(&self) -> Result<StorageToken> {
-        self.cache.get(TOKEN_MIN_LIFETIME_MS).await
-    }
-}
-
-struct TokenCache {
     source: Arc<dyn StorageTokenSource>,
-    clock: Arc<dyn Clock>,
-    token: RwLock<Option<StorageToken>>,
-    exchange: Mutex<()>,
-}
-
-impl TokenCache {
-    async fn refresh(self: Arc<Self>) {
-        loop {
-            let delay = match self.refresh_delay().await {
-                Ok(delay) => delay,
-                Err(error) => {
-                    tracing::warn!(%error, "could not refresh scoped GCS credentials");
-                    TOKEN_REFRESH_RETRY
-                }
-            };
-            tokio::time::sleep(delay).await;
-        }
-    }
-
-    async fn refresh_delay(&self) -> Result<Duration> {
-        let token = self.get(TOKEN_REFRESH_MARGIN_MS).await?;
-        let remaining = token
-            .expires_at_ms
-            .saturating_sub(self.clock.now_ms()?.saturating_add(TOKEN_REFRESH_MARGIN_MS));
-        Ok(Duration::from_millis(remaining).max(TOKEN_REFRESH_RETRY))
-    }
-
-    async fn get(&self, minimum_lifetime_ms: u64) -> Result<StorageToken> {
-        if let Some(token) = self.cached(minimum_lifetime_ms)? {
-            return Ok(token);
-        }
-        let _exchange = self.exchange.lock().await;
-        if let Some(token) = self.cached(minimum_lifetime_ms)? {
-            return Ok(token);
-        }
-        let token = self.source.exchange().await?;
-        *self.token.write().unwrap() = Some(token.clone());
-        Ok(token)
-    }
-
-    fn cached(&self, minimum_lifetime_ms: u64) -> Result<Option<StorageToken>> {
-        let deadline = self.clock.now_ms()?.saturating_add(minimum_lifetime_ms);
-        Ok(self
-            .token
-            .read()
-            .unwrap()
-            .as_ref()
-            .filter(|token| token.expires_at_ms > deadline)
-            .cloned())
-    }
+    shared: Option<SharedTokens>,
 }
 
 #[async_trait]
 trait StorageTokenSource: Send + Sync {
-    async fn exchange(&self) -> Result<StorageToken>;
+    async fn exchange(&self, boundary: &Value) -> Result<StorageToken>;
 }
 
 struct GcsTokenSource {
-    bucket: String,
     credentials: StorageCredentials,
     http: reqwest::Client,
 }
 
 #[async_trait]
 impl StorageTokenSource for GcsTokenSource {
-    async fn exchange(&self) -> Result<StorageToken> {
-        let boundary = boundary(&self.bucket);
+    async fn exchange(&self, boundary: &Value) -> Result<StorageToken> {
         let source = self.credentials.token().await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
@@ -334,18 +247,74 @@ impl StorageCredentials {
     }
 }
 
-fn boundary(bucket: &str) -> Value {
-    let prefix = crate::storage_paths::ROOT;
-    json!({"accessBoundary": {"accessBoundaryRules": [
-        rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"]),
-        rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])
-    ]}})
+fn boundary(
+    bucket: &str,
+    persistence: &super::PersistenceConfig,
+    artifact_bucket: Option<&str>,
+    actor: &crate::actor::ActorKey,
+    code: Option<&crate::artifacts::ArtifactManifest>,
+) -> Result<Value> {
+    let owner = format!(
+        "projects/_/buckets/{bucket}/objects/{}",
+        crate::storage_paths::owner(&actor.storage_key())?
+    );
+    let mut rules = vec![rule(
+        bucket,
+        &["storage.objectUser"],
+        format!("resource.name == {}", serde_json::to_string(&owner)?),
+    )];
+    if matches!(persistence, super::PersistenceConfig::Local) {
+        let prefix = crate::storage_paths::snapshots(actor)?;
+        let resource = format!("projects/_/buckets/{bucket}/objects/{prefix}");
+        rules.push(rule(bucket, &["storage.objectViewer", "storage.objectCreator"], format!(
+            "resource.name.startsWith({}) || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith({})",
+            serde_json::to_string(&resource)?, serde_json::to_string(&prefix)?
+        )));
+    }
+    if let Some(code) = code {
+        ensure!(
+            Some(code.bucket.as_str()) == artifact_bucket,
+            "code artifact belongs to another bucket"
+        );
+        let prefix = format!(
+            "projects/_/buckets/{}/objects/{}",
+            code.bucket,
+            artifact_prefix(code)?,
+        );
+        rules.push(rule(
+            &code.bucket,
+            &["storage.objectViewer"],
+            format!(
+                "resource.name.startsWith({})",
+                serde_json::to_string(&prefix)?
+            ),
+        ));
+    }
+    Ok(json!({"accessBoundary": {"accessBoundaryRules": rules}}))
 }
 
-fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
-    let expression = prefixes.iter().map(|prefix| format!(
-        "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefix}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefix}')"
-    )).collect::<Vec<_>>().join(" || ");
+fn artifact_prefix(code: &crate::artifacts::ArtifactManifest) -> Result<String> {
+    let root = format!("{}artifacts/", crate::storage_paths::ROOT);
+    let first = code.files.first().context("code artifact is empty")?;
+    let relative = first
+        .object
+        .strip_prefix(&root)
+        .context("invalid artifact location")?;
+    let (deployment, _) = relative
+        .split_once('/')
+        .context("artifact deployment missing")?;
+    uuid::Uuid::parse_str(deployment).context("invalid artifact deployment")?;
+    let prefix = format!("{root}{deployment}/");
+    ensure!(
+        code.files
+            .iter()
+            .all(|file| file.object == format!("{prefix}{}", file.path)),
+        "code files must belong to one artifact deployment"
+    );
+    Ok(prefix)
+}
+
+fn rule(bucket: &str, roles: &[&str], expression: String) -> Value {
     json!({"availableResource": format!("//storage.googleapis.com/projects/_/buckets/{bucket}"),
         "availablePermissions": roles.iter().map(|role| format!("inRole:roles/{role}")).collect::<Vec<_>>(),
         "availabilityCondition": {"expression": expression}})

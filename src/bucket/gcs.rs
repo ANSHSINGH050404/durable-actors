@@ -22,12 +22,32 @@ pub(crate) struct WarmGcs {
     credentials: PendingCredentials,
 }
 
-struct GcsClients {
-    storage: Storage,
-    control: StorageControl,
+#[derive(Clone)]
+pub(crate) struct GcsClients {
+    pub storage: Storage,
+    pub control: StorageControl,
 }
 
 impl GcsBucket {
+    pub(crate) fn clients(&self) -> GcsClients {
+        self.clients.clone()
+    }
+
+    pub(crate) async fn require_standard(&self) -> Result<()> {
+        let bucket = self
+            .clients
+            .control
+            .get_bucket()
+            .set_name(&self.bucket)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            bucket.storage_class == "STANDARD",
+            "archive bucket must use Standard GCS"
+        );
+        Ok(())
+    }
+
     pub async fn new(bucket: &str) -> Result<Self> {
         Self::with_credentials(
             bucket,

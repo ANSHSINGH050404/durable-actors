@@ -22,26 +22,8 @@ test("npm publishes the downloaded tarball as a filesystem path", () => {
     assert.match(workflow, /npm publish \.\/dist-tarballs\/durable-actors-\$RELEASE_VERSION\.tgz --access public/)
 })
 
-test("runtime images include the one-shot Go provider", () => {
-    const dockerfile = read("Dockerfile")
-    assert.match(dockerfile, /FROM golang:1\.27\.1-bookworm AS modal-builder/)
-    assert.match(dockerfile, /COPY providers\/modal-go\/ /)
-    assert.match(dockerfile, /CGO_ENABLED=0 go build -mod=readonly -trimpath/)
-    assert.match(dockerfile, /COPY --from=modal-builder .* \/usr\/local\/bin\/durable-actors-modal-go/)
-    assert.match(dockerfile, /DURABLE_ACTORS_SANDBOX_COMMAND=durable-actors-modal-go/)
-    assert.match(read(".dockerignore"), /!providers\/modal-go\/\*\*/)
-})
-
-test("CI and release validate the Go provider before publishing", () => {
-    for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
-        const workflow = read(path)
-        assert.match(workflow, /working-directory: providers\/modal-go/)
-        assert.match(workflow, /go test -race -mod=readonly -overlay tests\/overlay\.json \.\/\.\.\./)
-        assert.match(workflow, /go-version: "1\.27\.1"/)
-    }
-    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) {
-        for (const check of ["rust", "npm-ci", "go-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
-    }
+test("release waits for runtime and SDK validation", () => {
+    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
 })
 
 test("CI and release exercise direct host sockets with the built SDK", () => {

@@ -192,7 +192,7 @@ async fn observability_requires_admin_credentials() -> Result<()> {
 
 struct Fixture {
     traces: crate::request_traces::TraceStore,
-    changes: tokio::sync::watch::Sender<()>,
+    changes: crate::postgres::notifications::ChangeFeed,
     admin: AdminService,
     _runtime: RuntimeFixture,
     store: Arc<RuntimeStorage>,
@@ -227,7 +227,7 @@ impl Fixture {
             Arc::new(super::admin::LocalAdminRegistry::default()),
             issuer.clone(),
         )?;
-        let changes = tokio::sync::watch::channel(()).0;
+        let changes = crate::postgres::notifications::ChangeFeed::default();
         let inspector = ActorInspector::new(store.clone(), store.clone(), changes.clone())
             .with_traces(traces.clone());
         let routes = super::inspection::router(inspector, admin.clone());
@@ -319,7 +319,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
             },
         )
         .await?;
-    fixture.changes.send_replace(());
+    fixture.changes.notify().await;
     let connected = stream_inventory(&mut stream).await?;
     assert_eq!(connected["actors"][0]["live"], 1);
     assert_eq!(
@@ -343,7 +343,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
             },
         )
         .await?;
-    fixture.changes.send_replace(());
+    fixture.changes.notify().await;
     let updated = stream_inventory(&mut stream).await?;
     assert_eq!(
         updated["actors"][0]["instances"][0]["connections"][0]["metadata"]["userId"],
@@ -353,7 +353,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         .store
         .release_activation(&actor, &fixture.host, "session")
         .await?;
-    fixture.changes.send_replace(());
+    fixture.changes.notify().await;
     let expired = stream_inventory(&mut stream).await?;
     assert_eq!(expired["actors"][0]["dormant"], 1);
     assert_eq!(expired["actors"][0]["instances"][0]["waiting"], json!([]));
@@ -421,7 +421,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
-                code_snapshot: Some("im-code".into()),
+                code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
                 image_ref: "test-image".into(),
                 working_directory: "/customer".into(),
                 actor_entrypoint: Some("actors.mjs".into()),

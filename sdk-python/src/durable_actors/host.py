@@ -14,7 +14,7 @@ from typing import Any, cast
 from .build import load_artifact
 from .client import component
 from .contract import Document
-from .executor_wire import MAX_BYTES, Channel, serialize
+from .executor_wire import Channel, serialize
 from .runtime import ActorRuntime, failed
 
 message_id: ContextVar[int] = ContextVar("actor_message_id")
@@ -94,9 +94,6 @@ class Session(Channel):
                     self.assigned = actor
                 reply = await self.runtimes[actor["actor_name"]].handle(command)
             response = {"type": "reply", "message_id": message["message_id"], "reply": reply}
-            if len(serialize(response)) >= MAX_BYTES:
-                self.runtimes[actor["actor_name"]].instance = None
-                response["reply"] = failed("resource_exhausted", "executor reply exceeds 32 MiB")
             await self.send(response)
         finally:
             message_id.reset(token)
@@ -170,7 +167,7 @@ def validate_command(message: Document) -> None:
 async def main() -> None:
     if "--worker" in sys.argv:
         channel = socket.socket(fileno=int(sys.argv[sys.argv.index("--worker") + 1]))
-        reader, writer = await asyncio.open_connection(sock=channel, limit=MAX_BYTES)
+        reader, writer = await asyncio.open_connection(sock=channel, limit=sys.maxsize)
         status = 0
         try:
             await Session(reader, writer).run(os.environ.get("DURABLE_ACTORS_ENTRYPOINT"), False)
@@ -190,7 +187,7 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, task.cancel)
     reader, writer = await asyncio.open_unix_connection(
-        os.environ["DURABLE_ACTORS_EXECUTOR_SOCKET"], limit=MAX_BYTES
+        os.environ["DURABLE_ACTORS_EXECUTOR_SOCKET"], limit=sys.maxsize
     )
     with suppress(asyncio.CancelledError, EOFError):
         await Supervisor(reader, writer, Worker.start).run(

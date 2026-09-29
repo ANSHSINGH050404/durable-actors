@@ -78,7 +78,7 @@ function socketTags(tags: readonly string[], schemas: ActorSchemas = {}): string
     return result.data
 }
 
-function validateValue(value: unknown, label: string, schema?: z.ZodType, maximumBytes = 16 * 1024 * 1024): JsonValue {
+function validateValue(value: unknown, label: string, schema?: z.ZodType, maximumBytes = Infinity): JsonValue {
     let json: JsonValue
     let bytes: number
     try {

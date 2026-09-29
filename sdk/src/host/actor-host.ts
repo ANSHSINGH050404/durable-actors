@@ -1,4 +1,3 @@
-import { stringifyChunked } from "@discoveryjs/json-ext"
 import { stat } from "node:fs/promises"
 import { type Socket, createConnection } from "node:net"
 import path from "node:path"
@@ -9,12 +8,10 @@ import type { ActorIdentity } from "../actor/identity.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
-import { failedReply, parseActorSessionServerMessage } from "./protocol.js"
+import { parseActorSessionServerMessage } from "./protocol.js"
 import type { ActorExecutorCommand, ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
 import type { ActorCommandHandler, ActorHostSettings, ActorWorkerSupervisorFactory } from "./types.js"
 import { ActorWorkerSupervisor } from "./worker-supervisor.js"
-
-const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 async function runActorHost(): Promise<never> {
     const session = new ActorSession()
@@ -174,11 +171,6 @@ class ActorSessionConnection {
 
     private acceptChunk(chunk: string): void {
         this.buffer += chunk
-        if (Buffer.byteLength(this.buffer) > MAX_MESSAGE_BYTES) {
-            this.fail(new ActorProtocolError("actor session message is too large"))
-            return
-        }
-
         let newline = this.buffer.indexOf("\n")
         while (newline !== -1) {
             const rawMessage = this.buffer.slice(0, newline)
@@ -213,7 +205,6 @@ class ActorSessionConnection {
                 case "command":
                     await this.reply(
                         message.message_id,
-                        message.command,
                         await this.commandHandler(
                             message.command,
                             () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
@@ -276,28 +267,12 @@ class ActorSessionConnection {
         })
     }
 
-    private async reply(messageId: number, command: ActorExecutorCommand, reply: ActorExecutorReply): Promise<void> {
-        const message = { type: "reply" as const, message_id: messageId, reply }
-        const document = serializeWithinBytes(message, MAX_MESSAGE_BYTES - 1)
-        if (document !== undefined) {
-            this.socket.write(`${document}\n`)
-            return
-        }
-        if (command.type !== "evict")
-            await this.commandHandler({ type: "evict", actor: command.actor }, () => {
-                throw new ActorProtocolError("eviction cannot admit another invocation")
-            })
-        this.send({
-            type: "reply",
-            message_id: messageId,
-            reply: failedReply("resource_exhausted", `actor session response exceeds ${MAX_MESSAGE_BYTES} bytes`)
-        })
+    private reply(messageId: number, reply: ActorExecutorReply): void {
+        this.send({ type: "reply", message_id: messageId, reply })
     }
 
     private send(message: ActorSessionClientMessage): void {
-        const document = serializeWithinBytes(message, MAX_MESSAGE_BYTES - 1)
-        if (document === undefined) throw new ActorSessionError("actor session message is too large")
-        this.socket.write(`${document}\n`)
+        this.socket.write(`${JSON.stringify(message)}\n`)
     }
 
     private fail(error: Error): void {
@@ -322,29 +297,6 @@ class ActorSessionConnection {
         this.attachedReject = undefined
         this.closedResolve?.()
         this.closedResolve = undefined
-    }
-}
-
-function serializeWithinBytes(value: unknown, maxBytes: number): string | undefined {
-    const chunks: string[] = []
-    let bytes = 0
-    try {
-        for (const chunk of stringifyChunked(value, {
-            highWaterMark: Math.min(maxBytes, 16 * 1024),
-            replacer(key: string, item: unknown) {
-                // The serializer emits individual strings whole, so bound them before encoding.
-                if (key.length > maxBytes || (typeof item === "string" && item.length > maxBytes))
-                    throw new RangeError("JSON string exceeds message limit")
-                return item
-            }
-        })) {
-            bytes += Buffer.byteLength(chunk)
-            if (bytes > maxBytes) return undefined
-            chunks.push(chunk)
-        }
-        return chunks.join("")
-    } catch {
-        return undefined
     }
 }
 
@@ -420,4 +372,4 @@ const actorSessionSettingsSchema = z.object({
 
 const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
-export { ActorSession, connectSocket, parseHostSettings, resolveActorEntrypoint, runActorHost, serializeWithinBytes }
+export { ActorSession, connectSocket, parseHostSettings, resolveActorEntrypoint, runActorHost }

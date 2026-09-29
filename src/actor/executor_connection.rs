@@ -1,7 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    error::Error,
-    fmt::{Display, Formatter},
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{
         UnixListener,
         unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -28,7 +26,6 @@ use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
 const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 18;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
-pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct ActorMethodInvocation {
@@ -298,9 +295,13 @@ pub(crate) struct WarmExecutor {
 }
 
 impl WarmExecutor {
-    pub(crate) async fn load(mut self, entrypoint: &str) -> Result<ActorExecutorConnection> {
+    pub(crate) async fn load(
+        mut self,
+        entrypoint: &str,
+        environment: &HashMap<String, String>,
+    ) -> Result<ActorExecutorConnection> {
         let mut bytes = serde_json::to_vec(&serde_json::json!({
-            "type": "load", "entrypoint": entrypoint
+            "type": "load", "entrypoint": entrypoint, "environment": environment
         }))?;
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await?;
@@ -853,14 +854,7 @@ impl ExecutorDriver {
                 self.pending.insert(message_id, pending);
             }
             Err(error) => {
-                let reply = if error.is::<ActorExecutorMessageTooLarge>() {
-                    Ok(ExecutorReply::Failed {
-                        code: "resource_exhausted".into(),
-                        message: error.to_string(),
-                    })
-                } else {
-                    Err(error)
-                };
+                let reply = Err(error);
                 let _ = pending.reply.send(reply);
             }
         }
@@ -987,17 +981,10 @@ async fn read_client_message(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
 ) -> Result<Option<ActorExecutorClientMessage>> {
     let mut document = Vec::new();
-    let bytes = reader
-        .take((MAX_ACTOR_EXECUTOR_MESSAGE_BYTES + 1) as u64)
-        .read_until(b'\n', &mut document)
-        .await?;
+    let bytes = reader.read_until(b'\n', &mut document).await?;
     if bytes == 0 {
         return Ok(None);
     }
-    ensure!(
-        bytes <= MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
-        "customer actor executor message exceeds {MAX_ACTOR_EXECUTOR_MESSAGE_BYTES} bytes"
-    );
     serde_json::from_slice(trim_ascii_end(&document))
         .map(Some)
         .context("decode customer actor executor message")
@@ -1013,25 +1000,8 @@ fn trim_ascii_end(mut document: &[u8]) -> &[u8] {
 fn encode_server_message(message: &ActorExecutorServerMessage<'_>) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(message)?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_ACTOR_EXECUTOR_MESSAGE_BYTES {
-        return Err(ActorExecutorMessageTooLarge.into());
-    }
     Ok(bytes)
 }
-
-#[derive(Debug)]
-struct ActorExecutorMessageTooLarge;
-
-impl Display for ActorExecutorMessageTooLarge {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "actor executor command exceeds {MAX_ACTOR_EXECUTOR_MESSAGE_BYTES} bytes"
-        )
-    }
-}
-
-impl Error for ActorExecutorMessageTooLarge {}
 
 async fn prepare_socket_path(path: &Path) -> Result<()> {
     match tokio::fs::symlink_metadata(path).await {

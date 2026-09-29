@@ -25,13 +25,10 @@ const socketTagsSchema = z
         tags => tags.reduce((bytes, tag) => bytes + Buffer.byteLength(tag), 0) <= 8 * 1024,
         "socket tags must not exceed 8 KiB"
     )
-const socketTextSchema = z
-    .string()
-    .refine(value => Buffer.byteLength(value) <= 16 * 1024 * 1024, "socket message must not exceed 16 MiB")
+const socketTextSchema = z.string()
 const socketBinarySchema = z
     .string()
     .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u, "socket binary message must be base64")
-    .refine(value => Buffer.byteLength(value, "base64") <= 16 * 1024 * 1024, "socket message must not exceed 16 MiB")
 const socketCloseCodeSchema = z
     .number()
     .int()

@@ -27,6 +27,11 @@ pub(super) struct PublicApiState {
 
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
     let contracts = super::contract_api::router(admin.clone());
+    let gateway = invocations
+        .gateway
+        .clone()
+        .map(|gateway| gateway.router())
+        .unwrap_or_default();
     let hosts = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -47,6 +52,10 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             post(super::invocation::invoke),
         )
         .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
+            post(super::invocation::publish),
+        )
+        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor",
             post(find_actor),
         )
@@ -61,6 +70,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             hosts,
         })
         .merge(contracts)
+        .merge(gateway)
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -326,7 +336,12 @@ pub(super) async fn resolve_actor_target(
             .map_err(ApiError::routing)?;
         Ok(ActorTargetReply {
             home_region: target.home_region,
-            route: target.route,
+            backend_route: target.route.clone(),
+            route: state
+                .invocations
+                .gateway
+                .as_ref()
+                .map_or(target.route, |gateway| gateway.origin.clone()),
             token: target.token,
             owner_epoch: target.owner_epoch,
 
@@ -451,6 +466,8 @@ struct DeploymentReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ActorTargetReply {
+    #[serde(skip)]
+    pub backend_route: String,
     home_region: String,
     pub route: String,
     pub token: String,

@@ -151,3 +151,50 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
     })
     .await
 }
+
+#[test]
+fn compiled_deployment_uses_an_immutable_gcs_manifest() -> Result<()> {
+    let mut deployment = spec("registry/runtime@sha256:test");
+    deployment.working_directory = "/customer".into();
+    deployment.actor_entrypoint = Some("actors.mjs".into());
+    deployment.code_snapshot = Some(crate::sandbox::testing::code_artifact(1));
+    deployment.validate()?;
+    deployment.actor_entrypoint = Some("different.mjs".into());
+    assert!(deployment.validate().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn deployment_updates_serialize_across_instances_and_recover_when_the_lock_session_dies()
+-> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let first = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let second = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let project = format!("deploy-{}", uuid::Uuid::new_v4().simple());
+        let mut initial = spec("first");
+        initial.project_id = project.clone();
+        let mut update = first.lock_deployment(&project).await?;
+        let waiting = second.lock_deployment(&project);
+        tokio::pin!(waiting);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut waiting).await.is_err());
+        let independent = second.lock_deployment("another-project").await?;
+        drop(independent);
+        update.register(&initial, None).await?;
+        drop(update);
+        let mut next = tokio::time::timeout(std::time::Duration::from_secs(2), waiting).await??;
+        let client = fixture.pool.get().await?;
+        let pid: i32 = client.query_one("SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted AND classid=hashtext('durable-actors-deployment')::oid AND objid=hashtext($1)::oid", &[&project]).await?.get(0);
+        client.query_one("SELECT pg_terminate_backend($1)", &[&pid]).await?;
+        let mut replacement = initial.clone();
+        replacement.image_ref = "replacement".into();
+        assert!(next.register(&replacement, None).await.is_err());
+        drop(next);
+        assert_eq!(first.launch_spec(&project).await?, Some(initial));
+        let mut recovered = tokio::time::timeout(std::time::Duration::from_secs(2), first.lock_deployment(&project)).await??;
+        recovered.register(&replacement, None).await?;
+        assert_eq!(second.launch_spec(&project).await?, Some(replacement));
+        recovered.remove().await?;
+        assert!(second.launch_spec(&project).await?.is_none());
+        Ok(())
+    }).await
+}

@@ -26,6 +26,7 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     assert_eq!(reply["outcome"]["type"], "completed");
     assert!(reply["outcome"]["result"].is_null());
     assert_eq!(reply["target"]["ownerEpoch"], 1);
+    assert_eq!(reply["target"]["route"], fixture.origin);
     assert!(reply["target"]["expiresAtMs"].as_i64().unwrap() > 0);
     assert!(
         reply["target"]["route"]
@@ -187,6 +188,99 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
     Ok(())
 }
 
+#[tokio::test]
+async fn gateway_forwards_cached_calls_and_rejects_wrong_capabilities() -> Result<()> {
+    let fixture = Fixture::start(vec![
+        (StatusCode::OK, json!({"type":"completed","result":1})),
+        (StatusCode::OK, json!({"type":"completed","result":2})),
+    ])
+    .await?;
+    let first: Value = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"first","method":"clear","args":[]}),
+        )
+        .await?
+        .json()
+        .await?;
+    let token = first["target"]["token"].as_str().unwrap();
+    let request = json!({"requestId":"cached","ownerEpoch":1,"method":"clear","args":[]});
+    assert_eq!(
+        fixture.call("api-key", request.clone()).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let mut wrong_epoch = request.clone();
+    wrong_epoch["ownerEpoch"] = 2.into();
+    assert_eq!(
+        fixture.call(token, wrong_epoch).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let wrong_actor = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/ChatRoom/other/invoke",
+            fixture.origin
+        ))
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .await?;
+    assert_eq!(wrong_actor.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
+    let cached: Value = fixture
+        .call(token, request)
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(cached, json!({"type":"completed","result":2}));
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_forwards_socket_effects_with_the_original_capability() -> Result<()> {
+    let fixture = Fixture::start(vec![
+        (StatusCode::OK, json!({"type":"completed","result":1})),
+        (StatusCode::NO_CONTENT, Value::Null),
+    ])
+    .await?;
+    let first: Value = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"first","method":"clear","args":[]}),
+        )
+        .await?
+        .json()
+        .await?;
+    let token = first["target"]["token"].as_str().unwrap();
+    let url = format!(
+        "{}/v1/projects/default/actors/ChatRoom/one/socket-effects",
+        fixture.origin
+    );
+    let body = json!({"ownerEpoch":1,"effects":[]});
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client.post(&url).json(&body).send().await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await?
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        fixture.host.requests.lock().unwrap()[1].0,
+        format!("Bearer {token}")
+    );
+    Ok(())
+}
+
 struct Fixture {
     origin: String,
     admin: AdminService,
@@ -207,6 +301,10 @@ impl Fixture {
         let routes = Router::new()
             .route(
                 "/v1/projects/default/actors/ChatRoom/one/invoke",
+                post(host_invoke),
+            )
+            .route(
+                "/v1/projects/default/actors/ChatRoom/one/socket-effects",
                 post(host_invoke),
             )
             .with_state(host.clone());
@@ -247,15 +345,19 @@ impl Fixture {
                 Some(&contract),
             )
             .await?;
-        let service = ControlPlaneService::new(
+        let mut service = ControlPlaneService::new(
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             registry,
-            issuer,
+            issuer.clone(),
             Arc::new(InvocationProvisioner(host_origin)),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
+        service.gateway = Some(super::super::super::gateway::Gateway::new(
+            &issuer,
+            origin.clone(),
+        )?);
         let routes = super::super::super::public_api::router(service, admin.clone());
         let server = tokio::spawn(async move { axum::serve(listener, routes).await });
         Ok(Self {

@@ -266,8 +266,6 @@ class Client:
         if is_document(message) and message.get("type") in {"state", "state_update"}:
             raise ValueError("state and state_update messages are reserved")
         data = json.dumps(message, separators=(",", ":"), allow_nan=False)
-        if len(data.encode()) > 16 * 1024 * 1024:
-            raise ValueError("socket message exceeds 16 MiB")
         request_id = str(uuid.uuid4())
         key = actor_name, actor_id
         target = self._target(key, path, request_id)

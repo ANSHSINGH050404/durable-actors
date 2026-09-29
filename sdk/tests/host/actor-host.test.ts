@@ -8,7 +8,7 @@ import { before, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
 import { buildActor } from "../../src/compiler/actor-build.js"
-import { ActorSession, parseHostSettings, serializeWithinBytes } from "../../src/host/actor-host.js"
+import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 
 before(
@@ -74,46 +74,6 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
     )
     await assert.rejects(session.start(), /actor module loading timed out/)
     assert.equal(closed, 1)
-})
-
-test("serializes JSON within exact UTF-8 byte limits", () => {
-    const values = [
-        null,
-        true,
-        12.5,
-        1e30,
-        "plain",
-        'quote\"slash\\',
-        "中",
-        "日本語",
-        "€",
-        "emoji 😀",
-        "\ud800",
-        ["nested"],
-        { 日本語: { value: "中" } }
-    ]
-    for (const value of values) {
-        const bytes = Buffer.byteLength(JSON.stringify(value))
-        assert.equal(serializeWithinBytes(value, bytes), JSON.stringify(value))
-        assert.equal(serializeWithinBytes(value, bytes - 1), undefined)
-    }
-    assert.equal(serializeWithinBytes("x".repeat(1024), 100), undefined)
-})
-
-test("oversized serialization stops before visiting the rest of a reply", () => {
-    let visitedState = false
-    const value = {
-        result: "x".repeat(1024),
-        get state() {
-            visitedState = true
-            return {}
-        }
-    }
-    assert.equal(serializeWithinBytes(value, 100), undefined)
-    assert.equal(visitedState, false)
-    const circular = { self: {} }
-    circular.self = circular
-    assert.equal(serializeWithinBytes(circular, 100), undefined)
 })
 
 test("the actor session carries only owned execution commands", async t => {
@@ -213,30 +173,6 @@ test("the actor session carries only owned execution commands", async t => {
             type: "reply",
             message_id: 100,
             reply: { type: "invoked", result: 4, state: { count: 4 } }
-        })
-
-        customerSocket.write(
-            `${JSON.stringify({
-                type: "command",
-                message_id: 2,
-                command: {
-                    type: "invoke",
-                    request_id: "request-2",
-                    actor: actorIdentity(),
-                    method: "sizedResponse",
-                    args: [32 * 1024 * 1024],
-                    state: { count: 4 }
-                }
-            })}\n`
-        )
-        assert.deepEqual(await readMessage(iterator), {
-            type: "reply",
-            message_id: 2,
-            reply: {
-                type: "failed",
-                code: "resource_exhausted",
-                message: "actor session response exceeds 33554432 bytes"
-            }
         })
 
         customerSocket.write(

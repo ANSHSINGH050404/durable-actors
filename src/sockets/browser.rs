@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
 use crate::actor::{
     ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
-    ActorSocketMessage, MAX_SOCKET_MESSAGE_BYTES, validate_socket_effects,
+    ActorSocketMessage, validate_socket_effects,
 };
 use crate::control_plane::socket_ticket::{SocketTicket, SocketTicketVerifier};
 use anyhow::{Result, ensure};
@@ -64,7 +64,7 @@ pub(crate) struct SocketServerState {
 pub(crate) fn router(state: SocketServerState) -> axum::Router {
     axum::Router::new()
         .route("/v1/socket", axum::routing::get(connect))
-        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(state)
 }
 
@@ -93,8 +93,8 @@ pub(super) async fn connect(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
     Ok(upgrade
-        .max_frame_size(MAX_SOCKET_MESSAGE_BYTES)
-        .max_message_size(MAX_SOCKET_MESSAGE_BYTES)
+        .max_frame_size(usize::MAX)
+        .max_message_size(usize::MAX)
         .on_upgrade(move |socket| run(socket, state, ticket)))
 }
 

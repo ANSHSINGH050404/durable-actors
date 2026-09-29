@@ -209,7 +209,7 @@ fn values() -> HashMap<String, String> {
             "DURABLE_ACTORS_RUNTIME_CONFIG".into(),
             serde_json::json!({
                 "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
-                "region":"north-america-east", "replicaSecret":"secret", "replicaRegions":[],
+                "persistence":{"type":"local"}, "region":"north-america-east",
                 "token":null
             })
             .to_string(),
@@ -229,4 +229,24 @@ fn values() -> HashMap<String, String> {
             "00000000-0000-4000-8000-000000000001".into(),
         ),
     ])
+}
+
+#[test]
+fn host_decodes_pinned_code_artifact_before_assignment() -> Result<()> {
+    let manifest = crate::artifacts::ArtifactManifest {
+        bucket: "customer-code".into(),
+        files: vec![crate::artifacts::ArtifactFile {
+            path: "actors.mjs".into(),
+            object: "artifacts/test".into(),
+            generation: 7,
+            sha256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        }],
+    };
+    let mut values = values();
+    values.insert("DURABLE_ACTORS_CODE_ARTIFACT".into(), manifest.encode()?);
+    let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
+    assert_eq!(config.artifact.unwrap().files[0].generation, 7);
+    values.insert("DURABLE_ACTORS_CODE_ARTIFACT".into(), "invalid".into());
+    assert!(ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err());
+    Ok(())
 }

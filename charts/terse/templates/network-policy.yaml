@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "terse.name" . }}
+  namespace: {{ .Values.sandboxNamespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
+      ports:
+        - {protocol: TCP, port: 7101}
+        - {protocol: TCP, port: 7102}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
+      ports:
+        - {protocol: TCP, port: 7100}
+        - {protocol: TCP, port: 7200}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchExpressions:
+              - key: k8s-app
+                operator: In
+                values: [kube-dns, node-local-dns]
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - podSelector:
+            matchLabels: {terse.ai/purpose: replica}
+      ports:
+        - {protocol: TCP, port: 7200}
+    {{- range .Values.networkPolicy.replicaCidrs }}
+    - to:
+        - ipBlock: {cidr: {{ . | quote }}}
+      ports:
+        - {protocol: TCP, port: 7200}
+        - {protocol: TCP, port: 443}
+    {{- end }}
+    {{- range .Values.networkPolicy.dnsCidrs }}
+    - to:
+        - ipBlock: {cidr: {{ . | quote }}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10]
+        - ipBlock:
+            cidr: ::/0
+            except: ["::1/128", "fc00::/7", "fe80::/10"]
+{{- end }}

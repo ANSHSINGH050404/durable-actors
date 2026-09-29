@@ -1,0 +1,69 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  {{- if .Values.gateway.addressName }}
+  addresses:
+    - type: NamedAddress
+      value: {{ .Values.gateway.addressName | quote }}
+  {{- end }}
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ (urlParse .Values.publicUrl).hostname | quote }}
+      tls:
+        mode: Terminate
+        {{- if .Values.gateway.preSharedCert }}
+        options:
+          networking.gke.io/pre-shared-certs: {{ .Values.gateway.preSharedCert | quote }}
+        {{- else }}
+        certificateRefs:
+          - name: {{ .Values.gateway.tlsSecret }}
+        {{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  parentRefs:
+    - name: {{ include "terse.name" . }}
+  hostnames:
+    - {{ (urlParse .Values.publicUrl).hostname | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ include "terse.name" . }}
+          port: 7100
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 7100
+        requestPath: /healthz
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "terse.name" . }}
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  default:
+    timeoutSec: 86400
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "terse.name" . }}
+{{- end }}

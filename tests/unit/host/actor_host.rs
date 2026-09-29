@@ -930,7 +930,7 @@ impl ActorStorage for FakeAuthority {
         self.preparations.lock().unwrap().push(expected_version);
         let mut ticket = ticket(expected_version + 1);
         {
-            let stream = crate::replication::ReplicaStream {
+            let stream = crate::storage::StateStream {
                 prefix: "snapshots/epoch/".into(),
                 session: "snapshots/epoch/sessions/one/".into(),
                 owner_epoch: _owner_epoch,
@@ -947,7 +947,6 @@ impl ActorStorage for FakeAuthority {
 struct FakeStateTransport {
     failures: AtomicUsize,
     writes: Mutex<Vec<Vec<u8>>>,
-    replicated: bool,
     paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
 }
 
@@ -972,11 +971,7 @@ impl crate::state_transport::SnapshotWriter for FakeStateTransport {
         }
 
         self.writes.lock().unwrap().push(bytes);
-        Ok(if self.replicated {
-            StateWrite::Replicated
-        } else {
-            StateWrite::Written
-        })
+        Ok(StateWrite::Written)
     }
 }
 
@@ -1052,12 +1047,11 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
 
 #[tokio::test]
 async fn write_results_are_withheld_if_the_lease_expires_during_persistence() -> Result<()> {
-    for replicated in [false, true] {
+    {
         let (commit_started, mut committing) = mpsc::unbounded_channel();
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let authority = Arc::new(FakeAuthority::default());
         let state = Arc::new(FakeStateTransport {
-            replicated,
             paused_commit: Some((commit_started, release.clone())),
             ..Default::default()
         });
@@ -1097,7 +1091,6 @@ async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> 
         ..Default::default()
     });
     let state = Arc::new(FakeStateTransport {
-        replicated: true,
         failures: AtomicUsize::new(1),
         ..Default::default()
     });
@@ -1122,7 +1115,7 @@ async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> 
     assert_eq!(invoke(&host, "request-2").await?, completed(2));
     assert_eq!(executor.invocations.load(Ordering::Relaxed), 2);
 
-    assert_eq!(*authority.preparations.lock().unwrap(), [0]);
+    assert_eq!(*authority.preparations.lock().unwrap(), [0, 0]);
     let writes = state.writes.lock().unwrap();
     assert_eq!(writes[0], writes[1]);
     assert_eq!(writes.len(), 3);
@@ -1130,10 +1123,9 @@ async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> 
 }
 
 #[tokio::test]
-async fn replica_durability_commits_locally_before_success() -> Result<()> {
+async fn durable_snapshot_commits_locally_before_success() -> Result<()> {
     let authority = Arc::new(FakeAuthority::default());
     let state = Arc::new(FakeStateTransport {
-        replicated: true,
         ..Default::default()
     });
     let host = ActorHost::new(
@@ -1438,17 +1430,15 @@ fn completed(count: u64) -> ActorExecutionResult {
 
 fn ticket(state_version: u64) -> WritePlan {
     WritePlan {
-        stream: crate::replication::ReplicaStream {
+        stream: crate::storage::StateStream {
             prefix: "snapshots/epoch/".into(),
             session: "session".into(),
             owner_epoch: 1,
             base_version: 0,
         },
-        replication: None,
 
         object_name: format!("snapshots/{state_version}.json"),
         state_version,
-        expires_at_ms: i64::MAX,
     }
 }
 

@@ -120,6 +120,5 @@ console.log(JSON.stringify({ binary: __filename, args: process.argv.slice(2) }))
 `
     )
     await chmod(binary, 0o755)
-    await writeFile(path.join(runtime, "durable-actors-modal-go"), "unused provider")
     return realpath(binary)
 }

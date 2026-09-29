@@ -273,11 +273,25 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
 
     replacement.image_ref = "image-2".into();
 
-    assert!(service.register_deployment(&admin, &first, None).await?);
+    assert!(
+        service
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &first,
+                None
+            )
+            .await?
+    );
     assert!(retired_rx.try_recv().is_err());
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await
             .is_err()
     );
@@ -300,7 +314,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         .store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await?
     );
     assert_eq!(
@@ -319,7 +338,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
     );
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await?
     );
     assert_eq!(retired_rx.try_recv()?.0, replacement);
@@ -327,7 +351,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
     secret_update.secret_refs = vec!["project-secrets-updated".into()];
     assert!(
         service
-            .register_deployment(&admin, &secret_update, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &secret_update,
+                None
+            )
             .await?
     );
     assert_eq!(
@@ -544,11 +573,7 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
 
 #[test]
 fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
-    let provider = Arc::new(crate::sandbox::CommandSandboxProvider::new(
-        "test".into(),
-        "false".into(),
-        Default::default(),
-    )?);
+    let provider = Arc::new(crate::sandbox::testing::UnusedSandboxProvider);
     let provisioner = SandboxHostProvisioner::new(
         provider,
         HostSandboxRuntimeConfig {
@@ -677,7 +702,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
             project_id: "default".into(),
             source: None,
             image_ref: "im-runtime".into(),
-            code_snapshot: Some("im-code".into()),
+            code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
             working_directory: "/customer".into(),
             actor_entrypoint: None,
             secret_refs: vec![],
@@ -734,7 +759,6 @@ impl HostProvisioner for FakeRoutingProvisioner {
     ) -> Result<crate::sandbox::SocketCredentials> {
         Ok(crate::sandbox::SocketCredentials {
             url: lease.route.clone(),
-            token: String::new(),
         })
     }
 
@@ -1002,7 +1026,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
             project_id: "default".into(),
             source: None,
             image_ref: "im-runtime".into(),
-            code_snapshot: Some("im-code".into()),
+            code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
             working_directory: "/customer".into(),
             actor_entrypoint: None,
             secret_refs: vec![]
@@ -1154,7 +1178,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
                 project_id: "default".into(),
                 source: None,
                 image_ref: "im-runtime".into(),
-                code_snapshot: Some("im-code".into()),
+                code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
                 working_directory: "/customer".into(),
                 actor_entrypoint: None,
                 secret_refs: vec![]
@@ -1490,7 +1514,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn test_issuer() -> Result<ActorJwtIssuer> {
+pub(crate) fn test_issuer() -> Result<ActorJwtIssuer> {
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
     ActorJwtIssuer::from_base64_pkcs8(
         &STANDARD.encode(pkcs8.as_ref()),
@@ -1500,135 +1524,6 @@ pub(super) fn test_issuer() -> Result<ActorJwtIssuer> {
         "invocation",
         Duration::from_secs(60),
     )
-}
-
-#[tokio::test]
-async fn initial_replica_registration_is_authenticated_and_does_not_require_an_active_primary()
--> Result<()> {
-    use crate::{
-        bucket::{
-            FileBucket, GrpcReplicaPeers, RuntimeStorage,
-            access::{BucketLocation, RuntimeAccess},
-        },
-        clock::SystemClock,
-        replication::{ReplicaAccess, ReplicaScope, ReplicaSet, ReplicaTarget},
-    };
-    let directory = tempfile::tempdir()?;
-    let scope = ReplicaScope {
-        actor: ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "starting".into(),
-        },
-        host: HostId::new("host.v3.revision.primary"),
-        session: uuid::Uuid::new_v4().to_string(),
-        region: "us-east".into(),
-    };
-    let targets = vec![ReplicaTarget {
-        host_id: "assigned".into(),
-        url: "http://127.0.0.1:1".into(),
-        region: scope.region.clone(),
-    }];
-    let fleet = Arc::new(ReplicaSet(targets.clone()));
-    let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
-    let runtime = Arc::new(RuntimeStorage::new(
-        Arc::new(FileBucket::new(directory.path().into())?),
-        fleet.clone(),
-        Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access.clone(),
-        "http://control".into(),
-        Arc::new(SystemClock),
-    )?);
-    let initial = Arc::new(RuntimeAccess::new(
-        BucketLocation::File {
-            directory: directory.path().into(),
-        },
-        fleet,
-        access,
-        runtime.clone(),
-    )?);
-    let issuer = test_issuer()?;
-    let token = issuer.issue_host(
-        &scope.host,
-        &scope.session,
-        "revision",
-        &scope.region,
-        &scope.actor,
-    )?;
-    let auth = ActorJwtVerifier::for_scope(
-        issuer.verifier_keys_json()?,
-        "issuer",
-        "authority",
-        ActorTokenPurpose::ControlPlane,
-        Duration::from_secs(60),
-    )?;
-    let service = ControlPlaneService::new(
-        runtime.clone(),
-        auth,
-        Arc::new(LocalAdminRegistry::default()),
-        issuer,
-        Arc::new(UnavailableProvisioner),
-    )
-    .with_runtime_access(initial.clone());
-    for command in [
-        ControlPlaneCommand::PrepareInitialReplicas,
-        ControlPlaneCommand::PrepareReplicaConnections,
-    ] {
-        let request = super::super::protocol::encode_command(command)?;
-        assert_eq!(
-            service
-                .execute(Request::new(request))
-                .await
-                .unwrap_err()
-                .code(),
-            tonic::Code::Unauthenticated
-        );
-    }
-    let request = |command| -> Result<_> {
-        let mut request = Request::new(super::super::protocol::encode_command(command)?);
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {}", token.token).parse()?);
-        Ok(request)
-    };
-    let reply = service
-        .execute(request(ControlPlaneCommand::PrepareReplicaConnections)?)
-        .await?
-        .into_inner();
-    let ControlPlaneCommandReply::Replicas { targets: assigned } =
-        super::super::protocol::decode_reply(reply)?
-    else {
-        anyhow::bail!("expected replica connection targets");
-    };
-    assert_eq!(assigned, targets);
-    assert!(runtime.replica_members(&scope).await?.is_empty());
-    initial.prewarm(scope.clone());
-    let reply = service
-        .execute(request(ControlPlaneCommand::PrepareInitialReplicas)?)
-        .await?
-        .into_inner();
-    assert!(matches!(
-        super::super::protocol::decode_reply(reply)?,
-        ControlPlaneCommandReply::InitialReplicas { .. }
-    ));
-    assert_eq!(runtime.replica_members(&scope).await?, targets);
-    assert!(
-        runtime
-            .get_owner(&scope.actor.storage_key())
-            .await?
-            .is_none()
-    );
-    assert_eq!(
-        service
-            .execute(request(ControlPlaneCommand::EnsureReplicas {
-                failed: vec![]
-            })?)
-            .await
-            .unwrap_err()
-            .code(),
-        tonic::Code::FailedPrecondition
-    );
-    Ok(())
 }
 
 #[tokio::test]

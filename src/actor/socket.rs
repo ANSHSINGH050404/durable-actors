@@ -12,7 +12,6 @@ pub(crate) trait ActorSocketSource: Send + Sync {
 }
 
 pub(crate) const MAX_SOCKET_METADATA_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_SOCKET_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 const MAX_SOCKET_CONNECTION_ID_BYTES: usize = 128;
 const MAX_SOCKET_TAGS: usize = 128;
@@ -55,10 +54,6 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
             ensure!(
                 removed.iter().all(|field| changes.get(field).is_none()),
                 "state field is both changed and removed"
-            );
-            ensure!(
-                serde_json::to_vec(effect)?.len() <= MAX_SOCKET_MESSAGE_BYTES,
-                "state update exceeds message limit"
             );
             for connection_id in except_connection_ids {
                 validate_connection_id(connection_id)?;
@@ -120,33 +115,14 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
 
 fn validate_public_state(state: &Value) -> Result<()> {
     ensure!(state.is_object(), "public state must be a JSON object");
-    ensure!(
-        serde_json::to_vec(state)?.len() <= MAX_SOCKET_MESSAGE_BYTES - 256,
-        "public state exceeds message limit"
-    );
     Ok(())
 }
 
 fn validate_socket_message(message: &ActorSocketMessage) -> Result<()> {
-    match message {
-        ActorSocketMessage::Text { data } => ensure!(
-            data.len() <= MAX_SOCKET_MESSAGE_BYTES,
-            "socket message exceeds {MAX_SOCKET_MESSAGE_BYTES} bytes"
-        ),
-        ActorSocketMessage::Binary { data } => {
-            let max_encoded_bytes = MAX_SOCKET_MESSAGE_BYTES.div_ceil(3) * 4;
-            ensure!(
-                data.len() <= max_encoded_bytes,
-                "socket message exceeds {MAX_SOCKET_MESSAGE_BYTES} decoded bytes"
-            );
-            let decoded = STANDARD
-                .decode(data)
-                .context("socket binary message is not valid base64")?;
-            ensure!(
-                decoded.len() <= MAX_SOCKET_MESSAGE_BYTES,
-                "socket message exceeds {MAX_SOCKET_MESSAGE_BYTES} decoded bytes"
-            );
-        }
+    if let ActorSocketMessage::Binary { data } = message {
+        STANDARD
+            .decode(data)
+            .context("socket binary message is not valid base64")?;
     }
     Ok(())
 }

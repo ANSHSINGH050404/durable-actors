@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 pub(crate) mod history;
 pub(crate) mod metrics;
@@ -173,12 +173,9 @@ impl std::error::Error for InvalidTraceQuery {}
 
 #[derive(Clone)]
 pub(crate) struct TraceStore {
-    writer: Arc<tokio::sync::Mutex<()>>,
     pending: Arc<tokio::sync::Semaphore>,
     persistence: Arc<dyn TracePersistence>,
-    dropped: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
-    persistence_failed: Arc<AtomicBool>,
-    pub changes: watch::Sender<()>,
+    pub changes: crate::postgres::notifications::ChangeFeed,
 }
 
 impl Default for TraceStore {
@@ -206,11 +203,6 @@ impl TraceStore {
             traces.iter().all(|trace| trace.project_id == project_id),
             "trace project does not match host"
         );
-        if dropped > 0 {
-            let mut counts = self.dropped.lock().unwrap();
-            let count = counts.entry(project_id.to_owned()).or_default();
-            *count = count.saturating_add(dropped);
-        }
         let events = traces
             .into_iter()
             .map(|trace| TraceEvent {
@@ -220,21 +212,16 @@ impl TraceStore {
                 trace,
             })
             .collect();
-        self.persist_detached(events).await
+        self.persist_detached(project_id, events, dropped).await
     }
 
     pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         query.validate().context(InvalidTraceQuery)?;
         let mut page = self.persistence.replay(project_id, query).await?;
-        page.dropped = self
-            .dropped
-            .lock()
-            .unwrap()
-            .get(project_id)
-            .copied()
-            .unwrap_or(0);
-        page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
+        let status = self.persistence.status(project_id).await?;
+        page.dropped = status.dropped;
+        page.persistence_failed = status.persistence_failed;
         Ok(page)
     }
 
@@ -276,60 +263,76 @@ impl TraceStore {
         validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
         query.validate().context(InvalidTraceQuery)?;
         let mut page = self.persistence.history(project_id, query).await?;
-        page.dropped = self
-            .dropped
-            .lock()
-            .unwrap()
-            .get(project_id)
-            .copied()
-            .unwrap_or(0);
-        page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
+        let status = self.persistence.status(project_id).await?;
+        page.dropped = status.dropped;
+        page.persistence_failed = status.persistence_failed;
         Ok(page)
     }
 
     fn new(persistence: Arc<dyn TracePersistence>) -> Self {
         Self {
-            writer: Arc::new(tokio::sync::Mutex::new(())),
             pending: Arc::new(tokio::sync::Semaphore::new(64)),
             persistence,
-            dropped: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            persistence_failed: Arc::new(AtomicBool::new(false)),
-            changes: watch::channel(()).0,
+            changes: Default::default(),
         }
     }
 
-    async fn persist_detached(&self, events: Vec<TraceEvent>) -> Result<()> {
+    async fn persist_detached(
+        &self,
+        project: &str,
+        events: Vec<TraceEvent>,
+        dropped: u64,
+    ) -> Result<()> {
         if events.is_empty() {
-            self.changes.send_replace(());
-            return Ok(());
+            return self.publish_status(project, dropped).await;
         }
         let permit = match self.pending.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(error) => {
-                self.report_persistence_failure(error, events.len());
-                return Ok(());
+                self.report_persistence_failure(project, &error, events.len())
+                    .await?;
+                return Err(error.into());
             }
         };
         let store = self.clone();
+        let project = project.to_owned();
         // Finish the commit even if the reporting connection is cancelled.
         tokio::spawn(async move {
             let _permit = permit;
-            let _writer = store.writer.lock().await;
             match store.persistence.append(&events).await {
-                Ok(()) => {
-                    store.changes.send_replace(());
+                Ok(()) => store.publish_status(&project, dropped).await?,
+                Err(error) => {
+                    store
+                        .report_persistence_failure(&project, &error, events.len())
+                        .await?;
+                    return Err(error);
                 }
-                Err(error) => store.report_persistence_failure(error, events.len()),
             }
+            Ok(())
         })
-        .await?;
+        .await?
+    }
+
+    async fn publish_status(&self, project: &str, dropped: u64) -> Result<()> {
+        if dropped > 0 {
+            self.persistence
+                .record_status(project, dropped, false)
+                .await?;
+        }
+        self.changes.notify().await;
         Ok(())
     }
 
-    fn report_persistence_failure(&self, error: impl std::fmt::Display, count: usize) {
+    async fn report_persistence_failure(
+        &self,
+        project: &str,
+        error: &(impl std::fmt::Display + Sync),
+        count: usize,
+    ) -> Result<()> {
         tracing::error!(%error, count, "request trace persistence failed");
-        self.persistence_failed.store(true, Ordering::Relaxed);
-        self.changes.send_replace(());
+        self.persistence.record_status(project, 0, true).await?;
+        self.changes.notify().await;
+        Ok(())
     }
 }
 

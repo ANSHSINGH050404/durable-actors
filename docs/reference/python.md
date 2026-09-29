@@ -171,7 +171,9 @@ class CustomerAgent(Actor):
 
 ## Deployment
 
-Register the project through the [HTTP API](openapi.md) with a Python `actorEntrypoint`, such as `src/actors.py`; dependencies come from `requirements.txt` or `pyproject.toml` and must match the runtime's SDK version. Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
+Register the project through the [HTTP API](openapi.md) with a Python `actorEntrypoint`, such as `src/actors.py`; dependencies come from `requirements.txt` or `pyproject.toml` and must match the runtime's SDK version. Hosted deployments run in GKE Sandbox: the builder publishes code and dependencies to GCS, and Rust downloads them when assigning a host. Python starts its executor upon assignment, including in prewarmed pods. See the [Helm chart](../../charts/terse/README.md) for production setup.
+
+Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
 
 ```toml
 [tool.durable-actors]

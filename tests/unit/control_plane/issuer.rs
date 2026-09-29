@@ -111,6 +111,7 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         "north-america-east",
         3,
         None,
+        "http://10.1.2.3:7101",
     )?;
     let invocation_verifier = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -123,6 +124,10 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         invocation_verifier.authenticate_authorization(&format!("Bearer {}", issued.token))?;
 
     assert_eq!(principal.host_id, host_id);
+    assert_eq!(
+        principal.invocation.as_ref().unwrap().route,
+        "http://10.1.2.3:7101/"
+    );
     assert_eq!(
         principal.invocation.expect("invocation capability").actor,
         actor
@@ -168,6 +173,7 @@ fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() ->
             "us-west",
             1,
             Some(grant),
+            "http://10.1.2.3:7101",
         )
     };
     let issued = issue(grant.clone())?;

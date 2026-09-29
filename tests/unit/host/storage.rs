@@ -1,14 +1,12 @@
 use super::*;
-use crate::{
-    bucket::BucketObject, replication::ReplicaSet, state_log::StateSnapshot,
-    state_transport::SnapshotWriter,
-};
+use crate::{bucket::BucketObject, state_log::StateSnapshot, state_transport::SnapshotWriter};
 use std::collections::HashMap;
 
 #[derive(Default)]
 struct MemoryBucket {
     objects: Mutex<HashMap<String, BucketObject>>,
     owner_reads: std::sync::atomic::AtomicUsize,
+    reject_snapshots: std::sync::atomic::AtomicBool,
 }
 #[async_trait]
 impl Bucket for MemoryBucket {
@@ -25,6 +23,13 @@ impl Bucket for MemoryBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        ensure!(
+            !key.contains("/snapshots/")
+                || !self
+                    .reject_snapshots
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot write unavailable"
+        );
         let mut objects = self.objects.lock().unwrap();
         let current = objects.get(key).map(|object| object.generation);
         if current != generation {
@@ -54,35 +59,8 @@ impl Bucket for MemoryBucket {
 #[tokio::test]
 async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
     let bucket = Arc::new(MemoryBucket::default());
-    let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
-    let runtime = Arc::new(RuntimeStorage::new(
-        bucket.clone(),
-        Arc::new(ReplicaSet(vec![])),
-        Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access,
-        "http://control-plane-unavailable.invalid".into(),
-        std::sync::Arc::new(crate::clock::SystemClock),
-    )?);
-    let host = HostId::new("host.v3.revision.host");
-    let storage = HostStorage {
-        observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
-        stop: CancellationToken::new(),
-        runtime,
-        transport: crate::state_transport::GrpcStateTransport::new(),
-        host: host.clone(),
-        session: "session".into(),
-        region: "us-east".into(),
-        actor: Some(ActorKey {
-            project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        }),
-        new_actor: true,
-        owner_hint: None,
-        activation: Mutex::new(None),
-        fence: Mutex::new(LeaseFence::default()),
-        lease: Mutex::new(None),
-    };
+    let storage = host_storage(bucket.clone()).await?;
+    let host = storage.host.clone();
     let actor = ActorKey {
         project_id: "default".into(),
         actor_name: "Counter".into(),
@@ -140,5 +118,63 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
     storage.unregister(&host, "session").await?;
     assert!(storage.ensure_authority().is_err());
     assert!(storage.acquire_actor(&actor, &host).await.is_err());
+    Ok(())
+}
+
+async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
+    let runtime = Arc::new(RuntimeStorage::new(bucket.clone(), Arc::new(SystemClock))?);
+    let host = HostId::new("host.v3.revision.host");
+    Ok(HostStorage {
+        objects: None,
+        observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
+        stop: CancellationToken::new(),
+        runtime,
+        host,
+        session: "session".into(),
+        region: "us-east".into(),
+        actor: Some(ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        }),
+        new_actor: true,
+        owner_hint: None,
+        activation: Mutex::new(None),
+        fence: Mutex::new(LeaseFence::default()),
+        lease: Mutex::new(None),
+    })
+}
+
+#[tokio::test]
+async fn persistence_failure_fences_the_host_and_requests_replacement() -> Result<()> {
+    let bucket = Arc::new(MemoryBucket::default());
+    let storage = Arc::new(host_storage(bucket.clone()).await?);
+    storage
+        .register(&HostLeaseRequest {
+            id: storage.host.clone(),
+            session_id: storage.session.clone(),
+            route: "http://host".into(),
+            duration_ms: 30_000,
+        })
+        .await?;
+    let actor = storage.actor.as_ref().unwrap();
+    let plan = storage
+        .prepare_state_write(actor, &storage.host, 1, 0)
+        .await?;
+    let bytes = StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        serde_json::json!({"count":1}),
+        serde_json::json!(1),
+    )?
+    .encode()?;
+    bucket
+        .reject_snapshots
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let writer = crate::host::persistence::ActorPersistence::new(storage.clone());
+    assert!(writer.write_snapshot(&plan, bytes).await.is_err());
+    assert!(storage.stop.is_cancelled());
+    assert!(storage.ensure_authority().is_err());
     Ok(())
 }

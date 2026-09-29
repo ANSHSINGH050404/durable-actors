@@ -13,8 +13,7 @@ console.log(
         pid: process.pid,
         args: process.argv.slice(2),
         url: process.env.DURABLE_ACTORS_CONTROL_PLANE_URL,
-        savedUrl: readFileSync(".env", "utf8").match(/^DURABLE_ACTORS_CONTROL_PLANE_URL=(.*)$/m)?.[1],
-        modalConfigured: Boolean(process.env.MODAL_TOKEN_SECRET)
+        savedUrl: readFileSync(".env", "utf8").match(/^DURABLE_ACTORS_CONTROL_PLANE_URL=(.*)$/m)?.[1]
     })
 )
 setInterval(() => {}, 1000)

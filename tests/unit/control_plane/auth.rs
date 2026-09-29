@@ -96,7 +96,7 @@ fn delegated_scope_requires_a_restricted_capability() -> Result<()> {
     };
     assert!(verifier.verify(&sign(claims.clone())?).is_err());
     claims["invocation"] = json!({
-        "actor": claims["actor"], "hostId": claims["processId"], "ownerEpoch": 1,
+        "actor": claims["actor"], "hostId": claims["processId"], "ownerEpoch": 1, "route":"http://host",
         "grant": { "subject": "credential-a", "grantId": "grant-a", "expiresAt": now + 60, "methods": ["increment"] }
     });
     assert!(verifier.verify(&sign(claims.clone())?).is_ok());

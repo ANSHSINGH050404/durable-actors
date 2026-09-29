@@ -157,29 +157,6 @@ jobs:
                   if-no-files-found: error
                   retention-days: 7
 
-    go-ci:
-        name: Test Modal Go provider
-        needs: preflight
-        runs-on: blacksmith-4vcpu-ubuntu-2404
-        defaults:
-            run:
-                working-directory: providers/modal-go
-        steps:
-            - name: Checkout the tagged commit
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  ref: ${{ github.sha }}
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-              with:
-                  go-version: "1.27.1"
-                  cache-dependency-path: providers/modal-go/go.sum
-            - run: test -z "$(gofmt -l .)"
-            - run: go test -race -mod=readonly -overlay tests/overlay.json ./...
-            - run: go vet -mod=readonly -overlay tests/overlay.json ./...
-            - name: Verify provider image packaging
-              working-directory: .
-              run: node --test tests/scripts/release-workflow.test.mjs
-
     python-ci:
         needs: preflight
         uses: ./.github/workflows/python.yml
@@ -190,7 +167,7 @@ jobs:
 
     native-publish:
         name: Verify and publish native runtime (${{ matrix.runner }})
-        needs: [preflight, rust, npm-ci, go-ci, python-ci, native]
+        needs: [preflight, rust, npm-ci, python-ci, native]
         strategy:
             fail-fast: false
             matrix:
@@ -298,7 +275,7 @@ jobs:
 
     image-push:
         name: Push runtime image (${{ matrix.arch }})
-        needs: [preflight, rust, npm-ci, go-ci, python-ci, image-build]
+        needs: [preflight, rust, npm-ci, python-ci, image-build]
         strategy:
             fail-fast: false
             matrix:
@@ -379,6 +356,30 @@ jobs:
               with:
                   subject-name: ${{ env.IMAGE }}
                   subject-digest: ${{ steps.manifest.outputs.digest }}
+
+    helm:
+        name: Publish Helm chart
+        needs: [preflight, image]
+        permissions:
+            contents: write
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Install Helm
+              run: |
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  sha256sum --check helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  tar -xzf helm-v3.19.0-linux-amd64.tar.gz
+                  sudo install linux-amd64/helm /usr/local/bin/helm
+            - run: helm lint charts/terse -f charts/terse/tests/values.yaml
+            - run: node --test charts/terse/tests/chart.test.mjs
+            - run: helm package charts/terse --destination .artifacts/charts
+            - name: Upload the validated Helm chart
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+              run: gh release upload "$RELEASE_TAG" .artifacts/charts/*.tgz --clobber
 
     npm:
         name: Publish npm packages

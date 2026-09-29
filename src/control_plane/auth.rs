@@ -41,6 +41,7 @@ pub(crate) struct ActorPrincipal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActorInvocationCapability {
+    pub route: String,
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub owner_epoch: u64,

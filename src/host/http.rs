@@ -12,10 +12,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
-    actor::{
-        ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect,
-        MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
-    },
+    actor::{ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect},
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
 };
@@ -52,7 +49,7 @@ impl ActorHostHttpService {
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
                 post(publish),
             )
-            .layer(DefaultBodyLimit::max(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))
+            .layer(DefaultBodyLimit::disable())
             .with_state(Arc::new(self))
     }
 

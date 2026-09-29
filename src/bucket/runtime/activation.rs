@@ -44,7 +44,7 @@ impl RuntimeStorage {
                 self.load(&actor.storage_key()).await?
             };
             let ownership_read_ms = read_started.elapsed().as_secs_f64() * 1_000.0;
-            let recovery = self
+            let mut recovery = self
                 .recover_activation(
                     actor,
                     request,
@@ -53,6 +53,7 @@ impl RuntimeStorage {
                 )
                 .await?;
             let mut record = Ownership {
+                persistence: self.persistence.clone(),
                 sealed: false,
                 inventory: ActivationInventory::default(),
                 actor: actor.clone(),
@@ -76,6 +77,8 @@ impl RuntimeStorage {
                 ensure!(hint.is_some(), "actor activation changed concurrently");
                 continue;
             }
+            self.snapshots.prepare(&record.stream()?.prefix).await?;
+            self.seed_replicas(&record, &mut recovery).await?;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -93,6 +96,35 @@ impl RuntimeStorage {
             return Ok(self.remember(record, recovery.snapshot));
         }
         anyhow::bail!("actor activation changed concurrently")
+    }
+
+    async fn seed_replicas(
+        &self,
+        record: &Ownership,
+        recovery: &mut ActivationRecovery,
+    ) -> Result<()> {
+        use crate::state_transport::SnapshotWriter;
+        if !matches!(
+            self.persistence,
+            super::super::PersistenceConfig::Replicated { .. }
+        ) {
+            return Ok(());
+        }
+        let Some(previous) = &recovery.snapshot else {
+            return Ok(());
+        };
+        let mut snapshot = crate::state_log::StateSnapshot::decode(&previous.bytes)?;
+        snapshot.owner_epoch = record.epoch;
+        let bytes = snapshot.encode()?;
+        let mut plan = self.write_plan(record, snapshot.state_version)?;
+        // The recovered baseline keeps its version while entering a fresh replica stream.
+        plan.stream.base_version = 0;
+        self.write_snapshot(&plan, bytes.clone()).await?;
+        recovery.snapshot = Some(LoadedSnapshot {
+            reference: SnapshotRef::new(plan.object_name, &snapshot, &bytes),
+            bytes: bytes.into(),
+        });
+        Ok(())
     }
 
     pub async fn renew_activation(
@@ -180,6 +212,10 @@ impl RuntimeStorage {
             return Ok(ActivationRecovery::default());
         };
         ensure!(
+            record.persistence == self.persistence,
+            "actor persistence configuration changed; an explicit state migration is required"
+        );
+        ensure!(
             record.actor == *actor && record.region == region,
             "ownership scope cannot change"
         );
@@ -194,29 +230,19 @@ impl RuntimeStorage {
         if record.sealed {
             let started = Instant::now();
             return Ok(ActivationRecovery {
-                snapshot: self.load_latest(record, None, None, &[]).await?,
+                snapshot: self.load_latest(record, None).await?,
                 snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
                 session_ms: None,
             });
         }
-        let mut recovery = ActivationRecovery::default();
-        let recover = async {
-            let started = Instant::now();
-            let recovered = self.recover_session(record).await;
-            recovery.session_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
-            recovered
-        };
-        let list = async {
-            let started = Instant::now();
-            let newest = self.latest_snapshot_key(record).await;
-            recovery.snapshot_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
-            newest
-        };
-        let (recovered, newest) = tokio::try_join!(recover, list)?;
-        let load_started = Instant::now();
-        recovery.snapshot = self.load_latest(record, recovered, newest, &[]).await?;
-        *recovery.snapshot_ms.as_mut().unwrap() += load_started.elapsed().as_secs_f64() * 1_000.0;
-        Ok(recovery)
+        let started = Instant::now();
+        self.snapshots.seal(&record.stream()?.prefix).await?;
+        let snapshot = self.latest(record, None).await?;
+        Ok(ActivationRecovery {
+            snapshot,
+            session_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+            snapshot_ms: None,
+        })
     }
 
     fn new_lease(&self, request: &HostLeaseRequest) -> Result<HostLease> {

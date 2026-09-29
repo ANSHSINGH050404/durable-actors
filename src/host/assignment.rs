@@ -24,7 +24,7 @@ struct AssignmentState {
 pub(super) fn router(token: String, pending: oneshot::Sender<Assignment>) -> Router {
     Router::new()
         .route("/assign", post(assign))
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::disable())
         .with_state(Arc::new(AssignmentState {
             authorization: format!("Bearer {token}"),
             pending: Mutex::new(Some(pending)),

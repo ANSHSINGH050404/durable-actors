@@ -18,8 +18,8 @@ use crate::{
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
     sandbox::{
-        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, ProviderCommandFailure,
-        SandboxProvider, TerminateHostsRequest,
+        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, SandboxProvider,
+        TerminateHostsRequest,
     },
 };
 
@@ -35,11 +35,12 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
-    deployment_update: Arc<tokio::sync::Mutex<()>>,
     pub(super) traces: crate::request_traces::TraceStore,
-    pub(super) changes: tokio::sync::watch::Sender<()>,
+    pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
+    pub(crate) replicas: Option<Arc<crate::replicas::fleet::ReplicaFleet>>,
+    pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
     auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
@@ -74,10 +75,11 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
-            deployment_update: Arc::new(tokio::sync::Mutex::new(())),
             traces: crate::request_traces::TraceStore::default(),
-            changes: tokio::sync::watch::channel(()).0,
+            changes: Default::default(),
             runtime_access: None,
+            replicas: None,
+            gateway: None,
             region: None,
             placements,
             auth,
@@ -122,6 +124,7 @@ impl ControlPlaneService {
     pub(super) async fn register_deployment(
         &self,
         admin: &AdminService,
+        update: &mut dyn super::admin::DeploymentUpdate,
         spec: &HostLaunchSpec,
         contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
@@ -131,8 +134,8 @@ impl ControlPlaneService {
         if let Some(previous) = previous {
             self.terminate_deployment_hosts(&previous).await?;
         }
-        let changed = admin.register_deployment(spec, contract).await?;
-        self.changes.send_replace(());
+        let changed = update.register(spec, contract).await?;
+        self.changes.notify().await;
         Ok(changed || replacing)
     }
 
@@ -142,8 +145,8 @@ impl ControlPlaneService {
         source: &HostLaunchSpec,
         supplied_contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
-        let _update = self.deployment_update.lock().await;
         source.validate()?;
+        let mut update = admin.lock_deployment(&source.project_id).await?;
         let previous = admin.current_deployment(&source.project_id).await?;
         let local_build = match &self.local_builds {
             Some(builds) => Some(builds.prepare(source).await?),
@@ -179,7 +182,9 @@ impl ControlPlaneService {
             .map(|contract| contract.sandboxes())
             .transpose()?
             .unwrap_or_default();
-        let changed = self.register_deployment(admin, &prepared, contract).await?;
+        let changed = self
+            .register_deployment(admin, update.as_mut(), &prepared, contract)
+            .await?;
         if let Some(build) = local_build {
             build.commit().await;
         }
@@ -191,13 +196,13 @@ impl ControlPlaneService {
         admin: &AdminService,
         project_id: &str,
     ) -> Result<bool> {
-        let _update = self.deployment_update.lock().await;
+        let mut update = admin.lock_deployment(project_id).await?;
         let Some(previous) = admin.current_deployment(project_id).await? else {
             return Ok(false);
         };
         self.terminate_deployment_hosts(&previous).await?;
-        admin.remove_deployment(project_id).await?;
-        self.changes.send_replace(());
+        update.remove().await?;
+        self.changes.notify().await;
         Ok(true)
     }
 
@@ -268,6 +273,7 @@ impl ControlPlaneService {
         Ok((
             routed.placement.home_region,
             super::socket_ticket::SocketTarget {
+                route: routed.lease.route.clone(),
                 host_id: routed.lease.id,
                 session_id: routed.lease.session_id,
                 owner_epoch: routed.placement.owner_epoch,
@@ -348,6 +354,7 @@ impl ControlPlaneService {
             &target.placement.home_region,
             target.placement.owner_epoch,
             grant,
+            &target.lease.route,
         )?;
         let expires_at_ms = issued.expires_at_ms.min(i64::try_from(
             idle_expires_at_ms.min(target.lease.expires_at_ms),
@@ -435,55 +442,16 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
-            ControlPlaneCommand::PrepareReplicaConnections => {
-                let targets = self
-                    .runtime_access
+            ControlPlaneCommand::ReplicaDirectory { command } => {
+                use crate::replicas::directory::ReplicaDirectory;
+                let fleet = self
+                    .replicas
                     .as_ref()
-                    .context("direct storage is not configured")?
-                    .initial_replica_targets(&crate::replication::ReplicaScope {
-                        actor: principal.actor.clone(),
-                        host: principal.host_id.clone(),
-                        session: principal.session_id.clone(),
-                        region: principal.region.clone(),
-                    })
-                    .await?;
-                Ok(ControlPlaneCommandReply::Replicas { targets })
-            }
-            ControlPlaneCommand::PrepareInitialReplicas => {
-                let membership = self
-                    .runtime_access
-                    .as_ref()
-                    .context("direct storage is not configured")?
-                    .initial_replicas(&crate::replication::ReplicaScope {
-                        actor: principal.actor.clone(),
-                        host: principal.host_id.clone(),
-                        session: principal.session_id.clone(),
-                        region: principal.region.clone(),
-                    })
-                    .await?;
-                Ok(ControlPlaneCommandReply::InitialReplicas { membership })
-            }
-            ControlPlaneCommand::EnsureReplicas { failed } => {
-                self.require_active_host(principal).await?;
-                ensure!(
-                    failed.len() <= crate::replication::MAX_REPLICAS,
-                    "too many failed replicas"
-                );
-                let targets = self
-                    .runtime_access
-                    .as_ref()
-                    .context("direct storage is not configured")?
-                    .replicas(
-                        &crate::replication::ReplicaScope {
-                            actor: principal.actor.clone(),
-                            host: principal.host_id.clone(),
-                            session: principal.session_id.clone(),
-                            region: principal.region.clone(),
-                        },
-                        &failed,
-                    )
-                    .await?;
-                Ok(ControlPlaneCommandReply::Replicas { targets })
+                    .context("dedicated replica directory is not configured")?;
+                fleet.authorize(principal, &command).await?;
+                Ok(ControlPlaneCommandReply::ReplicaDirectory {
+                    reply: fleet.execute(command).await?,
+                })
             }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {
                 self.require_active_host(principal).await?;
@@ -515,7 +483,7 @@ impl ControlPlaneService {
                         && owner.lease.session_id == principal.session_id),
                     "host session does not match"
                 );
-                self.changes.send_replace(());
+                self.changes.notify().await;
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::SocketMessage { actor, event } => {
@@ -525,11 +493,20 @@ impl ControlPlaneService {
             }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
+                let spec = self
+                    .registry
+                    .launch_spec(&principal.actor.project_id)
+                    .await?
+                    .context("deployment removed")?;
+                ensure!(
+                    principal.host_config_key.as_deref() == Some(spec.host_config_key().as_str()),
+                    "host deployment changed"
+                );
                 let token = self
                     .runtime_access
                     .as_ref()
                     .context("direct storage is not configured")?
-                    .issue()
+                    .issue(&principal.actor, spec.code_snapshot.as_deref())
                     .await?;
                 let replacement_token = self
                     .host_token_issuer
@@ -1007,7 +984,7 @@ impl HostProvisioner for SandboxHostProvisioner {
     ) -> Result<HostTermination> {
         if let Some(pool) = &self.pool {
             return Ok(HostTermination {
-                provider: "modal".into(),
+                provider: "gke".into(),
                 resource_ids: pool.retire_config(&spec.host_config_key()).await?,
             });
         }
@@ -1033,17 +1010,13 @@ impl SandboxHostProvisioner {
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
-        if let Some(access) = &self.runtime_access {
-            access.prewarm(crate::replication::ReplicaScope {
-                actor: actor.clone(),
-                host: request.host_id.clone(),
-                session: request.session_id.clone(),
-                region: region.into(),
-            });
-        }
         let token = async {
             match &self.runtime_access {
-                Some(access) => Ok(Some(access.bootstrap(region).await?)),
+                Some(access) => Ok(Some(
+                    access
+                        .bootstrap(region, actor, spec.code_snapshot.as_deref())
+                        .await?,
+                )),
                 None => anyhow::Ok(None),
             }
         };
@@ -1083,17 +1056,12 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
-                let command = error.downcast_ref::<ProviderCommandFailure>();
                 warn!(
                     event = "actor_host_provisioning",
                     project_id = %spec.project_id,
                     region,
                     host_id = %request.host_id,
                     started_at_ms = 0,
-                    provider_process_spawned_at_ms = command.and_then(ProviderCommandFailure::spawned_at_ms),
-                    provider_request_written_at_ms = command.and_then(ProviderCommandFailure::request_written_at_ms),
-                    provider_process_completed_at_ms = command.and_then(ProviderCommandFailure::process_completed_at_ms),
-                    provider_response_decoded_at_ms = command.and_then(ProviderCommandFailure::response_decoded_at_ms),
                     completed_at_ms = elapsed_ms(started_at),
                     outcome = "provider_failed",
                     error = %format!("{error:#}"),
@@ -1164,14 +1132,14 @@ impl SandboxHostProvisioner {
             provider_request_written_at_ms = provisioning.as_ref().and_then(|value| value.request_written_at_ms),
             provider_process_completed_at_ms = provisioning.as_ref().and_then(|value| value.process_completed_at_ms),
             provider_response_decoded_at_ms = provisioning.as_ref().and_then(|value| value.response_decoded_at_ms),
-            modal_provider_started_at_ms = provisioning.as_ref().map(|value| value.started_at_ms),
-            modal_input_parsed_at_ms = provisioning.as_ref().and_then(|value| value.input_parsed_at_ms),
-            modal_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
-            modal_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
-            modal_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
-            modal_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
-            modal_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
-            modal_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),
+            provider_provider_started_at_ms = provisioning.as_ref().map(|value| value.started_at_ms),
+            provider_input_parsed_at_ms = provisioning.as_ref().and_then(|value| value.input_parsed_at_ms),
+            provider_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
+            provider_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
+            provider_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
+            provider_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
+            provider_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
+            provider_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),
             lease_validated_at_ms,
             completed_at_ms = elapsed_ms(started_at),
             outcome = "ready",
@@ -1333,4 +1301,4 @@ mod deployment_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/service.rs"]
-mod tests;
+pub(crate) mod tests;

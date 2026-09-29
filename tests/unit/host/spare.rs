@@ -95,8 +95,8 @@ async fn run_activation(
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
         "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
         "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
-            "bucket": {"type": "file", "directory": data}, "region": "north-america-east",
-            "replicaSecret": "test-secret", "replicaRegions": [], "token": null
+            "bucket": {"type": "file", "directory": data}, "region": "north-america-east", "persistence": {"type":"local"},
+            "token": null
         }).to_string()
     }))?;
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
@@ -112,6 +112,7 @@ async fn run_activation(
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
+    tokio::fs::write(&code, artifact).await?;
     let task = tokio::spawn(serve_assigned_host(
         config,
         Some(warm),
@@ -119,24 +120,6 @@ async fn run_activation(
     ));
     let bucket = FileBucket::new(data.to_path_buf())?;
     let owner = crate::storage_paths::owner(&actor.storage_key())?;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(value) = bucket.get(&owner).await? {
-                let placement: serde_json::Value = serde_json::from_slice(&value.bytes)?;
-                if placement.to_string().contains(host_id.as_str()) {
-                    break anyhow::Ok(());
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .context("state recovery must start before customer code arrives")??;
-    assert!(
-        !ready.exists(),
-        "ownership alone must not publish readiness"
-    );
-    tokio::fs::write(&code, artifact).await?;
     if before < 0 {
         assert!(
             tokio::time::timeout(Duration::from_secs(10), task)
@@ -224,15 +207,11 @@ async fn compile_counter(sdk: &Path, project: &Path) -> Result<Vec<u8>> {
 }
 
 #[tokio::test]
-async fn unavailable_prewarming_leaves_assignment_available() {
-    assert!(prewarm_control_plane(None).await.is_none());
+async fn control_plane_failure_prevents_spare_readiness() {
     assert!(
-        prewarm_control_plane(Some("invalid endpoint".into()))
+        prewarm_control_plane(Some("http://127.0.0.1:1".into()))
             .await
-            .is_none()
+            .is_err()
     );
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
-    assert!(prewarm_control_plane(Some(url)).await.is_none());
+    assert!(prewarm_control_plane(None).await.is_err());
 }

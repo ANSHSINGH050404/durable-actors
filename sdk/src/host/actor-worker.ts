@@ -41,6 +41,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
     try {
         if (assigned) throw new Error("customer code already assigned")
         assigned = true
+        Object.assign(process.env, data.environment)
         const actorNames = await loadActorEntrypoint(data.moduleUrl)
         let runtime: ActorRuntime | undefined
 

@@ -4,6 +4,7 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::*;
+use std::collections::HashMap;
 
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
@@ -34,6 +35,9 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
         values.get(name).map(|value| (*value).into())
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
+    let resources = &config.sandbox_provider.pool.resources;
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (250, 256));
+    assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
     assert_eq!(config.api_key.as_deref(), Some("api-key"));
@@ -41,7 +45,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 }
 
 #[test]
-fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Result<()> {
+fn pool_capacity_is_configurable_and_validated() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
@@ -49,11 +53,11 @@ fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Resu
     let defaults = parse(&values)?.sandbox_provider.pool;
     assert_eq!(
         (defaults.idle, defaults.fleet_maximum, defaults.max_starting),
-        (5, 64, 8)
+        (64, 256, 32)
     );
     values.extend([
-        ("DURABLE_ACTORS_SPARE_IDLE", "2"),
-        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "20"),
+        ("DURABLE_ACTORS_SPARE_IDLE", "128"),
+        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "512"),
         ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
     ]);
     let configured = parse(&values)?.sandbox_provider.pool;
@@ -63,11 +67,11 @@ fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Resu
             configured.fleet_maximum,
             configured.max_starting
         ),
-        (2, 20, 4)
+        (128, 512, 4)
     );
     values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "1");
     assert!(parse(&values).is_err());
-    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "20");
+    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "512");
     values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "0");
     assert!(parse(&values).is_err());
     Ok(())
@@ -170,36 +174,22 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
-    let mut values = HashMap::from([
-        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
-        (
-            "DURABLE_ACTORS_CONTROL_PLANE_URL",
-            "https://control.example",
-        ),
-        ("MODAL_TOKEN_ID", "id"),
-        ("MODAL_TOKEN_SECRET", "secret"),
-    ]);
-    let configure = |values: &HashMap<&str, &str>| {
-        sandbox_provider_config(
-            &mut |name| values.get(name).map(|v| (*v).into()),
-            "issuer",
-            "audience",
-        )
-    };
-    assert!(
-        !configure(&values)?
-            .environment
-            .contains_key("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK")
-    );
-    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "true");
+fn production_defaults_to_zonal_replicas_and_gke() -> Result<()> {
+    let values = process_environment();
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert!(matches!(
+        config.storage.persistence,
+        crate::bucket::PersistenceConfig::Replicated {
+            durability: crate::bucket::Durability::Zonal,
+            ..
+        }
+    ));
     assert_eq!(
-        configure(&values)?.environment["DURABLE_ACTORS_MODAL_MUTABLE_NETWORK"],
-        "true"
+        config.sandbox_provider.gke.zones["north-america-west"],
+        "us-west4-a"
     );
-    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "yes");
-    assert!(configure(&values).is_err());
     Ok(())
 }
 
@@ -231,17 +221,36 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
+        (
+            "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
+            "test@project.iam.gserviceaccount.com",
+        ),
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
-        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
+        (
+            "DURABLE_ACTORS_RUNTIME_IMAGE",
+            "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
+        ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
+        (
+            "DURABLE_ACTORS_REPLICA_SECRET",
+            "0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "DURABLE_ACTORS_REPLICA_PLACEMENTS",
+            r#"["us-west4-a","us-west4-a","us-west4-a"]"#,
+        ),
+        (
+            "DURABLE_ACTORS_GKE_ZONES",
+            r#"{"north-america-west":"us-west4-a"}"#,
+        ),
+        ("DURABLE_ACTORS_PUBLIC_URL", "https://actors.example.com"),
         (
             "DURABLE_ACTORS_CONTROL_PLANE_URL",
             "https://objects.example.com",
         ),
-        ("MODAL_TOKEN_ID", "modal-token-id"),
-        ("MODAL_TOKEN_SECRET", "modal-token-secret"),
         (
             "DURABLE_ACTORS_POSTGRES_URL",
             "postgresql://localhost/actors",
@@ -268,5 +277,26 @@ fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
         values.insert("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS", invalid);
         assert!(parse(&values).is_err());
     }
+    Ok(())
+}
+
+#[test]
+fn default_region_requires_a_configured_compute_zone() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(
+        parse(&values)?.region.as_deref(),
+        Some("north-america-west")
+    );
+    values.insert("DURABLE_ACTORS_REGION", "north-america-east");
+    assert!(parse(&values).is_err());
+    values.remove("DURABLE_ACTORS_REGION");
+    values.insert(
+        "DURABLE_ACTORS_GKE_ZONES",
+        r#"{"north-america-west":"us-west4-b"}"#,
+    );
+    assert!(parse(&values).is_ok());
     Ok(())
 }

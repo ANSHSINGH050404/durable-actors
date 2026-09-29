@@ -25,20 +25,14 @@ export class RuntimeBuilder {
     }
 
     async compile(staging) {
-        const provider = path.join(this.root, "target/release/durable-actors-modal-go")
         await this.run("cargo", ["build", "--locked", "--release", "--bin", "durable-actors"], { cwd: this.root })
         await copyFile(path.join(this.root, "target/release/durable-actors"), path.join(staging, "durable-actors"))
-        await this.run("go", ["build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", provider, "."], {
-            cwd: path.join(this.root, "providers/modal-go"),
-            env: { ...process.env, CGO_ENABLED: "0" }
-        })
-        await copyFile(provider, path.join(staging, "durable-actors-modal-go"))
     }
 
     async package(staging, output) {
         const name = `durable-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "durable-actors-modal-go"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")

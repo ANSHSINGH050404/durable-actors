@@ -48,7 +48,7 @@ async fn capacity(tx: &Transaction<'_>, key: &str, config: &PoolConfig) -> Resul
         limit.saturating_sub(row.get::<_, i64>(field).min(i64::from(u32::MAX)) as u32)
     };
     Ok(remaining(config.idle, "available")
-        .min(remaining(config.idle * 2, "occupied"))
+        .min(remaining(config.idle.saturating_mul(2), "occupied"))
         .min(remaining(config.fleet_maximum, "fleet"))
         .min(remaining(config.max_starting, "starting")))
 }

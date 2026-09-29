@@ -14,8 +14,8 @@ async function runGenericHost(): Promise<never> {
         const socket = await connectSocket(settings.socketPath)
         const assignment = readAssignment(socket)
         socket.write(`${JSON.stringify({ type: "warm", protocol: 18 })}\n`)
-        const { entrypoint } = await assignment
-        await waitForCode(entrypoint)
+        const { entrypoint, environment } = await assignment
+        await access(entrypoint)
         let available = true
         const session = new ActorSession(
             { ...settings, actorEntrypoint: entrypoint },
@@ -23,9 +23,10 @@ async function runGenericHost(): Promise<never> {
                 new ActorWorkerSupervisor({
                     ...options,
                     createWorker: (data, onStateChange) => {
-                        if (!available) return new ActorWorker(data, onStateChange)
+                        const assigned = { ...data, environment }
+                        if (!available) return new ActorWorker(assigned, onStateChange)
                         available = false
-                        worker.load(data, onStateChange)
+                        worker.load(assigned, onStateChange)
                         return worker
                     }
                 }),
@@ -50,7 +51,6 @@ function readAssignment(socket: Socket): Promise<z.infer<typeof assignmentSchema
         const closed = () => fail(new Error("Rust host disconnected before assignment"))
         const read = (chunk: Buffer) => {
             buffer += chunk.toString("utf8")
-            if (Buffer.byteLength(buffer) > 8192) return fail(new Error("assignment is too large"))
             if (!buffer.includes("\n")) return
             try {
                 const assignment = assignmentSchema.parse(JSON.parse(buffer))
@@ -69,22 +69,10 @@ function readAssignment(socket: Socket): Promise<z.infer<typeof assignmentSchema
     })
 }
 
-async function waitForCode(entrypoint: string): Promise<void> {
-    const deadline = Date.now() + 60_000
-    while (true) {
-        try {
-            await access(entrypoint)
-            return
-        } catch (error) {
-            if (Date.now() >= deadline) throw error
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
-    }
-}
-
 const assignmentSchema = z.object({
     type: z.literal("load"),
-    entrypoint: z.string().refine(isAbsolute, "entrypoint must be absolute")
+    entrypoint: z.string().refine(isAbsolute, "entrypoint must be absolute"),
+    environment: z.record(z.string(), z.string())
 })
 
 export { runGenericHost }

@@ -10,6 +10,7 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         write_json_line(&mut socket, &json!({"type":"warm","protocol":18})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
+        assert_eq!(load["environment"]["CUSTOMER_KEY"], "value");
         write_json_line(
             &mut socket,
             &json!({"type":"attach","protocol":18,"actor_names":["counter"]}),
@@ -27,7 +28,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         anyhow::Ok(())
     });
     let warm = listener.accept_warm().await?;
-    let connection = warm.load("/customer/actors.mjs").await?;
+    let connection = warm
+        .load(
+            "/customer/actors.mjs",
+            &HashMap::from([("CUSTOMER_KEY".into(), "value".into())]),
+        )
+        .await?;
     connection.mark_ready(None, None).await?;
     connection
         .executor()
@@ -463,68 +469,6 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
     Ok(())
 }
 
-#[tokio::test]
-async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
-    let root = TempDir::new_in("/tmp")?;
-    let socket = root.path().join("actor-executor.sock");
-    let host = ActorExecutorListener::bind(&socket).await?;
-    let customer = tokio::spawn(run_attached_customer(socket.clone()));
-    let connection = host.accept().await?;
-    let executor = connection.executor();
-    connection.mark_ready(None, None).await?;
-
-    let shutdown = CancellationToken::new();
-    let connection_task = tokio::spawn(connection.run(shutdown.clone()));
-    let outcome = executor
-        .invoke(
-            ActorMethodInvocation {
-                request_id: "request-1".into(),
-                actor: ActorKey {
-                    project_id: "default".into(),
-                    actor_name: "counter".into(),
-                    actor_id: "counter-1".into(),
-                },
-                method: "accept".into(),
-                args: vec![json!("x".repeat(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))],
-            },
-            None,
-        )
-        .await?;
-
-    assert!(matches!(
-        outcome,
-        ActorMethodOutcome::Failed(ref failure) if failure.code == "resource_exhausted"
-    ));
-    shutdown.cancel();
-    connection_task.await??;
-    customer.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn oversized_client_messages_are_rejected_before_newline() -> Result<()> {
-    let (host, mut customer) = UnixStream::pair()?;
-    let (reader, _) = host.into_split();
-    let mut reader = BufReader::new(reader);
-    let customer = tokio::spawn(async move {
-        let chunk = vec![b'x'; 64 * 1024];
-        for _ in 0..=MAX_ACTOR_EXECUTOR_MESSAGE_BYTES / chunk.len() {
-            customer.write_all(&chunk).await?;
-        }
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
-    });
-
-    let result = timeout(Duration::from_secs(5), read_client_message(&mut reader)).await;
-    customer.abort();
-    let error = result
-        .context("oversized actor executor message was not rejected before newline")?
-        .expect_err("oversized actor executor message should fail");
-    assert!(error.to_string().contains("exceeds"));
-    Ok(())
-}
-
 async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let stream = UnixStream::connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
@@ -585,25 +529,6 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     ensure!(
         reader.read_line(&mut trailing).await? == 0,
         "expected Rust host to close the actor executor"
-    );
-    Ok(())
-}
-
-async fn run_attached_customer(socket: PathBuf) -> Result<()> {
-    let stream = UnixStream::connect(socket).await?;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":18,\"actor_names\":[\"counter\"]}\n")
-        .await?;
-    ensure!(
-        read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 18, "supports_residency": true })
-    );
-    let mut trailing = String::new();
-    ensure!(
-        reader.read_line(&mut trailing).await? == 0,
-        "oversized command reached the customer actor executor"
     );
     Ok(())
 }

@@ -46,25 +46,6 @@ jobs:
                   docker run --rm durable-actors:ci --version
                   docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" durable-actors:ci /tmp/image_smoke.py
 
-    go:
-        name: Modal Go provider
-        runs-on: blacksmith-4vcpu-ubuntu-2404
-        defaults:
-            run:
-                working-directory: providers/modal-go
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-              with:
-                  go-version: "1.27.1"
-                  cache-dependency-path: providers/modal-go/go.sum
-            - run: test -z "$(gofmt -l .)"
-            - run: go test -race -mod=readonly -overlay tests/overlay.json ./...
-            - run: go vet -mod=readonly -overlay tests/overlay.json ./...
-            - name: Verify provider image packaging
-              working-directory: .
-              run: node --test tests/scripts/release-workflow.test.mjs
-
     rust:
         name: Rust runtime (Bun ${{ matrix.bun }})
         strategy:
@@ -163,6 +144,28 @@ jobs:
             - name: Verify npm package
               working-directory: sdk
               run: npm pack --dry-run
+
+    helm:
+        name: Kubernetes chart
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Install Helm
+              run: |
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  sha256sum --check helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  tar -xzf helm-v3.19.0-linux-amd64.tar.gz
+                  sudo install linux-amd64/helm /usr/local/bin/helm
+            - run: helm lint charts/terse -f charts/terse/tests/values.yaml
+            - run: node --test charts/terse/tests/chart.test.mjs
+            - run: helm package charts/terse --destination .artifacts/charts
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: terse-helm-chart
+                  path: .artifacts/charts/*.tgz
+                  include-hidden-files: true
+                  if-no-files-found: error
 
     native:
         if: github.event_name == 'push'

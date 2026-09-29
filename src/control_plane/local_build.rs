@@ -49,7 +49,7 @@ impl LocalBuilds {
         );
         ensure!(
             source.secret_refs.is_empty(),
-            "Modal secret references are unavailable in local mode"
+            "Kubernetes secret references are unavailable in local mode"
         );
         let root = self.directory.join(&source.project_id);
         tokio::fs::create_dir_all(&root).await?;

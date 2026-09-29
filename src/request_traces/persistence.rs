@@ -12,10 +12,18 @@ mod cursor;
 pub(crate) mod postgres;
 pub(crate) mod sqlite;
 
+#[derive(Default)]
+pub(crate) struct TraceStatus {
+    pub dropped: u64,
+    pub persistence_failed: bool,
+}
+
 // TraceStore validates project IDs and query bounds before calling the backends.
 #[async_trait]
 pub(crate) trait TracePersistence: Send + Sync {
     async fn initialize(&self) -> Result<()>;
+    async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()>;
+    async fn status(&self, project: &str) -> Result<TraceStatus>;
     // Events have stable IDs; repeated appends must not duplicate them.
     async fn append(&self, events: &[TraceEvent]) -> Result<()>;
     async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage>;

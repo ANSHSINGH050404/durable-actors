@@ -46,7 +46,8 @@ fn embedded_migrations_have_no_version_gaps() {
         .map(|migration| migration.version())
         .collect();
     versions.sort_unstable();
-    let expected: Vec<_> = (1..=versions.len() as i32).collect();
+    let mut expected: Vec<_> = (1..=versions.len() as i32).collect();
+    expected.sort_unstable();
     assert_eq!(versions, expected);
 }
 
@@ -92,7 +93,13 @@ async fn contract_schema_keeps_one_contract_per_project() -> Result<()> {
 
 #[tokio::test]
 async fn concurrent_connections_migrate_fresh_and_existing_schemas_once() -> Result<()> {
-    for version in [0, 2] {
+    let latest = embedded::migrations::runner()
+        .get_migrations()
+        .iter()
+        .map(|m| m.version())
+        .max()
+        .unwrap();
+    for version in [0, latest] {
         with_postgres_schema(async |database| check_concurrent_migrations(database, version).await)
             .await?;
     }
@@ -218,7 +225,13 @@ async fn check_concurrent_migrations(database: &TestDatabase, version: i32) -> R
         .iter()
         .map(|row| row.get(0))
         .collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    let mut expected: Vec<_> = embedded::migrations::runner()
+        .get_migrations()
+        .iter()
+        .map(|m| m.version())
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(versions, expected);
     Ok(())
 }
 
@@ -244,4 +257,53 @@ async fn check_concurrent_connections(url: &str) -> Result<()> {
         "concurrent migrations failed: {failures:#?}"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn notifications_recover_from_initial_connection_failure_and_reach_another_instance()
+-> Result<()> {
+    testing::with_postgres(async |fixture| {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _guard = stop.clone().drop_guard();
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let first =
+            notifications::ChangeFeed::postgres(database.clone(), &fixture.url, stop.clone())
+                .await?;
+        let (proxy_url, _proxy) = reset_first_connection(&fixture.url).await?;
+        let second = notifications::ChangeFeed::postgres(database, &proxy_url, stop).await?;
+        let mut changes = second.subscribe();
+        first.notify().await;
+        tokio::time::timeout(Duration::from_secs(2), changes.changed()).await??;
+        Ok(())
+    })
+    .await
+}
+
+async fn reset_first_connection(
+    url: &str,
+) -> Result<(String, tokio_util::task::AbortOnDropHandle<Result<()>>)> {
+    let mut url = reqwest::Url::parse(url)?;
+    let target = format!(
+        "{}:{}",
+        url.host_str().context("PostgreSQL host")?,
+        url.port().unwrap_or(5432)
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    url.set_host(Some("127.0.0.1"))?;
+    url.set_port(Some(listener.local_addr()?.port())).unwrap();
+    let task = tokio::spawn(async move {
+        drop(listener.accept().await?.0);
+        let mut connections = tokio::task::JoinSet::new();
+        while let Ok((mut downstream, _)) = listener.accept().await {
+            let mut upstream = tokio::net::TcpStream::connect(&target).await?;
+            connections.spawn(async move {
+                tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await
+            });
+        }
+        Ok(())
+    });
+    Ok((
+        url.to_string(),
+        tokio_util::task::AbortOnDropHandle::new(task),
+    ))
 }

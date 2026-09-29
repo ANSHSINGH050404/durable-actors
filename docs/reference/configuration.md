@@ -28,26 +28,34 @@ Used by `dev`.
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors` | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                     | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
 
-## Server hosting
+## Kubernetes hosting
 
-The server requires a `DURABLE_ACTORS_CONTROL_PLANE_URL` reachable by its actor hosts and clients, which may be on a private network.
+Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox. It colocates the control plane and HTTPS/WebSocket gateway with a prewarmed actor pool. The chart sets these runtime variables:
 
-`DURABLE_ACTORS_SECRET` is optional for `durable-actors start`, the native executable, and the container. When the listening address is not localhost and no secret is configured, startup warns that anyone who can reach the server can access its API, then continues. The SDK also accepts `DURABLE_ACTORS_API_KEY`, with `DURABLE_ACTORS_SECRET` taking precedence. Internal actor and storage credentials are still required and are managed separately.
-
-| Variable                            | Default                                                 | Meaning                                                                            |
-| ----------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_PROCESS_ROLE`       | CLI `start`: `control_plane`; native executable: `host` | Set to `control_plane` when running the server container.                          |
-| `DURABLE_ACTORS_CONTROL_PLANE_BIND` | `127.0.0.1:7100`                                        | Listening address. Use `0.0.0.0:7100` inside a container.                          |
-| `DURABLE_ACTORS_POSTGRES_URL`       | Required                                                | PostgreSQL connection URL. The database user must be able to run migrations.       |
-| `DURABLE_ACTORS_BUCKET`             | Required                                                | GCS bucket name without `gs://`. Also required for local GCS storage.              |
-| `GOOGLE_APPLICATION_CREDENTIALS`    | Google Application Default Credentials                  | Path to a service-account credentials file; omit with an attached Google identity. |
-| `DURABLE_ACTORS_SANDBOX_PROVIDER`   | Required                                                | Supported value: `modal`.                                                          |
-| `DURABLE_ACTORS_RUNTIME_IMAGE`      | Required                                                | Shared Modal runtime image ID (`im-...`), matching the SDK version.                |
-| `MODAL_TOKEN_ID`                    | Required                                                | Token ID for the Modal workspace containing your images.                           |
-| `MODAL_TOKEN_SECRET`                | Required                                                | Modal token secret.                                                                |
-| `DURABLE_ACTORS_JWT_SIGNING_KEY`    | Required; generated for local development               | Base64-encoded Ed25519 PKCS#8 signing key. Reuse across restarts.                  |
-
-When importing the runtime image into Modal, clear its Docker entrypoint with `modal.Image.from_registry(..., add_python="3.12").entrypoint([])` so the provider can run its build, actor, and replica commands.
+| Variable | Meaning |
+| --- | --- |
+| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` for the server; the provider assigns actor/spare roles. |
+| `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
+| `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
+| `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
+| `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
+| `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
+| `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
+| `DURABLE_ACTORS_REPLICA_PLACEMENTS` | JSON array of Google Cloud zones; each entry requests a dedicated replica for every actor activation. All copies must confirm each write. |
+| `DURABLE_ACTORS_REPLICA_IDLE` | Ready unassigned replica target, default `192`. |
+| `DURABLE_ACTORS_REPLICA_MAX_STARTING` | Concurrent replica spare starts, default `32`. |
+| `DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET` | Secret containing `replica-key` in the sandbox namespace, default `terse-replica-credentials`. |
+| `DURABLE_ACTORS_REPLICA_RESOURCES` | Kubernetes requests/limits JSON; defaults to requests of `50m` CPU and `64Mi` RAM, with a `512Mi` memory limit and no CPU limit. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Standard GCS bucket for immutable change-log batches. |
+| `DURABLE_ACTORS_REPLICA_SECRET` | Shared infrastructure credential, at least 32 bytes. Customer hosts receive actor-scoped capabilities. |
+| `DURABLE_ACTORS_REPLICA_ID` | Stable identity of this storage replica. |
+| `DURABLE_ACTORS_REPLICA_DATA` | SQLite file on a retained persistent volume. |
+| `DURABLE_ACTORS_DURABILITY` | `zonal` (default), `regional`, or `multi_region`. |
+| `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
+| `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a Google zone. |
+| `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
+| `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
 
 ## Advanced settings
 
@@ -57,12 +65,12 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | ------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`      | `10000`              | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket messages reset the timer; running handlers defer eviction. Open WebSockets retain the host and connections, but not the actor instance. Without open sockets, an idle host shuts down. |
 | `DURABLE_ACTORS_HOST_STARTUP_MS`            | `10000`              | Positive actor-host startup timeout in milliseconds.                                                                                                                                                            |
-| `DURABLE_ACTORS_SPARE_IDLE`                 | `5`                  | Ready sandboxes per role, image, region, and resource configuration; 0–32. Zero creates hosts on demand. Servers sharing PostgreSQL must use matching pool settings. Named Modal secrets bypass the actor pool. |
-| `DURABLE_ACTORS_SPARE_REGIONS`              | `north-america-east` | Comma-separated regions for ready actor hosts.                                                                                                                                                                  |
+| `DURABLE_ACTORS_SPARE_IDLE`                 | `64`                 | Ready actor sandboxes per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment. |
+| `DURABLE_ACTORS_SPARE_FLEET_MAX` | `256` | Maximum unassigned spares across pools. Active actors do not count against this budget. |
+| `DURABLE_ACTORS_SPARE_MAX_STARTING` | `32` | Maximum simultaneous spare starts across control-plane replicas. |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`          | `600`                | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                      |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `1000`               | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
-| `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `1024`               | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
-| `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `250`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
+| `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `256`                | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
 
@@ -82,8 +90,8 @@ export class CustomerAgent extends Actor {}
 
 | Option | Meaning | Default when omitted |
 | --- | --- | --- |
-| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 1. |
-| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 1024. |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.25. |
+| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 256. |
 | `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
 
@@ -109,4 +117,3 @@ Supported regions: `canada`, `north-america-east`, `north-america-central`, `nor
 | `DURABLE_ACTORS_TELEMETRY`       | Disabled                  | Set to `1` to enable SDK invocation telemetry on standard error; unset or `0` keeps it disabled. |
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
-| `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |

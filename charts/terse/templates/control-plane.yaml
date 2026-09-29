@@ -1,0 +1,173 @@
+{{- include "terse.validate" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "terse.name" . }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ required "serviceAccount.googleServiceAccount is required" .Values.serviceAccount.googleServiceAccount | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "terse.name" . }}
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "terse.name" . }}
+        app.kubernetes.io/component: control-plane
+    spec:
+      serviceAccountName: {{ include "terse.name" . }}
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: sandbox.gke.io/runtime
+                    operator: NotIn
+                    values: [gvisor]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "terse.name" . }}
+              app.kubernetes.io/component: control-plane
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      {{- if .Values.cloudSql.instanceConnectionName }}
+      initContainers:
+        - name: cloud-sql-proxy
+          image: {{ .Values.cloudSql.image | quote }}
+          restartPolicy: Always
+          args:
+            - --address=127.0.0.1
+            - --port=5432
+            - --private-ip
+            - --structured-logs
+            - --health-check
+            - --http-address=0.0.0.0
+            - --http-port=9090
+            - {{ .Values.cloudSql.instanceConnectionName | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          startupProbe:
+            httpGet: {path: /startup, port: 9090}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /liveness, port: 9090}
+            periodSeconds: 10
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "terse.image" . | quote }}
+          ports:
+            - name: http
+              containerPort: 7100
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          env:
+            - {name: DURABLE_ACTORS_PROCESS_ROLE, value: control_plane}
+            - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
+            - name: DURABLE_ACTORS_CONTROL_PLANE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "terse.name" .) .Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
+            - {name: DURABLE_ACTORS_REGION, value: {{ .Values.region | quote }}}
+            - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "terse.image" . | quote }}}
+            - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ .Values.sandboxNamespace | quote }}}
+            - {name: DURABLE_ACTORS_GKE_ZONES, value: {{ .Values.zones | toJson | quote }}}
+            - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" .Values.storage.authorityBucket | quote }}}
+            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" .Values.storage.artifactBucket | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_PLACEMENTS, value: {{ .Values.storage.replicas.placements | toJson | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_IDLE, value: {{ .Values.storage.replicas.idle | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_MAX_STARTING, value: {{ .Values.storage.replicas.maxStarting | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET, value: {{ .Values.storage.replicas.credentialsSecret | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_RESOURCES, value: {{ .Values.storage.replicas.resources | toJson | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
+            - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
+              value: {{ .Values.serviceAccount.googleServiceAccount | quote }}
+            - name: DURABLE_ACTORS_REPLICA_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: replica-key}
+            - {name: DURABLE_ACTORS_DURABILITY, value: {{ .Values.storage.durability | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.pool.idle | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_FLEET_MAX, value: {{ .Values.pool.fleetMaximum | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ .Values.pool.maxStarting | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_TTL_SECONDS, value: {{ .Values.pool.idleTtlSeconds | quote }}}
+            - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.pool.cpuMillis | quote }}}
+            - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ .Values.pool.memoryMiB | quote }}}
+            - {name: DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS, value: {{ .Values.hostIdleTimeoutMs | quote }}}
+            - name: DURABLE_ACTORS_POSTGRES_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: postgres-url}
+            - name: DURABLE_ACTORS_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
+            - name: DURABLE_ACTORS_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "terse.name" . }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: http
+      port: 7100
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "terse.name" . }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "terse.name" . }}
+      app.kubernetes.io/component: control-plane

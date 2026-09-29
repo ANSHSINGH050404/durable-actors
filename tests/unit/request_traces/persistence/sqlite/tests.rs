@@ -101,38 +101,6 @@ async fn failed_batches_do_not_partially_commit() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn legacy_snapshots_are_imported_once_without_modifying_the_original() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("request-traces.sqlite3");
-    let mut legacy = serde_json::to_value(event("legacy"))?;
-    legacy.as_object_mut().unwrap().remove("eventId");
-    legacy["sequence"] = 42.into();
-    let bytes = serde_json::to_vec(&serde_json::json!({"version": 1, "history": {
-        "epoch": "old", "cursor": 42, "dropped": 2, "records": [legacy]
-    }}))?;
-    std::fs::write(path.with_extension("json"), &bytes)?;
-    let store = SqliteTracePersistence::new(path.clone());
-    let events = store.load_recent(10).await?;
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].trace.request_id, "same-request");
-    let restored = SqliteTracePersistence::new(path.clone());
-    assert_eq!(ids(restored.load_recent(10).await?), ids(events));
-    assert_eq!(std::fs::read(path.with_extension("json"))?, bytes);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_corrupt_legacy_snapshot_is_not_silently_discarded() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("request-traces.sqlite3");
-    std::fs::write(path.with_extension("json"), "broken")?;
-    let store = SqliteTracePersistence::new(path);
-    assert!(store.load_recent(10).await.is_err());
-    assert!(store.load_recent(10).await.is_err());
-    Ok(())
-}
-
 fn ids(events: Vec<TraceEvent>) -> Vec<String> {
     events.into_iter().map(|event| event.event_id).collect()
 }

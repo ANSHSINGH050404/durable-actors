@@ -1,0 +1,9 @@
+image:
+  digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+storage:
+  authorityBucket: test-authority
+  artifactBucket: test-code
+  archiveBucket: test-archive
+
+serviceAccount:
+  googleServiceAccount: test-control@test-project.iam.gserviceaccount.com

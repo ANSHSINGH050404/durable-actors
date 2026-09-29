@@ -38,8 +38,6 @@ def build_actor(project: Path, entrypoint: str, output: Path, *, local: bool = T
     write_artifact(project, output, module, settings)
     with redirect_stdout(sys.stderr):
         contract = public_contract(load_artifact(output / "actors.pyz"))
-    if len(json.dumps(contract).encode()) > 4 * 1024 * 1024:
-        raise ValueError("public actor contract exceeds 4 MiB")
     return contract
 
 
@@ -166,8 +164,6 @@ def write_artifact(project: Path, output: Path, module: str, settings: Document)
                 ):
                     raise ValueError("included resources must stay inside the project")
                 paths.add(path)
-    if sum(path.stat().st_size for path in paths) > 32 * 1024 * 1024:
-        raise ValueError("actor source artifact exceeds 32 MiB")
     artifact = output / "actors.pyz"
     with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("durable-actors.json", json.dumps({"version": 1, "module": module}))

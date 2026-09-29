@@ -29,43 +29,6 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
-    pub(crate) async fn prepare_replica_connections(
-        &self,
-    ) -> Result<Vec<crate::replication::ReplicaTarget>> {
-        match self
-            .execute(ControlPlaneCommand::PrepareReplicaConnections)
-            .await?
-        {
-            ControlPlaneCommandReply::Replicas { targets } => Ok(targets),
-            _ => anyhow::bail!("unexpected replica connection response"),
-        }
-    }
-
-    pub(crate) async fn prepare_initial_replicas(
-        &self,
-    ) -> Result<crate::bucket::ReplicaMembership> {
-        match self
-            .execute(ControlPlaneCommand::PrepareInitialReplicas)
-            .await?
-        {
-            ControlPlaneCommandReply::InitialReplicas { membership } => Ok(membership),
-            _ => anyhow::bail!("unexpected initial replica response"),
-        }
-    }
-
-    pub(crate) async fn ensure_replicas(
-        &self,
-        failed: Vec<String>,
-    ) -> Result<Vec<crate::replication::ReplicaTarget>> {
-        match self
-            .execute(ControlPlaneCommand::EnsureReplicas { failed })
-            .await?
-        {
-            ControlPlaneCommandReply::Replicas { targets } => Ok(targets),
-            _ => anyhow::bail!("unexpected replica response"),
-        }
-    }
-
     pub(crate) async fn report_traces(
         &self,
         traces: Vec<crate::request_traces::RequestTrace>,
@@ -264,3 +227,19 @@ mod lease_fence_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/client_refresh_tests.rs"]
 mod refresh_tests;
+
+#[async_trait::async_trait]
+impl crate::replicas::directory::ReplicaDirectory for ControlPlaneClient {
+    async fn execute(
+        &self,
+        command: crate::replicas::directory::DirectoryCommand,
+    ) -> Result<crate::replicas::directory::DirectoryReply> {
+        match self
+            .execute(ControlPlaneCommand::ReplicaDirectory { command })
+            .await?
+        {
+            ControlPlaneCommandReply::ReplicaDirectory { reply } => Ok(reply),
+            _ => anyhow::bail!("unexpected replica directory reply"),
+        }
+    }
+}

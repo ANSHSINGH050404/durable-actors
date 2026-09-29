@@ -6,6 +6,8 @@ use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::{Config, NoTls, Row, config::SslMode, types::ToSql};
 
+pub(crate) mod notifications;
+
 mod embedded {
     use refinery::embed_migrations;
     embed_migrations!("migrations");

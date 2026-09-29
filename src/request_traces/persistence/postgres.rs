@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio_postgres::IsolationLevel;
 
 use super::{
-    TracePersistence,
+    TracePersistence, TraceStatus,
     cursor::{HistoryPage, Metadata, ReplayPage},
 };
 use crate::{
@@ -43,6 +43,30 @@ impl TracePersistence for PostgresTracePersistence {
         // Connecting applies the database migrations.
         drop(self.database.connection().await?);
         Ok(())
+    }
+
+    async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+        self.database.execute(
+            "INSERT INTO durable_actors_trace_projects(project_id,dropped,persistence_failed)
+             VALUES($1,$2,$3) ON CONFLICT(project_id) DO UPDATE SET
+             dropped=LEAST(9223372036854775807::numeric,durable_actors_trace_projects.dropped::numeric+EXCLUDED.dropped)::bigint,
+             persistence_failed=durable_actors_trace_projects.persistence_failed OR EXCLUDED.persistence_failed",
+            &[&project, &(dropped.min(i64::MAX as u64) as i64), &failed],
+        ).await?;
+        Ok(())
+    }
+
+    async fn status(&self, project: &str) -> Result<TraceStatus> {
+        let row = self.database.query_opt(
+            "SELECT dropped,persistence_failed FROM durable_actors_trace_projects WHERE project_id=$1",
+            &[&project],
+        ).await?;
+        Ok(row
+            .map(|row| TraceStatus {
+                dropped: row.get::<_, i64>(0) as u64,
+                persistence_failed: row.get(1),
+            })
+            .unwrap_or_default())
     }
 
     async fn append(&self, events: &[TraceEvent]) -> Result<()> {

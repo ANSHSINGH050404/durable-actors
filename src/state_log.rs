@@ -6,8 +6,6 @@ use serde_json::{
 };
 use std::borrow::Borrow;
 
-pub const MAX_ACTOR_STATE_BYTES: usize = 16 * 1024 * 1024;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateSnapshot {
@@ -74,10 +72,6 @@ impl StateSnapshot {
         ensure!(
             self.state.get().starts_with('{'),
             "actor state must be a JSON object"
-        );
-        ensure!(
-            self.state.get().len() <= MAX_ACTOR_STATE_BYTES,
-            "actor state exceeds the {MAX_ACTOR_STATE_BYTES}-byte limit"
         );
         Ok(())
     }

@@ -95,7 +95,7 @@ class Connection(Generic[Send, Receive, State, Patch]):
         Generated clients supply these adapters automatically through connect().
         The grant must still be valid when the WebSocket handshake occurs.
         """
-        wire = connect(grant.websocket_url, max_size=16 * 1024 * 1024)
+        wire = connect(grant.websocket_url, max_size=None)
         return cls(wire, incoming, outgoing, state, patch)
 
     def send(self, message: Send) -> None:

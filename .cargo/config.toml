@@ -1,4 +1,0 @@
-[build]
-# Rapid appendable objects are currently exposed behind the official Google
-# Cloud Rust client's unstable BidiWriteObject compile gate.
-rustflags = ["--cfg", "google_cloud_unstable_storage_bidi"]

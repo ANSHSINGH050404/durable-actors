@@ -79,14 +79,14 @@ pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
     state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
-    changes: tokio::sync::watch::Sender<()>,
+    changes: crate::postgres::notifications::ChangeFeed,
 }
 
 impl ActorInspector {
     pub(super) fn new(
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
         state: Arc<dyn crate::bucket::ActorStateReader>,
-        changes: tokio::sync::watch::Sender<()>,
+        changes: crate::postgres::notifications::ChangeFeed,
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),

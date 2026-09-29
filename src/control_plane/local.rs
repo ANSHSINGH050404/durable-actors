@@ -21,7 +21,7 @@ use tracing::{Span, info, info_span};
 
 use crate::{
     bucket::{
-        Bucket, FileBucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
+        Bucket, FileBucket, GcsBucket, RuntimeStorage,
         access::{BucketLocation, RuntimeAccess},
     },
     clock::SystemClock,
@@ -95,7 +95,7 @@ pub async fn serve_local(
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let storage = local_storage(&options, &directory, &origin).await?;
+    let storage = local_storage(&options, &directory).await?;
     let provider = Arc::new(
         LocalSandboxProvider::new(
             std::env::current_exe()?,
@@ -236,39 +236,24 @@ struct LocalState {
     region: String,
 }
 
-async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> Result<LocalState> {
+async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalState> {
     let location = match options.storage {
         DevStorage::Local => BucketLocation::File {
             directory: directory.canonicalize()?.join("objects"),
         },
         DevStorage::Gcs => BucketLocation::Gcs {
+            artifact_bucket: std::env::var("DURABLE_ACTORS_BUCKET")
+                .context("GCS bucket required")?,
             bucket: std::env::var("DURABLE_ACTORS_BUCKET")
                 .context("DURABLE_ACTORS_STORAGE=gcs requires DURABLE_ACTORS_BUCKET")?,
         },
     };
     let bucket: Arc<dyn Bucket> = match &location {
         BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
-        BucketLocation::Gcs { bucket } => Arc::new(GcsBucket::new(bucket).await?),
+        BucketLocation::Gcs { bucket, .. } => Arc::new(GcsBucket::new(bucket).await?),
     };
-    let access = crate::replication::ReplicaAccess::new(
-        &uuid::Uuid::new_v4().to_string(),
-        Arc::new(SystemClock),
-    );
-    let fleet = Arc::new(crate::replication::ReplicaSet::default());
-    let runtime = Arc::new(RuntimeStorage::new(
-        bucket,
-        fleet.clone(),
-        Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access.clone(),
-        origin.into(),
-        std::sync::Arc::new(crate::clock::SystemClock),
-    )?);
-    let bootstrap = Arc::new(RuntimeAccess::new(
-        location,
-        fleet,
-        access,
-        runtime.clone(),
-    )?);
+    let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
+    let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.persistence.clone())?);
     Ok(LocalState {
         traces: crate::request_traces::TraceStore::open(Arc::new(
             crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(
@@ -346,8 +331,7 @@ async fn local_routes(
     )
     .with_traces(service.traces.clone());
     let public = public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::local_router(inspector, admin))
-        .merge(storage.runtime.clone().router());
+        .merge(super::inspection::local_router(inspector, admin));
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 

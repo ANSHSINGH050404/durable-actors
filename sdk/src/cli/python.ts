@@ -51,7 +51,7 @@ function runPython(
         const child = execFile(
             executable,
             ["-m", module, ...args],
-            { cwd: project, maxBuffer: 8 * 1024 * 1024 },
+            { cwd: project, maxBuffer: Infinity },
             (error, stdout, stderr) => {
                 if (!error) return resolve(stdout)
                 const hint =

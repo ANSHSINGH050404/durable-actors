@@ -6,7 +6,7 @@ import { x } from "tar"
 
 import { actorEnvironment } from "./environment.js"
 
-const executables = ["durable-actors", "durable-actors-modal-go"]
+const executables = ["durable-actors"]
 const maximumBytes = 200 * 1024 * 1024
 
 export async function fetchRuntimeExecutablePath(): Promise<string> {
@@ -75,8 +75,7 @@ export class RuntimeInstaller {
                 executables.includes(name) && "type" in entry && entry.type === "File" && entry.size <= maximumBytes
         })
         await rm(file)
-        if (!(await completeBundle(directory)))
-            throw new Error("Runtime archive is missing its runtime or bundled Modal provider.")
+        if (!(await completeBundle(directory))) throw new Error("Runtime archive is missing the Rust executable.")
         await Promise.all(executables.map(name => chmod(path.join(directory, name), 0o755)))
     }
 }

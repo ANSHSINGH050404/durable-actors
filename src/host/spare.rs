@@ -23,6 +23,7 @@ pub(super) struct WarmControlPlane {
 }
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+    super::protect_runtime_credentials()?;
     let socket = std::env::var("DURABLE_ACTORS_EXECUTOR_SOCKET")
         .unwrap_or_else(|_| "/tmp/durable-actors-executor.sock".into());
     let token = std::env::var("DURABLE_ACTORS_SPARE_TOKEN").context("spare token missing")?;
@@ -58,6 +59,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
     );
     let (mut executor, storage) = warmed?;
+    let control_plane = Some(control_plane?);
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
@@ -105,15 +107,10 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     serve_assigned_host(config, Some(warm), shutdown).await
 }
 
-async fn prewarm_control_plane(url: Option<String>) -> Option<WarmControlPlane> {
-    let url = url?;
-    match crate::control_plane::ControlPlaneClient::prewarm(&url).await {
-        Ok(client) => Some(WarmControlPlane { url, client }),
-        Err(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "control-plane prewarm failed; connecting at assignment");
-            None
-        }
-    }
+async fn prewarm_control_plane(url: Option<String>) -> Result<WarmControlPlane> {
+    let url = url.context("spare control-plane URL required")?;
+    let client = crate::control_plane::ControlPlaneClient::prewarm(&url).await?;
+    Ok(WarmControlPlane { url, client })
 }
 
 #[cfg(test)]

@@ -63,9 +63,9 @@ async fn run(cli: Cli) -> Result<()> {
         "control_plane" => {
             serve_control_plane(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
+        "replica" => durable_actors::replicas::serve_replica(shutdown).await,
         "spare" => durable_actors::host::serve_spare(shutdown).await,
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
-        "replica" => durable_actors::replication::serve_replica_host(shutdown).await,
         role => anyhow::bail!("unsupported DURABLE_ACTORS_PROCESS_ROLE {role:?}"),
     }
 }

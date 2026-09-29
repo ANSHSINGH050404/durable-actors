@@ -70,7 +70,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         options
     );
     assert_eq!(compiled.image_ref, "im-runtime");
-    assert_eq!(compiled.code_snapshot.as_deref(), Some("im-code-1"));
+    assert_eq!(
+        compiled.code_snapshot.as_deref(),
+        Some(crate::sandbox::testing::code_artifact(1).as_str())
+    );
     assert_eq!(compiled.actor_entrypoint.as_deref(), Some("actors.mjs"));
     assert_eq!(compiled.working_directory, "/customer");
     assert_eq!(compiled.source.as_ref().unwrap().image_ref, "im-customer");
@@ -378,12 +381,15 @@ impl Default for BuildProvider {
 
 #[async_trait]
 impl SandboxProvider for BuildProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        anyhow::bail!("unexpected spare inspection")
+    }
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
         let mut builds = self.builds.lock().unwrap();
         builds.push(serde_json::to_value(request)?);
         ensure!(!self.fail.load(Ordering::SeqCst), "compilation failed");
         Ok(BuiltActorCode {
-            code_snapshot: format!("im-code-{}", builds.len()),
+            code_snapshot: crate::sandbox::testing::code_artifact(builds.len() as i64),
             contract: self.contract.lock().unwrap().clone(),
         })
     }

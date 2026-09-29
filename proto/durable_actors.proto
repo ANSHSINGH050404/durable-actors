@@ -13,39 +13,3 @@ message ControlPlaneRequest {
 message ControlPlaneReply {
   bytes reply_json = 1;
 }
-
-message Empty {}
-
-service SnapshotService {
-  rpc Read(Empty) returns (SnapshotData);
-  rpc Write(SnapshotData) returns (SnapshotWriteReply);
-}
-service ReplicaService {
-  rpc Initialize(Empty) returns (Empty);
-  rpc Head(Empty) returns (ReplicaStreamHead);
-  rpc Seal(Empty) returns (ReplicaSessionHead);
-}
-message SnapshotData { bytes data = 1; }
-message SnapshotWriteReply { bool already_exists = 1; }
-message ReplicaStreamIdentity {
-  string session = 1;
-  string prefix = 2;
-  uint64 owner_epoch = 3;
-  uint64 base_version = 4;
-}
-message ReplicaSnapshotRef {
-  string object = 1;
-  uint64 state_version = 2;
-  string request_id = 3;
-  string digest = 4;
-}
-message ReplicaStreamHead {
-  ReplicaStreamIdentity stream = 1;
-  ReplicaSnapshotRef latest = 2;
-}
-message ReplicaSessionHead {
-  string session = 1;
-  bool initialized = 2;
-  bool sealed = 3;
-  repeated ReplicaStreamHead streams = 4;
-}

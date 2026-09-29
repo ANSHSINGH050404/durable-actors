@@ -4,14 +4,7 @@ use crate::postgres::testing::with_postgres;
 fn pool(database: PostgresDatabase) -> Arc<SparePool> {
     SparePool::new(
         database,
-        Arc::new(
-            super::super::CommandSandboxProvider::new(
-                "test".into(),
-                "false".into(),
-                Default::default(),
-            )
-            .unwrap(),
-        ),
+        Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
         config(1),
     )
 }
@@ -21,7 +14,7 @@ async fn custom_resources_cannot_claim_default_sized_spares() -> Result<()> {
     with_postgres(async |fixture| {
         let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
         let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-            "projectId":"default","imageRef":"im-runtime","codeSnapshot":"im-code","workingDirectory":"/customer","secretRefs":[]
+            "projectId":"default","imageRef":"im-runtime","codeSnapshot":crate::sandbox::testing::code_artifact(1),"workingDirectory":"/customer","secretRefs":[]
         }))?;
         let key = pool.key("im-runtime", "canada");
         let name = reserve(&pool.store, &key, 1).await?.unwrap();
@@ -183,7 +176,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                     project_id: project.into(),
                     source: None,
                     image_ref: image.into(),
-                    code_snapshot: Some("im-code".into()),
+                    code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
                     working_directory: "/customer".into(),
                     actor_entrypoint: Some("actors.mjs".into()),
                     secret_refs: vec![],

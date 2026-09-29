@@ -8,10 +8,10 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 
-use super::TracePersistence;
+use super::{TracePersistence, TraceStatus};
 use crate::request_traces::{
     TraceEvent, TracePage,
     history::HistoryQuery,
@@ -57,6 +57,7 @@ impl SqliteTracePersistence {
                     Connection::open(&path).context("open request trace database")?;
                 connection.busy_timeout(Duration::from_secs(5))?;
                 initialize(&mut connection, &path)?;
+                connection.execute_batch("CREATE TABLE IF NOT EXISTS trace_status(project_id TEXT PRIMARY KEY,dropped INTEGER NOT NULL DEFAULT 0,persistence_failed INTEGER NOT NULL DEFAULT 0)")?;
                 *shared = Some(connection);
             }
             operation(shared.as_mut().unwrap())
@@ -69,6 +70,34 @@ impl SqliteTracePersistence {
 impl TracePersistence for SqliteTracePersistence {
     async fn initialize(&self) -> Result<()> {
         self.run(|_| Ok(())).await
+    }
+
+    async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+        let project = project.to_owned();
+        self.run(move |db| {
+            db.execute("INSERT INTO trace_status(project_id,dropped,persistence_failed) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET dropped=CAST(MIN(9223372036854775807,dropped+excluded.dropped) AS INTEGER),persistence_failed=persistence_failed OR excluded.persistence_failed", params![project, dropped.min(i64::MAX as u64) as i64, failed])?;
+            Ok(())
+        }).await
+    }
+
+    async fn status(&self, project: &str) -> Result<TraceStatus> {
+        let project = project.to_owned();
+        self.run(move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT dropped,persistence_failed FROM trace_status WHERE project_id=?1",
+                    [project],
+                    |row| {
+                        Ok(TraceStatus {
+                            dropped: row.get::<_, i64>(0)? as u64,
+                            persistence_failed: row.get(1)?,
+                        })
+                    },
+                )
+                .optional()?
+                .unwrap_or_default())
+        })
+        .await
     }
 
     async fn append(&self, events: &[TraceEvent]) -> Result<()> {

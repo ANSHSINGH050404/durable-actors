@@ -57,31 +57,31 @@ async fn fixed_capacity_is_replenished_after_claims_across_controllers() -> Resu
 }
 
 #[tokio::test]
-async fn fleet_capacity_and_build_limits_are_atomic_across_roles() -> Result<()> {
+async fn fleet_capacity_and_build_limits_are_atomic_across_pools() -> Result<()> {
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let actor = PoolStore(database.clone(), SpareKind::Actor);
-        let replica = PoolStore(database.clone(), SpareKind::Replica);
+        let other = PoolStore(database.clone(), SpareKind::Actor);
         let mut config = config(3);
         config.fleet_maximum = 3;
         config.max_starting = 2;
-        let (actors, replicas) = tokio::try_join!(
+        let (actors, others) = tokio::try_join!(
             actor.replenish("actors", &config, 8),
-            replica.replenish("replicas", &config, 8)
+            other.replenish("others", &config, 8)
         )?;
-        assert_eq!(actors.len() + replicas.len(), 2);
+        assert_eq!(actors.len() + others.len(), 2);
         let (store, key, name) = match actors.first() {
             Some(name) => (&actor, "actors", name),
-            None => (&replica, "replicas", &replicas[0]),
+            None => (&other, "others", &others[0]),
         };
         assert!(store.publish(key, &handle(name.clone()), 600).await?);
-        let (actors, replicas) = tokio::try_join!(
+        let (actors, others) = tokio::try_join!(
             actor.replenish("actors", &config, 8),
-            replica.replenish("replicas", &config, 8)
+            other.replenish("others", &config, 8)
         )?;
-        assert_eq!(actors.len() + replicas.len(), 1);
+        assert_eq!(actors.len() + others.len(), 1);
         assert!(actor.replenish("actors", &config, 8).await?.is_empty());
-        assert!(replica.replenish("replicas", &config, 8).await?.is_empty());
+        assert!(other.replenish("others", &config, 8).await?.is_empty());
         Ok(())
     })
     .await
@@ -190,7 +190,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         let spec = HostLaunchSpec {
             sandboxes: Default::default(),
             project_id: "project".into(), source: None, image_ref: "im-runtime".into(),
-            code_snapshot: Some("im-code".into()), working_directory: "/customer".into(),
+            code_snapshot: Some(crate::sandbox::testing::code_artifact(1)), working_directory: "/customer".into(),
             actor_entrypoint: Some("actors.mjs".into()), secret_refs: vec![],
         };
         registry.register_test_deployment(&spec).await?;
@@ -227,6 +227,9 @@ struct RegionalProvider {
 
 #[async_trait::async_trait]
 impl SandboxProvider for RegionalProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         assert_eq!(request.control_plane_url.as_deref(), self.control_plane_url);
         if request.canonical_region == "slow" {
@@ -256,7 +259,7 @@ impl SandboxProvider for RegionalProvider {
 
 #[tokio::test]
 async fn actor_pool_passes_its_control_plane_url_to_idle_spares() -> Result<()> {
-    for kind in [SpareKind::Actor, SpareKind::Replica] {
+    for kind in [SpareKind::Actor] {
         let mut config = config(1);
         config.kind = kind;
         config.control_plane_url = Some("https://control.example.com/".into());

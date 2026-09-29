@@ -8,11 +8,6 @@ class SessionCounter extends Actor {
         return this.count
     }
 
-    async sizedResponse(bytes: number): Promise<string> {
-        this.count += 1
-        return "x".repeat(bytes)
-    }
-
     async stream(): Promise<number> {
         this.broadcast({ delta: "first" })
         this.broadcast({ delta: "last" })

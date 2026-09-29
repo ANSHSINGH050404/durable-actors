@@ -28,10 +28,6 @@ impl PublicActorContract {
         parsed.validate()?;
         let document = canonical_json(document);
         let bytes = serde_json::to_vec(&document)?;
-        ensure!(
-            bytes.len() <= 4 * 1024 * 1024,
-            "public actor contract exceeds 4 MiB"
-        );
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &bytes);
         let hash = format!(
             "sha256:{}",

@@ -11,7 +11,7 @@ To use Durable Actors in your own application, start with the [language quicksta
 - Node.js 22.19+ and pnpm 10.17.1 (the pinned workspace version).
 - Bun 1.3.9+; CI exercises both 1.3.9 and 1.4.2.
 - Rust 1.89+ with Cargo and rustfmt, and a native C/C++ build toolchain.
-- Go for changes to `providers/modal-go` or a full runtime bundle. CI uses Go 1.27.1; the module declares Go 1.25.0.
+- Helm 3 for changes to the Kubernetes chart.
 - Python 3.11+ and uv for changes to `sdk-python`.
 - PostgreSQL 16 for database tests. Docker is an optional way to run it.
 
@@ -25,7 +25,7 @@ pnpm --dir sdk build
 cargo build --locked
 ```
 
-The SDK build includes the observer UI and actor template. A full native bundle, including the Go provider, can be built with `pnpm build`.
+The SDK build includes the observer UI and actor template. A full native bundle can be built with `pnpm build`.
 
 ## Find your way around
 
@@ -35,14 +35,14 @@ The SDK build includes the observer UI and actor template. A full native bundle,
 | `sdk-python/`           | Python actors, executor, and generated clients |
 | `sdk/`                  | TypeScript SDK, compiler, generated client, and CLI |
 | `packages/observer-ui/` | Actor observability UI                              |
-| `providers/modal-go/`   | Modal provider                                      |
+| `charts/terse/`          | GKE Sandbox and storage replica deployment          |
 | `tests/`                | Rust tests and repository script tests              |
 | `examples/`             | Chat, AI chat, and collaborative documents          |
 | `docs/`                 | API and configuration references                    |
 
 ## Make a change
 
-Keep changes focused and follow the [engineering conventions](AGENTS.md). For behavior changes, add a failing test first, implement the change, then refactor. Put tests and fixtures in the relevant project's `tests/` directory; CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access. Go tests use the existing overlay; update `providers/modal-go/tests/overlay.json` when adding or renaming tests.
+Keep changes focused and follow the [engineering conventions](AGENTS.md). For behavior changes, add a failing test first, implement the change, then refactor. Put tests and fixtures in the relevant project's `tests/` directory; CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access.
 
 Update documentation and examples when changing a public API, configuration, or CLI behavior.
 
@@ -79,11 +79,11 @@ cargo build --locked
 cargo test --locked -- --ignored
 ```
 
-For Go provider changes, run from `providers/modal-go`:
+For Kubernetes deployment changes:
 
 ```sh
-go test -race -mod=readonly -overlay tests/overlay.json ./...
-go vet -mod=readonly -overlay tests/overlay.json ./...
+helm lint charts/terse -f charts/terse/tests/values.yaml
+node --test charts/terse/tests/chart.test.mjs
 ```
 
 For Python SDK changes, build the runtime and run from `sdk-python`:

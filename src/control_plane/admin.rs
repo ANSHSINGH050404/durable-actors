@@ -75,24 +75,15 @@ impl HostLaunchSpec {
         }
         validate_component("project ID", &self.project_id, 64)?;
         if let Some(snapshot) = &self.code_snapshot {
-            ensure!(
-                snapshot.starts_with("im-") && snapshot.len() <= 255,
-                "invalid Modal code snapshot"
-            );
+            let manifest = crate::artifacts::ArtifactManifest::decode(snapshot)?;
             ensure!(
                 self.working_directory == "/customer",
                 "snapshot deployments must use /customer"
             );
             let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
             ensure!(
-                (entrypoint.ends_with(".mjs") || entrypoint.ends_with(".pyz"))
-                    && !std::path::Path::new(entrypoint)
-                        .components()
-                        .any(|part| matches!(
-                            part,
-                            std::path::Component::ParentDir | std::path::Component::RootDir
-                        )),
-                "snapshot entrypoint must be a relative compiled module path"
+                entrypoint == manifest.entrypoint()?,
+                "compiled entrypoint must be actors.mjs or actors.pyz"
             );
         }
         ensure!(
@@ -126,15 +117,35 @@ pub(crate) trait AdminRegistry: Send + Sync {
     async fn register_test_deployment(&self, spec: &HostLaunchSpec) -> Result<bool> {
         self.register_deployment(spec, None).await
     }
+    #[cfg(test)]
     async fn register_deployment(
         &self,
         spec: &HostLaunchSpec,
         contract: Option<&PublicActorContract>,
-    ) -> Result<bool>;
+    ) -> Result<bool> {
+        self.lock_deployment(&spec.project_id)
+            .await?
+            .register(spec, contract)
+            .await
+    }
+    async fn lock_deployment(&self, project_id: &str) -> Result<Box<dyn DeploymentUpdate + '_>>;
     async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>>;
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>>;
     async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>>;
-    async fn remove_deployment(&self, project_id: &str) -> Result<()>;
+    #[cfg(test)]
+    async fn remove_deployment(&self, project_id: &str) -> Result<()> {
+        self.lock_deployment(project_id).await?.remove().await
+    }
+}
+
+#[async_trait]
+pub(crate) trait DeploymentUpdate: Send {
+    async fn register(
+        &mut self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool>;
+    async fn remove(&mut self) -> Result<()>;
 }
 
 #[derive(Clone)]
@@ -214,10 +225,6 @@ impl AdminService {
             .map_err(|_| anyhow::anyhow!("invalid socket endpoint"))?;
         let home_region = grant.region.clone();
         let (key, connect_by_ms, authorized_until_ms) = self.issuer.issue_socket(grant)?;
-        if !credentials.token.is_empty() {
-            url.query_pairs_mut()
-                .append_pair("_modal_connect_token", &credentials.token);
-        }
         url.query_pairs_mut().append_pair("key", &key);
         Ok(
             serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
@@ -252,6 +259,7 @@ impl AdminService {
         self.registry.launch_spec(project_id).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn register_deployment(
         &self,
         spec: &HostLaunchSpec,
@@ -267,14 +275,18 @@ impl AdminService {
         self.registry.deployment_contract(project_id).await
     }
 
-    pub(crate) async fn remove_deployment(&self, project_id: &str) -> Result<()> {
-        self.registry.remove_deployment(project_id).await
+    pub(crate) async fn lock_deployment(
+        &self,
+        project_id: &str,
+    ) -> Result<Box<dyn DeploymentUpdate + '_>> {
+        self.registry.lock_deployment(project_id).await
     }
 }
 
 #[derive(Default)]
 pub(crate) struct LocalAdminRegistry {
     state: Mutex<HashMap<String, LocalAdminState>>,
+    updates: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -285,30 +297,12 @@ struct LocalAdminState {
 
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
-    async fn remove_deployment(&self, project_id: &str) -> Result<()> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
-            .remove(project_id);
-        Ok(())
-    }
-
-    async fn register_deployment(
-        &self,
-        spec: &HostLaunchSpec,
-        contract: Option<&PublicActorContract>,
-    ) -> Result<bool> {
-        spec.validate()?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
-        let state = state.entry(spec.project_id.clone()).or_default();
-        let contract = contract.map(PublishedContract::new);
-        let changed = state.deployment.as_ref() != Some(spec) || state.contract != contract;
-        state.deployment = Some(spec.clone());
-        state.contract = contract;
-        Ok(changed)
+    async fn lock_deployment(&self, project_id: &str) -> Result<Box<dyn DeploymentUpdate + '_>> {
+        Ok(Box::new(LocalDeploymentUpdate {
+            registry: self,
+            project_id: project_id.into(),
+            _guard: self.updates.lock().await,
+        }))
     }
 
     async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>> {
@@ -341,6 +335,57 @@ impl AdminRegistry for LocalAdminRegistry {
     }
 }
 
+impl LocalAdminRegistry {
+    fn remove_unlocked(&self, project_id: &str) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
+            .remove(project_id);
+        Ok(())
+    }
+
+    fn register_unlocked(
+        &self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool> {
+        spec.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        let state = state.entry(spec.project_id.clone()).or_default();
+        let contract = contract.map(PublishedContract::new);
+        let changed = state.deployment.as_ref() != Some(spec) || state.contract != contract;
+        state.deployment = Some(spec.clone());
+        state.contract = contract;
+        Ok(changed)
+    }
+}
+
+struct LocalDeploymentUpdate<'a> {
+    registry: &'a LocalAdminRegistry,
+    project_id: String,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+#[async_trait]
+impl DeploymentUpdate for LocalDeploymentUpdate<'_> {
+    async fn register(
+        &mut self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool> {
+        ensure!(
+            spec.project_id == self.project_id,
+            "deployment project differs from update"
+        );
+        self.registry.register_unlocked(spec, contract)
+    }
+    async fn remove(&mut self) -> Result<()> {
+        self.registry.remove_unlocked(&self.project_id)
+    }
+}
+
 pub(crate) struct PostgresAdminRegistry {
     database: PostgresDatabase,
 }
@@ -353,44 +398,18 @@ impl PostgresAdminRegistry {
 
 #[async_trait]
 impl AdminRegistry for PostgresAdminRegistry {
-    async fn remove_deployment(&self, project_id: &str) -> Result<()> {
-        self.database
-            .execute(
-                "DELETE FROM durable_actors_deployment WHERE project_id = $1",
+    async fn lock_deployment(&self, project_id: &str) -> Result<Box<dyn DeploymentUpdate + '_>> {
+        let client = deadpool_postgres::Object::take(self.database.connection().await?);
+        client
+            .query_one(
+                "SELECT pg_advisory_lock(hashtext('durable-actors-deployment'), hashtext($1))",
                 &[&project_id],
             )
             .await?;
-        Ok(())
-    }
-
-    async fn register_deployment(
-        &self,
-        spec: &HostLaunchSpec,
-        contract: Option<&PublicActorContract>,
-    ) -> Result<bool> {
-        spec.validate()?;
-        let mut client = self.database.connection().await?;
-        let transaction = client.transaction().await?;
-        let changed = transaction.execute(
-            "INSERT INTO durable_actors_deployment
-                (project_id, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, sandbox_json)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (project_id) DO UPDATE SET
-                image_ref = EXCLUDED.image_ref, working_directory = EXCLUDED.working_directory,
-                actor_entrypoint = EXCLUDED.actor_entrypoint, secret_refs = EXCLUDED.secret_refs,
-                code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, sandbox_json = EXCLUDED.sandbox_json,
-                updated_at = clock_timestamp()
-             WHERE (durable_actors_deployment.image_ref, durable_actors_deployment.working_directory,
-                    durable_actors_deployment.actor_entrypoint, durable_actors_deployment.secret_refs,
-                    durable_actors_deployment.code_snapshot, durable_actors_deployment.source_json, durable_actors_deployment.sandbox_json)
-                IS DISTINCT FROM (EXCLUDED.image_ref, EXCLUDED.working_directory, EXCLUDED.actor_entrypoint,
-                                  EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json, EXCLUDED.sandbox_json)",
-            &[&spec.project_id, &spec.image_ref, &spec.working_directory, &spec.actor_entrypoint,
-              &spec.secret_refs, &spec.code_snapshot, &spec.source.as_ref().map(serde_json::to_string).transpose()?, &serde_json::to_string(&spec.sandboxes)?]
-        ).await.context("register PostgreSQL deployment")? > 0;
-        let published = publish_contract(&transaction, &spec.project_id, contract).await?;
-        transaction.commit().await?;
-        Ok(changed || published)
+        Ok(Box::new(PostgresDeploymentUpdate {
+            client,
+            project_id: project_id.into(),
+        }))
     }
 
     async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>> {
@@ -427,6 +446,57 @@ impl AdminRegistry for PostgresAdminRegistry {
             .context("load PostgreSQL host launch spec")?
             .as_ref().map(launch_spec_from_row)
             .transpose()
+    }
+}
+
+// The owning session performs publication; losing it fences the update and releases the lock.
+struct PostgresDeploymentUpdate {
+    client: deadpool_postgres::ClientWrapper,
+    project_id: String,
+}
+#[async_trait]
+impl DeploymentUpdate for PostgresDeploymentUpdate {
+    async fn register(
+        &mut self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool> {
+        ensure!(
+            spec.project_id == self.project_id,
+            "deployment project differs from update"
+        );
+        spec.validate()?;
+        let transaction = self.client.transaction().await?;
+        let changed = transaction.execute(
+            "INSERT INTO durable_actors_deployment
+                (project_id, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, sandbox_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (project_id) DO UPDATE SET
+                image_ref = EXCLUDED.image_ref, working_directory = EXCLUDED.working_directory,
+                actor_entrypoint = EXCLUDED.actor_entrypoint, secret_refs = EXCLUDED.secret_refs,
+                code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, sandbox_json = EXCLUDED.sandbox_json,
+                updated_at = clock_timestamp()
+             WHERE (durable_actors_deployment.image_ref, durable_actors_deployment.working_directory,
+                    durable_actors_deployment.actor_entrypoint, durable_actors_deployment.secret_refs,
+                    durable_actors_deployment.code_snapshot, durable_actors_deployment.source_json, durable_actors_deployment.sandbox_json)
+                IS DISTINCT FROM (EXCLUDED.image_ref, EXCLUDED.working_directory, EXCLUDED.actor_entrypoint,
+                                  EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json, EXCLUDED.sandbox_json)",
+            &[&spec.project_id, &spec.image_ref, &spec.working_directory, &spec.actor_entrypoint,
+              &spec.secret_refs, &spec.code_snapshot, &spec.source.as_ref().map(serde_json::to_string).transpose()?, &serde_json::to_string(&spec.sandboxes)?]
+        ).await.context("register PostgreSQL deployment")? > 0;
+        let published = publish_contract(&transaction, &spec.project_id, contract).await?;
+        transaction.commit().await?;
+        Ok(changed || published)
+    }
+
+    async fn remove(&mut self) -> Result<()> {
+        self.client
+            .execute(
+                "DELETE FROM durable_actors_deployment WHERE project_id=$1",
+                &[&self.project_id],
+            )
+            .await?;
+        Ok(())
     }
 }
 

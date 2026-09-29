@@ -32,10 +32,21 @@ async fn trace_reports_require_the_authenticated_project() -> Result<()> {
 
 #[tokio::test]
 async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> {
-    #[derive(Default)]
-    struct RecordingPersistence(Mutex<Vec<Vec<TraceEvent>>>);
+    struct RecordingPersistence(Mutex<Vec<Vec<TraceEvent>>>, SqliteTracePersistence);
+    impl Default for RecordingPersistence {
+        fn default() -> Self {
+            Self(Mutex::new(vec![]), SqliteTracePersistence::in_memory())
+        }
+    }
     #[async_trait::async_trait]
     impl TracePersistence for RecordingPersistence {
+        async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+            self.1.record_status(project, dropped, failed).await
+        }
+        async fn status(&self, project: &str) -> Result<persistence::TraceStatus> {
+            self.1.status(project).await
+        }
+
         async fn initialize(&self) -> Result<()> {
             Ok(())
         }
@@ -103,9 +114,16 @@ async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> 
 
 #[tokio::test]
 async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
-    struct BlockedPersistence(tokio::sync::Semaphore);
+    struct BlockedPersistence(tokio::sync::Semaphore, SqliteTracePersistence);
     #[async_trait::async_trait]
     impl TracePersistence for BlockedPersistence {
+        async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+            self.1.record_status(project, dropped, failed).await
+        }
+        async fn status(&self, project: &str) -> Result<persistence::TraceStatus> {
+            self.1.status(project).await
+        }
+
         async fn initialize(&self) -> Result<()> {
             Ok(())
         }
@@ -156,7 +174,10 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
             Ok(())
         }
     }
-    let persistence = Arc::new(BlockedPersistence(tokio::sync::Semaphore::new(0)));
+    let persistence = Arc::new(BlockedPersistence(
+        tokio::sync::Semaphore::new(0),
+        SqliteTracePersistence::in_memory(),
+    ));
     let store = TraceStore::open(persistence.clone()).await?;
     let mut writes = tokio::task::JoinSet::new();
     for id in 0..64 {
@@ -173,11 +194,14 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
         }
     })
     .await?;
-    tokio::time::timeout(
-        Duration::from_millis(100),
-        store.record("default", "host", "session", vec![trace(64)], 0),
-    )
-    .await??;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            store.record("default", "host", "session", vec![trace(64)], 0),
+        )
+        .await?
+        .is_err()
+    );
     assert_eq!(
         store
             .replay("default", &ReplayQuery::default())
@@ -253,7 +277,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
             .replay("default", &ReplayQuery::default())
             .await?
             .dropped,
-        0
+        3
     );
     let cursor = restored
         .replay("default", &ReplayQuery::default())
@@ -279,9 +303,16 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
 
 #[tokio::test]
 async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result<()> {
-    struct FailingPersistence;
+    struct FailingPersistence(SqliteTracePersistence);
     #[async_trait::async_trait]
     impl TracePersistence for FailingPersistence {
+        async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+            self.0.record_status(project, dropped, failed).await
+        }
+        async fn status(&self, project: &str) -> Result<persistence::TraceStatus> {
+            self.0.status(project).await
+        }
+
         async fn initialize(&self) -> Result<()> {
             Ok(())
         }
@@ -331,11 +362,17 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
             anyhow::bail!("disk full")
         }
     }
-    let store = TraceStore::open(Arc::new(FailingPersistence)).await?;
+    let store = TraceStore::open(Arc::new(FailingPersistence(
+        SqliteTracePersistence::in_memory(),
+    )))
+    .await?;
     let changes = store.changes.subscribe();
-    store
-        .record("default", "host", "session", vec![trace(1)], 2)
-        .await?;
+    assert!(
+        store
+            .record("default", "host", "session", vec![trace(1)], 2)
+            .await
+            .is_err()
+    );
     assert_eq!(
         store
             .replay("default", &ReplayQuery::default())
@@ -348,7 +385,17 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
             .replay("default", &ReplayQuery::default())
             .await?
             .dropped,
-        2
+        0
+    );
+    store
+        .record("default", "host", "session", vec![], 3)
+        .await?;
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .dropped,
+        3
     );
     assert_eq!(
         store
@@ -402,7 +449,7 @@ async fn concurrent_batches_survive_reload_without_lost_updates() -> Result<()> 
     let restored = TraceStore::open(Arc::new(SqliteTracePersistence::new(path))).await?;
     let page = restored.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.cursor, 20);
-    assert_eq!(page.dropped, 0);
+    assert_eq!(page.dropped, 20);
     let ids: std::collections::HashSet<_> = page
         .records
         .iter()
@@ -435,6 +482,13 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     }
     #[async_trait::async_trait]
     impl TracePersistence for PausedPersistence {
+        async fn record_status(&self, project: &str, dropped: u64, failed: bool) -> Result<()> {
+            self.file.record_status(project, dropped, failed).await
+        }
+        async fn status(&self, project: &str) -> Result<persistence::TraceStatus> {
+            self.file.status(project).await
+        }
+
         async fn initialize(&self) -> Result<()> {
             Ok(())
         }
@@ -688,4 +742,46 @@ fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata
     );
     labelled.metadata = Some(oversized);
     assert!(labelled.validate().is_err());
+}
+
+#[tokio::test]
+async fn trace_status_is_shared_across_control_planes_and_survives_restart() -> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let open = async || -> Result<TraceStore> {
+            TraceStore::open(Arc::new(
+                persistence::postgres::PostgresTracePersistence::new(
+                    crate::postgres::PostgresDatabase::connect(&fixture.url).await?,
+                    Duration::from_secs(86400),
+                ),
+            ))
+            .await
+        };
+        let first = open().await?;
+        let second = open().await?;
+        first
+            .record("default", "host", "session", vec![trace(1)], 3)
+            .await?;
+        assert_eq!(
+            second
+                .replay("default", &ReplayQuery::default())
+                .await?
+                .dropped,
+            3
+        );
+        second
+            .record("default", "host", "session", vec![], 4)
+            .await?;
+        drop(first);
+        drop(second);
+        assert_eq!(
+            open()
+                .await?
+                .replay("default", &ReplayQuery::default())
+                .await?
+                .dropped,
+            7
+        );
+        Ok(())
+    })
+    .await
 }

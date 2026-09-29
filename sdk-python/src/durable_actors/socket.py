@@ -220,8 +220,6 @@ class SocketScope:
         if is_document(encoded) and encoded.get("type") in {"state", "state_update"}:
             raise ValueError("state and state_update messages are reserved")
         data = json.dumps(encoded, separators=(",", ":"), allow_nan=False)
-        if len(data.encode()) > 16 * 1024 * 1024:
-            raise ValueError("socket message exceeds 16 MiB")
         return {"type": "text", "data": data}
 
     def push(self, effect: Document) -> None:

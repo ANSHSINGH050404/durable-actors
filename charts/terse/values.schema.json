@@ -1,0 +1,154 @@
+{
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "repository",
+        "digest"
+      ]
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "publicUrl": {
+      "type": "string",
+      "pattern": "^https://[^/?#@]+/?$"
+    },
+    "region": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sandboxNamespace": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "zones": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "authorityBucket": {
+          "type": "string",
+          "minLength": 3
+        },
+        "artifactBucket": {
+          "type": "string",
+          "minLength": 3
+        },
+        "durability": {
+          "enum": [
+            "zonal",
+            "regional",
+            "multi_region"
+          ]
+        },
+        "archiveBucket": {
+          "type": "string",
+          "minLength": 3
+        },
+        "replicas": {
+          "type": "object",
+          "properties": {
+            "placements": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+              }
+            },
+            "idle": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxStarting": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "credentialsSecret": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "placements",
+            "idle",
+            "maxStarting",
+            "credentialsSecret",
+            "resources"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "authorityBucket",
+        "artifactBucket",
+        "archiveBucket",
+        "durability",
+        "replicas"
+      ]
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "googleServiceAccount": {
+          "type": "string",
+          "pattern": "^[^@]+@[^@]+[.]iam[.]gserviceaccount[.]com$"
+        }
+      },
+      "required": [
+        "googleServiceAccount"
+      ]
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "const": true
+        },
+        "replicaCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "enabled"
+      ]
+    }
+  },
+  "required": [
+    "image",
+    "replicaCount",
+    "publicUrl",
+    "region",
+    "sandboxNamespace",
+    "zones",
+    "storage",
+    "serviceAccount",
+    "networkPolicy"
+  ],
+  "$schema": "https://json-schema.org/draft-07/schema#"
+}

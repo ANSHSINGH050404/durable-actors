@@ -19,6 +19,7 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         region: "north-america-east".into(),
         host_config_key: Some("revision-1".into()),
         invocation: Some(ActorInvocationCapability {
+            route: "http://host".into(),
             actor: actor.clone(),
             host_id: host_id.clone(),
             owner_epoch: 3,

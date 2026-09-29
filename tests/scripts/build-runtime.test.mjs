@@ -11,18 +11,16 @@ import { RuntimeBuilder } from "../../scripts/build-runtime.mjs"
 
 const execute = promisify(execFile)
 
-test("native builds refresh both local executables and bundle them with a matching checksum", async t => {
+test("native builds package the Rust executable with a matching checksum", async t => {
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
-    await writeFile(path.join(root, "target/release/durable-actors-modal-go"), "stale provider", { mode: 0o755 })
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
             await writeFile(path.join(root, "target/release/durable-actors"), "runtime", { mode: 0o755 })
-        } else if (command === "go") {
-            await writeFile(args[args.indexOf("-o") + 1], "provider", { mode: 0o755 })
         } else {
+            assert.equal(command, "tar")
             return execute(command, args, options)
         }
     }
@@ -35,15 +33,8 @@ test("native builds refresh both local executables and bundle them with a matchi
     const extracted = path.join(root, "extracted")
     await mkdir(extracted)
     await execute("tar", ["-xzf", archive, "-C", extracted])
-    for (const [name, contents] of [
-        ["durable-actors", "runtime"],
-        ["durable-actors-modal-go", "provider"]
-    ]) {
-        assert.equal(await readFile(path.join(root, "target/release", name), "utf8"), contents)
-        await execute("test", ["-x", path.join(root, "target/release", name)])
-        assert.equal(await readFile(path.join(extracted, name), "utf8"), contents)
-        await execute("test", ["-x", path.join(extracted, name)])
-    }
+    assert.equal(await readFile(path.join(extracted, "durable-actors"), "utf8"), "runtime")
+    await execute("test", ["-x", path.join(extracted, "durable-actors")])
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

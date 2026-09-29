@@ -75,6 +75,7 @@ impl SocketTicket {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SocketTarget {
+    pub route: String,
     pub host_id: crate::host::HostId,
     pub session_id: String,
     pub owner_epoch: u64,

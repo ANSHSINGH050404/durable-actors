@@ -64,7 +64,7 @@ paths:
                         examples:
                             chat:
                                 value:
-                                    imageRef: im-customer-build
+                                    imageRef: registry.example/customer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                                     workingDirectory: /customer
                                     actorEntrypoint: src/actors.ts
                                     secretRefs: []
@@ -198,14 +198,14 @@ paths:
                   variables:
                       controlPlane: { default: "http://127.0.0.1:7100" }
                 - url: "{actorHost}"
-                  description: Direct invocation with a cached host ticket and ownership epoch.
+                  description: Cached invocation through the gateway (or local host) with a signed ticket and ownership epoch.
                   variables:
                       actorHost: { default: "http://127.0.0.1:7101" }
             security: [{ ApiKey: [] }, { ActorSession: [] }, { ActorTicket: [] }, {}]
             description: |
                 Without a valid cached target, the SDK sends requestId, method, args and an optional homeRegion to the control plane.
-                The control plane resolves placement, forwards one call and returns its outcome together with a scoped host target. Maximum body size is 16 MiB.
-                The SDK caches that target for subsequent invocations and broadcasts. Warm invocations go directly to the host with its ticket and ownerEpoch. Maximum body size is 32 MiB.
+                The control plane resolves placement, forwards one call and returns its outcome together with a scoped host target.
+                The SDK caches that target for subsequent invocations and broadcasts. Warm invocations use the cached route with its ticket and ownerEpoch. On Kubernetes this is the shared gateway, which verifies the signed route and forwards to the private host.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
                 The SDK retries once across both paths only for explicit pre-execution rejection or a refused host connection.
@@ -237,7 +237,7 @@ paths:
                             examples:
                                 resolved:
                                     value:
-                                        target: { homeRegion: north-america-west, route: "https://host.example.com", token: host-ticket, ownerEpoch: 3, expiresAtMs: 1900000000000 }
+                                        target: { homeRegion: north-america-west, route: "https://actors.example.com", token: host-ticket, ownerEpoch: 3, expiresAtMs: 1900000000000 }
                                         outcome: { type: completed, result: 7 }
                                 completed: { value: { type: completed, result: 7 } }
                                 failed: { value: { type: failed, code: actor_error, message: Method failed } }
@@ -267,7 +267,7 @@ paths:
             tags: [WebSockets]
             summary: Deliver socket effects to the owning host
             security: [{ ActorTicket: [] }]
-            description: Used by backend broadcasts. Actor method effects are already delivered by invokeActor. Do not retry an uncertain delivery. Maximum body size is 32 MiB.
+            description: Used by backend broadcasts. Actor method effects are already delivered by invokeActor. Do not retry an uncertain delivery.
             requestBody:
                 required: true
                 content:
@@ -731,7 +731,7 @@ components:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
         PayloadTooLarge:
-            description: Request exceeds 16 MiB (payload_too_large).
+            description: Request rejected by an upstream transport limit (payload_too_large).
             content:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
@@ -801,7 +801,7 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 255
-                    description: Published Modal source image ID (im-...) for hosted deployments; local for development. Maximum 255 UTF-8 bytes.
+                    description: Immutable OCI source image reference pinned by sha256 digest for GKE deployments; local for development. Maximum 255 UTF-8 bytes.
                 workingDirectory:
                     type: string
                     pattern: "^/"
@@ -822,7 +822,7 @@ components:
                         - { $ref: "#/components/schemas/PublicActorContract" }
                         - { type: "null" }
                     default: null
-                    description: Optional; generated for hosted deployments. Maximum 4 MiB.
+                    description: Optional; generated for hosted deployments.
         CurrentDeployment:
             type: object
             additionalProperties: false

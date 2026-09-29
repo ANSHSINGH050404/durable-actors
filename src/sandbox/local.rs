@@ -65,6 +65,9 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        anyhow::bail!("local hosts use their own process registry")
+    }
     async fn build_code(&self, _: &super::BuildCodeRequest) -> Result<super::BuiltActorCode> {
         anyhow::bail!("local code is prepared by the control plane")
     }
@@ -105,10 +108,7 @@ impl SandboxProvider for LocalSandboxProvider {
             lease.session_id == request.session_id,
             "socket host session replaced"
         );
-        Ok(super::SocketCredentials {
-            url: lease.route,
-            token: String::new(),
-        })
+        Ok(super::SocketCredentials { url: lease.route })
     }
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -122,7 +122,7 @@ impl SandboxProvider for LocalSandboxProvider {
         );
         ensure!(
             request.secret_refs.is_empty(),
-            "Modal secret references are unavailable in local mode"
+            "Kubernetes secret references are unavailable in local mode"
         );
         request
             .actor
