@@ -57,15 +57,18 @@ impl KubernetesReplicas {
             .context("replica pod IP missing")?
             .parse()?;
         let address = format!("http://{}", std::net::SocketAddr::new(ip, 7200));
-        let id: String = self
-            .http
-            .get(format!("{address}/identity"))
-            .bearer_auth(&self.secret)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let node = ready.spec.and_then(|s| s.node_name);
+        ensure!(
+            expected.node.is_none() || expected.node == node,
+            "replica node changed"
+        );
+        if let Some(placement) = &expected.placement {
+            ensure!(placement.address == address, "replica address changed");
+            if expected.uid.as_ref() == Some(&uid) && expected.node == node {
+                return Ok(expected.clone());
+            }
+        }
+        let id = self.identity(&address).await?;
         ensure!(
             expected
                 .placement
@@ -77,13 +80,25 @@ impl KubernetesReplicas {
             name: expected.name.clone(),
             zone: expected.zone.clone(),
             uid: Some(uid),
-            node: ready.spec.and_then(|s| s.node_name),
+            node,
             placement: Some(crate::bucket::ReplicaPlacement {
                 id,
                 address,
                 zone: expected.zone.clone(),
             }),
         })
+    }
+
+    async fn identity(&self, address: &str) -> Result<String> {
+        Ok(self
+            .http
+            .get(format!("{address}/identity"))
+            .bearer_auth(&self.secret)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 }
 

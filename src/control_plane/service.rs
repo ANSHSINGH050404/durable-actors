@@ -443,14 +443,12 @@ impl ControlPlaneService {
     ) -> Result<ControlPlaneCommandReply> {
         match command {
             ControlPlaneCommand::ReplicaDirectory { command } => {
-                use crate::replicas::directory::ReplicaDirectory;
                 let fleet = self
                     .replicas
                     .as_ref()
                     .context("dedicated replica directory is not configured")?;
-                fleet.authorize(principal, &command).await?;
                 Ok(ControlPlaneCommandReply::ReplicaDirectory {
-                    reply: fleet.execute(command).await?,
+                    reply: fleet.execute_for(principal, command).await?,
                 })
             }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {

@@ -282,3 +282,48 @@ fn assignment(id: &str, primary: bool) -> tokio::sync::OnceCell<Assignment> {
         replicas,
     }))
 }
+
+#[tokio::test]
+async fn assignment_accepts_a_reopened_disk_and_rejects_a_replacement_disk() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("original.sqlite");
+    let disk = ReplicaDisk::open(path.clone()).await?;
+    let cached = Assignment {
+        prefix: prefix().into(),
+        replicas: vec![ReplicaPlacement {
+            id: disk.identity().await?,
+            address: "http://replica:7200".into(),
+            zone: "zone".into(),
+        }],
+    };
+    disk.bind_assignment(&cached).await?;
+    drop(disk);
+    for (path, expected) in [
+        (path, StatusCode::NO_CONTENT),
+        (dir.path().join("replacement.sqlite"), StatusCode::CONFLICT),
+    ] {
+        let disk = ReplicaDisk::open(path).await?;
+        let server = Arc::new(ReplicaServer {
+            id: disk.identity().await?,
+            assignment: tokio::sync::OnceCell::new_with(disk.assignment().await?),
+            disk,
+            archive: Archive(Arc::new(FileBucket::new(dir.path().join("archive"))?)),
+            access: access(),
+            clock: Arc::new(SystemClock),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}/assign", listener.local_addr()?);
+        let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            axum::serve(listener, routes(server)).await
+        }));
+        let response = reqwest::Client::new()
+            .post(url)
+            .bearer_auth(access().admin())
+            .json(&cached)
+            .send()
+            .await?;
+        assert_eq!(response.status(), expected);
+        drop(task);
+    }
+    Ok(())
+}

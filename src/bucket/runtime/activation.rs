@@ -77,7 +77,10 @@ impl RuntimeStorage {
                 ensure!(hint.is_some(), "actor activation changed concurrently");
                 continue;
             }
+            let ownership_cas_ms = write_started.elapsed().as_secs_f64() * 1_000.0;
+            let prepare_started = Instant::now();
             self.snapshots.prepare(&record.stream()?.prefix).await?;
+            let replica_prepare_ms = prepare_started.elapsed().as_secs_f64() * 1_000.0;
             self.seed_replicas(&record, &mut recovery).await?;
             tracing::info!(
                 event = "actor_activation_storage",
@@ -88,6 +91,8 @@ impl RuntimeStorage {
                 session_id = %request.session_id,
                 new_actor,
                 ownership_read_ms,
+                ownership_cas_ms,
+                replica_prepare_ms,
                 session_recovery_ms = recovery.session_ms,
                 snapshot_load_ms = recovery.snapshot_ms,
                 ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,

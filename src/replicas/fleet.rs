@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -123,34 +123,49 @@ impl ReplicaFleet {
         });
     }
 
-    pub async fn authorize(
+    pub async fn execute_for(
         &self,
         principal: &crate::control_plane::ActorPrincipal,
-        command: &DirectoryCommand,
-    ) -> Result<()> {
+        command: DirectoryCommand,
+    ) -> Result<DirectoryReply> {
+        let started = Instant::now();
         let actor_prefix = crate::storage_paths::snapshots(&principal.actor)?;
         ensure!(
             command.scope().starts_with(&actor_prefix),
             "replica directory belongs to another actor"
         );
-        match command {
+        match &command {
             DirectoryCommand::Prepare { prefix } => {
                 self.authority
                     .authorize_writer(prefix, &principal.host_id, &principal.session_id)
-                    .await
+                    .await?;
+                return Ok(DirectoryReply {
+                    groups: vec![self.prepare_authorized(prefix, started).await?],
+                    ..Default::default()
+                });
             }
             DirectoryCommand::Finish { prefix } => {
                 self.authority
                     .authorize_finish(prefix, &principal.host_id, &principal.session_id)
-                    .await
+                    .await?;
             }
-            _ => Ok(()),
+            _ => {}
         }
+        self.execute(command).await
     }
 
     async fn prepare(&self, prefix: &str) -> Result<Group> {
+        let started = Instant::now();
         self.authority.require_live(prefix).await?;
+        self.prepare_authorized(prefix, started).await
+    }
+
+    async fn prepare_authorized(&self, prefix: &str, started: Instant) -> Result<Group> {
+        let authorization_ms = elapsed_ms(started);
+        let phase = Instant::now();
         let group = self.registry.claim(prefix, &self.zones).await?;
+        let claim_ms = elapsed_ms(phase);
+        let phase = Instant::now();
         ensure!(
             group.state == "creating" || group.state == "ready",
             "replica group is closed"
@@ -160,17 +175,12 @@ impl ReplicaFleet {
             .iter()
             .filter_map(|pod| pod.node.clone())
             .collect();
-        let pods = futures_util::future::try_join_all(group.pods.iter().map(|pod| async {
-            let pod = self.pods.ensure(pod, Some(prefix), &excluded).await?;
-            if let Err(error) = self.registry.update_pod(&pod).await {
-                if self.registry.lookup(prefix).await?.state == "archived" {
-                    self.pods.retire(&pod).await?;
-                }
-                return Err(error);
-            }
-            self.pods.protect(&pod, prefix).await?;
-            Ok::<_, anyhow::Error>(pod)
-        }))
+        let pods = futures_util::future::try_join_all(
+            group
+                .pods
+                .iter()
+                .map(|pod| self.prepare_pod(pod, prefix, &excluded)),
+        )
         .await?;
         ensure!(
             pods.iter()
@@ -180,10 +190,12 @@ impl ReplicaFleet {
                 == self.zones.len(),
             "replicas must occupy distinct nodes"
         );
+        let pods_ready_ms = elapsed_ms(phase);
         let assignment = Assignment {
             prefix: prefix.into(),
             replicas: placements(&pods)?,
         };
+        let phase = Instant::now();
         futures_util::future::try_join_all(
             assignment
                 .replicas
@@ -191,9 +203,56 @@ impl ReplicaFleet {
                 .map(|replica| self.peers.assign(replica, &assignment)),
         )
         .await?;
+        let assignment_ms = elapsed_ms(phase);
+        let phase = Instant::now();
         self.authority.require_live(prefix).await?;
+        let ownership_recheck_ms = elapsed_ms(phase);
+        let phase = Instant::now();
         self.registry.ready(prefix).await?;
-        self.group(prefix).await
+        tracing::info!(
+            event = "replica_activation",
+            prefix,
+            authorization_ms,
+            claim_ms,
+            pods_ready_ms,
+            assignment_ms,
+            ownership_recheck_ms,
+            ready_ms = elapsed_ms(phase),
+            duration_ms = elapsed_ms(started),
+            "replica group ready"
+        );
+        Ok(Group {
+            prefix: group.prefix,
+            replicas: assignment.replicas,
+            archived: false,
+            checkpoint: group.checkpoint,
+        })
+    }
+
+    async fn prepare_pod(
+        &self,
+        expected: &PodRecord,
+        prefix: &str,
+        excluded: &[String],
+    ) -> Result<PodRecord> {
+        let started = Instant::now();
+        let pod = self.pods.ensure(expected, Some(prefix), excluded).await?;
+        let ensure_ms = elapsed_ms(started);
+        let phase = Instant::now();
+        if pod != *expected {
+            if let Err(error) = self.registry.update_pod(&pod).await {
+                if self.registry.lookup(prefix).await?.state == "archived" {
+                    self.pods.retire(&pod).await?;
+                }
+                return Err(error);
+            }
+        }
+        let registration_ms = elapsed_ms(phase);
+        let phase = Instant::now();
+        self.pods.protect(&pod, prefix).await?;
+        tracing::info!(event = "replica_activation_pod", prefix, pod = %pod.name, ensure_ms,
+            registration_ms, protection_ms = elapsed_ms(phase), duration_ms = elapsed_ms(started));
+        Ok(pod)
     }
 
     async fn finish(&self, prefix: &str) -> Result<Group> {
@@ -262,17 +321,7 @@ impl ReplicaFleet {
     }
 
     async fn group(&self, prefix: &str) -> Result<Group> {
-        let record = self.registry.lookup(prefix).await?;
-        Ok(Group {
-            prefix: prefix.into(),
-            replicas: record
-                .pods
-                .iter()
-                .filter_map(|pod| pod.placement.clone())
-                .collect(),
-            archived: record.state == "archived",
-            checkpoint: record.checkpoint,
-        })
+        Ok(directory_group(self.registry.lookup(prefix).await?))
     }
 
     async fn reconcile(&self) -> Result<()> {
@@ -423,6 +472,23 @@ impl ReplicaDirectory for ReplicaFleet {
         }
         Ok(reply)
     }
+}
+
+fn directory_group(record: GroupRecord) -> Group {
+    Group {
+        prefix: record.prefix,
+        replicas: record
+            .pods
+            .into_iter()
+            .filter_map(|pod| pod.placement)
+            .collect(),
+        archived: record.state == "archived",
+        checkpoint: record.checkpoint,
+    }
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1_000.0
 }
 
 fn placements(pods: &[PodRecord]) -> Result<Vec<ReplicaPlacement>> {
