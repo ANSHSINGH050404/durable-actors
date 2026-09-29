@@ -36,10 +36,10 @@ def generate_client(contract: Document, output: Path) -> None:
         "from __future__ import annotations\n"
         "import builtins as _builtins\n"
         "from typing import TypeAlias as _TypeAlias, Literal as _Literal\n"
-        "from little_actors.client import ActorTransport as _ActorTransport\n"
-        "from little_actors.generated import Unset as _Unset\n"
-        "from little_actors.proxy import SocketAuthorization as _SocketAuthorization, prepare_authorization as _prepare_authorization\n"
-        "from little_actors.client import SocketGrant as _SocketGrant\n"
+        "from durable_actors.client import ActorTransport as _ActorTransport\n"
+        "from durable_actors.generated import Unset as _Unset\n"
+        "from durable_actors.proxy import SocketAuthorization as _SocketAuthorization, prepare_authorization as _prepare_authorization\n"
+        "from durable_actors.client import SocketGrant as _SocketGrant\n"
         "from pydantic import TypeAdapter as _TypeAdapter\n"
         + "\n".join(namespaces)
         + f"\n__all__ = {names!r}\n"
@@ -74,8 +74,8 @@ def generate_models(actor: Document) -> tuple[str, dict[str, str], list[str]]:
         input_file_type=InputFileType.JsonSchema,
         output_model_type=DataModelType.PydanticV2BaseModel,
         class_name=root_name,
-        base_class="little_actors.generated.ClientModel",
-        field_extra_keys={"x-little-actors-omittable", "x-little-actors-nullable"},
+        base_class="durable_actors.generated.ClientModel",
+        field_extra_keys={"x-durable-actors-omittable", "x-durable-actors-nullable"},
         disable_timestamp=True,
         use_type_alias=True,
         use_union_operator=True,
@@ -284,9 +284,9 @@ def proxy_module(names: list[str]) -> str:
 from . import actors as actors
 from typing import TypeAlias as _TypeAlias, Never as _Never
 from pydantic import TypeAdapter as _TypeAdapter
-from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant
-from little_actors.proxy import prepare_authorization as _prepare_authorization
-from little_actors import ActorSession as ActorSession, ActorSessionTransport as ActorSessionTransport, ActorSessionRejectedError as ActorSessionRejectedError
+from durable_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant
+from durable_actors.proxy import prepare_authorization as _prepare_authorization
+from durable_actors import ActorSession as ActorSession, ActorSessionTransport as ActorSessionTransport, ActorSessionRejectedError as ActorSessionRejectedError
 
 ActorAuthorization: _TypeAlias = {authorization}
 
@@ -376,10 +376,10 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
         "import json as _json",
         "from collections.abc import Callable as _Callable",
         "from pydantic import TypeAdapter as _TypeAdapter",
-        "from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, default_client as _default_client",
-        "from little_actors.connection import Connection as _Connection",
-        "from little_actors.subscription import Subscription as _Subscription",
-        "from little_actors.generated import UNSET as _UNSET, Unset as _Unset, arguments as _arguments, argument as _argument",
+        "from durable_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, default_client as _default_client",
+        "from durable_actors.connection import Connection as _Connection",
+        "from durable_actors.subscription import Subscription as _Subscription",
+        "from durable_actors.generated import UNSET as _UNSET, Unset as _Unset, arguments as _arguments, argument as _argument",
         f"from . import _{name.lower()}_models as _models",
         "",
         "class Stub:",
@@ -672,8 +672,8 @@ def mark_omittable(value: Any, definitions: Document) -> None:
         required = value.get("required", [])
         for name, property in value.get("properties", {}).items():
             if name not in required and "default" not in property:
-                property["x-little-actors-omittable"] = True
-                property["x-little-actors-nullable"] = nullable(property, definitions, set())
+                property["x-durable-actors-omittable"] = True
+                property["x-durable-actors-nullable"] = nullable(property, definitions, set())
         for item in list(value.values()):
             mark_omittable(item, definitions)
 
@@ -713,7 +713,7 @@ def omittable_fields(source: str) -> str:
         tree.body.insert(
             1,
             ast.ImportFrom(
-                module="little_actors.generated",
+                module="durable_actors.generated",
                 names=[
                     ast.alias(name="UNSET", asname="_UNSET"),
                     ast.alias(name="Unset", asname="_Unset"),
@@ -737,9 +737,9 @@ def rewrite_omittable(field: ast.Call, annotation: ast.Tuple) -> bool:
     if metadata is None:
         return False
     extras = ast.literal_eval(metadata.value)
-    if not extras.pop("x-little-actors-omittable", False):
+    if not extras.pop("x-durable-actors-omittable", False):
         return False
-    allows_null = extras.pop("x-little-actors-nullable", False)
+    allows_null = extras.pop("x-durable-actors-nullable", False)
     field.keywords.remove(metadata)
     if extras:
         field.keywords.append(

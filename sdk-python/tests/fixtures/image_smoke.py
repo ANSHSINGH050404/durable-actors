@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from little_actors import Client
+from durable_actors import Client
 
 
 def main() -> None:
@@ -15,7 +15,7 @@ def main() -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
         listener.close()
-        Path(directory, "actors.py").write_text("""from little_actors import Actor
+        Path(directory, "actors.py").write_text("""from durable_actors import Actor
 class Counter(Actor):
     count: int = 0
     def increment(self) -> int:

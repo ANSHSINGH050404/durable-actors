@@ -1,8 +1,8 @@
 import pytest
 from fixtures.effects import Effects
 
-from little_actors import JsonValue
-from little_actors.socket import SocketScope
+from durable_actors import JsonValue
+from durable_actors.socket import SocketScope
 
 
 def scope():

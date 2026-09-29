@@ -3,8 +3,8 @@ from typing import Annotated, ClassVar, Literal
 import pytest
 from pydantic import BaseModel
 
-from little_actors import Actor, emitted, ephemeral, reentrant
-from little_actors.contract import describe_actor, public_contract
+from durable_actors import Actor, emitted, ephemeral, reentrant
+from durable_actors.contract import describe_actor, public_contract
 
 
 class Message(BaseModel):
@@ -93,7 +93,7 @@ def test_nested_untyped_structural_models_are_rejected():
     from dataclasses import make_dataclass
     from typing import Any
 
-    from little_actors.contract import adapter_for
+    from durable_actors.contract import adapter_for
 
     for value in (make_dataclass("Untyped", [("payload", Any)]),):
         with pytest.raises(ValueError, match="concrete"):
@@ -105,7 +105,7 @@ def test_untyped_aliases_and_non_string_dictionary_keys_are_rejected():
 
     from typing_extensions import TypeAliasType
 
-    from little_actors.contract import adapter_for
+    from durable_actors.contract import adapter_for
 
     for value in (TypeAliasType("Untyped", list[Any]), dict[int, str]):
         with pytest.raises(ValueError, match="concrete|string"):
@@ -166,7 +166,7 @@ def test_socket_model_names_may_match_contract_root_names():
 def test_nonfinite_json_and_unbound_type_variables_are_rejected():
     from typing import TypeVar
 
-    from little_actors.contract import adapter_for, encode
+    from durable_actors.contract import adapter_for, encode
 
     with pytest.raises(ValueError, match="concrete"):
         adapter_for(TypeVar("Unknown"))
@@ -177,7 +177,7 @@ def test_nonfinite_json_and_unbound_type_variables_are_rejected():
 def test_contract_uses_serialized_types_for_results():
     from pydantic import computed_field
 
-    from little_actors.contract import adapter_for, schemas
+    from durable_actors.contract import adapter_for, schemas
 
     class Result(BaseModel):
         value: int
@@ -230,7 +230,7 @@ def test_field_helpers_preserve_static_value_types(tmp_path):
     actors.write_text(source)
     invalid = tmp_path / "invalid.py"
     invalid.write_text("""from actors import TypedActor
-from little_actors import emitted, ephemeral
+from durable_actors import emitted, ephemeral
 
 bad_default: int = emitted("bad")
 bad_factory: int = ephemeral(default_factory=list)

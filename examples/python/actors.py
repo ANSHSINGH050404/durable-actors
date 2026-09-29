@@ -1,4 +1,4 @@
-from little_actors import Actor, ActorSocket, emitted
+from durable_actors import Actor, ActorSocket, emitted
 from pydantic import BaseModel, Field
 
 

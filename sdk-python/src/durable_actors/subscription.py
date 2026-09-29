@@ -54,7 +54,7 @@ class Subscription(Generic[State]):
         self._error: Exception | None = None
         self._stopping = Event()
         self._done = Event()
-        self._thread = Thread(target=self._run, name="little-actors-subscription", daemon=True)
+        self._thread = Thread(target=self._run, name="durable-actors-subscription", daemon=True)
         self._thread.start()
 
     @property

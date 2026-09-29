@@ -7,9 +7,9 @@ import httpx
 import pytest
 from test_authoring import Chat
 
-from little_actors import ActorInvocationError, Client
-from little_actors.codegen import generate_client
-from little_actors.contract import public_contract
+from durable_actors import ActorInvocationError, Client
+from durable_actors.codegen import generate_client
+from durable_actors.contract import public_contract
 
 TARGET = {
     "route": "http://host.test",
@@ -105,7 +105,7 @@ def test_generated_authorizations_are_typed_and_dispatch_to_the_correct_actor(
     }
     source = tmp_path / "usage.py"
     source.write_text("""from parity_client import actors, ActorAuthorization, ActorProxy
-from little_actors import Client
+from durable_actors import Client
 
 def check(client: Client) -> None:
     authorization: ActorAuthorization = actors.Chat.Authorization(actor_id="one", metadata=actors.Chat.Message(text="Ada", role="user"))
@@ -156,7 +156,7 @@ def test_client_telemetry_reports_outcomes_without_credentials_or_arguments():
 def test_socket_tags_are_validated_and_fully_typed(tmp_path):
     source = tmp_path / "tagged.py"
     source.write_text("""from typing import Literal, assert_type
-from little_actors import Actor, ActorSocket
+from durable_actors import Actor, ActorSocket
 
 Tag = Literal["member", "admin"]
 class Room(Actor[str, str, str, Tag]):
@@ -204,8 +204,8 @@ async def test_socket_tag_contract_rejects_values_outside_the_declared_set():
 
     from fixtures.effects import Effects
 
-    from little_actors import Actor, ActorSocket
-    from little_actors.runtime import ActorRuntime
+    from durable_actors import Actor, ActorSocket
+    from durable_actors.runtime import ActorRuntime
 
     class Room(Actor[str, str, str, Literal["member", "admin"]]):
         def on_connect(self, socket: ActorSocket[str, str, Literal["member", "admin"]]) -> None:
@@ -229,7 +229,7 @@ async def test_socket_tag_contract_rejects_values_outside_the_declared_set():
 
 
 def test_source_class_references_preserve_signatures_and_use_the_transport(tmp_path):
-    from little_actors import Actor, ephemeral
+    from durable_actors import Actor, ephemeral
 
     class Counter(Actor):
         cache: object = ephemeral(
@@ -260,7 +260,7 @@ def test_source_class_references_preserve_signatures_and_use_the_transport(tmp_p
             assert counter.total(2, 3, 4) == 9
             assert counter.label(prefix="Ada") == "Ada"
     source = tmp_path / "reference.py"
-    source.write_text("""from little_actors import Actor
+    source.write_text("""from durable_actors import Actor
 class Counter(Actor):
     def increment(self, amount: int = 1) -> int:
         return amount

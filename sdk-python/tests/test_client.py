@@ -5,7 +5,7 @@ import sys
 import httpx
 import pytest
 
-from little_actors.client import ActorInvocationError, Client
+from durable_actors.client import ActorInvocationError, Client
 
 
 def test_caches_route_and_retries_only_explicit_non_execution():
@@ -57,7 +57,7 @@ def test_default_client_shares_its_pool_and_closes_it_at_process_exit(tmp_path):
 from pathlib import Path
 import sys
 import httpx
-from little_actors.client import default_client
+from durable_actors.client import default_client
 
 class TrackedHttpClient(httpx.Client):
     def close(self):

@@ -133,7 +133,7 @@ impl LocalCodeCompiler for ActorCodeCompiler {
             let mut command = Command::new(
                 std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
             );
-            command.args(["-m", "little_actors.build"]);
+            command.args(["-m", "durable_actors.build"]);
             command
         } else {
             let mut command = Command::new("bun");

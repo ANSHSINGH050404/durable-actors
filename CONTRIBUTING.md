@@ -92,17 +92,17 @@ For Python SDK changes, build the runtime and run from `sdk-python`:
 uv sync --locked --all-extras
 uv run ruff check src tests
 uv run ruff format --check src tests
-uv run mypy src/little_actors
+uv run mypy src/durable_actors
 uv run pyright
-LITTLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run pytest -q
+DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run pytest -q
 uv build --no-sources
 ```
 
-Python integration tests require `LITTLE_ACTORS_TEST_RUNTIME`; they skip without it. To run the shared CLI's Python tests from the repository root after building the SDK:
+Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip without it. To run the shared CLI's Python tests from the repository root after building the SDK:
 
 ```sh
 pnpm --dir sdk exec tsc -p tsconfig.test.json
-LITTLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" LITTLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" node --test sdk/.test-dist/tests/cli/python.test.js
+DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" node --test sdk/.test-dist/tests/cli/python.test.js
 ```
  The release workflow requires the PyPI trusted publisher described in the [Python reference](docs/reference/python.md#releases).
 

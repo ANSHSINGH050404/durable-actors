@@ -30,7 +30,7 @@ def emitted(default: Any = MISSING, *, default_factory: Any = MISSING) -> Any:
         messages: list[str] = emitted(default_factory=list)
     """
     return field(
-        default=default, default_factory=default_factory, metadata={"little_actors": "emitted"}
+        default=default, default_factory=default_factory, metadata={"durable_actors": "emitted"}
     )
 
 
@@ -57,5 +57,5 @@ def ephemeral(default: Any = MISSING, *, default_factory: Any = MISSING) -> Any:
         lock: Lock = ephemeral(default_factory=Lock)
     """
     return field(
-        default=default, default_factory=default_factory, metadata={"little_actors": "ephemeral"}
+        default=default, default_factory=default_factory, metadata={"durable_actors": "ephemeral"}
     )

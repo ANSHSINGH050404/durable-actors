@@ -11,12 +11,12 @@ import { promisify } from "node:util"
 
 const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../../dist/cli.js", import.meta.url))
-const python = process.env.LITTLE_ACTORS_TEST_PYTHON
-const runtime = process.env.LITTLE_ACTORS_TEST_RUNTIME
+const python = process.env.DURABLE_ACTORS_TEST_PYTHON
+const runtime = process.env.DURABLE_ACTORS_TEST_RUNTIME
 const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))
 )
-const source = `from little_actors import Actor, emitted
+const source = `from durable_actors import Actor, emitted
 class Counter(Actor):
     count: int = emitted(0)
     def increment(self, amount: int = 1) -> int:
@@ -29,7 +29,7 @@ test("init python creates a project using the shared CLI", async t => {
     t.after(() => rm(directory, { recursive: true, force: true }))
     const result = await run(process.execPath, [cli, "init", "counter", "--template", "python"], { cwd: directory })
     const project = path.join(directory, "counter")
-    assert.match(await readFile(path.join(project, "pyproject.toml"), "utf8"), /little-actors\[codegen\]/u)
+    assert.match(await readFile(path.join(project, "pyproject.toml"), "utf8"), /durable-actors\[codegen\]/u)
     assert.match(await readFile(path.join(project, "src/actors.py"), "utf8"), /class Counter/u)
     assert.match(await readFile(path.join(project, ".env"), "utf8"), /DURABLE_ACTORS_ENTRYPOINT=src\/actors.py/u)
     assert.match(result.stdout, /uv sync/u)
@@ -81,7 +81,7 @@ test("generate infers Python from a published contract without actor source", { 
     await writeFile(path.join(directory, "actors.py"), source)
     const built = await run(python!, [
         "-m",
-        "little_actors.build",
+        "durable_actors.build",
         directory,
         "actors.py",
         path.join(directory, "build"),
@@ -150,7 +150,7 @@ test(
                 python!,
                 [
                     "-c",
-                    `from little_actors import Client
+                    `from durable_actors import Client
 with Client(control_plane_url="${origin}") as client:
     print(client.invoke("Counter", "one", "increment", []))`
                 ],
@@ -190,7 +190,7 @@ test("deployment builder dispatches Python and produces a loadable artifact", { 
         [
             "-c",
             `from pathlib import Path
-from little_actors.build import load_artifact
+from durable_actors.build import load_artifact
 actor = load_artifact(Path("actors.pyz"))[0]()
 print(actor.increment(7))`
         ],

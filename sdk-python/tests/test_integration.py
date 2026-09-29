@@ -11,16 +11,16 @@ from queue import Queue
 import httpx
 import pytest
 
-from little_actors.client import Client
-from little_actors.codegen import generate_client
+from durable_actors.client import Client
+from durable_actors.codegen import generate_client
 
 
 @pytest.mark.skipif(
-    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_python_actor_generated_client_and_durable_restart(tmp_path):
     (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
-from little_actors import Actor, sandbox
+from durable_actors import Actor, sandbox
 import os
 class Count(BaseModel):
     value: int
@@ -61,7 +61,7 @@ class Counter(Actor):
             )
             assert result.returncode == 0, result.stdout + result.stderr
             assert int(result.stdout) == expected
-            from little_actors import ActorInvocationError
+            from durable_actors import ActorInvocationError
 
             with pytest.raises(ActorInvocationError) as error:
                 client.invoke("Counter", "one", "crash", [])
@@ -70,13 +70,13 @@ class Counter(Actor):
 
 
 @pytest.mark.skipif(
-    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
-    from little_actors import StateSnapshot, StateUpdate
+    from durable_actors import StateSnapshot, StateUpdate
 
     (tmp_path / "socket_actors.py").write_text("""from pydantic import BaseModel
-from little_actors import Actor, ActorSocket, emitted, reentrant
+from durable_actors import Actor, ActorSocket, emitted, reentrant
 class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
@@ -123,10 +123,10 @@ class Room(Actor[Payload, Payload, Payload]):
 
 
 @pytest.mark.skipif(
-    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_generated_subscription_delivers_state_while_calling_rpcs(tmp_path, monkeypatch):
-    (tmp_path / "actors.py").write_text("""from little_actors import Actor, emitted
+    (tmp_path / "actors.py").write_text("""from durable_actors import Actor, emitted
 class Counter(Actor[None, None, None]):
     count: int = emitted(0)
     label: str = emitted("ready")
@@ -154,11 +154,11 @@ class Counter(Actor[None, None, None]):
 
 
 @pytest.mark.skipif(
-    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_sync_reentrant_rpc_allows_another_rpc_to_release_its_wait(tmp_path, monkeypatch):
     (tmp_path / "actors.py").write_text("""from threading import Event
-from little_actors import Actor, ephemeral, reentrant
+from durable_actors import Actor, ephemeral, reentrant
 class Waiting(Actor):
     count: int = 0
     entered: Event = ephemeral(default_factory=Event)
@@ -200,10 +200,10 @@ class Waiting(Actor):
 
 
 @pytest.mark.skipif(
-    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_actor_calls_another_actor_through_a_source_reference(tmp_path):
-    (tmp_path / "relay_actors.py").write_text("""from little_actors import Actor
+    (tmp_path / "relay_actors.py").write_text("""from durable_actors import Actor
 class Counter(Actor):
     count: int = 0
     def increment(self, amount: int = 1) -> int:
@@ -223,7 +223,7 @@ def actor_server(project, entrypoint, port):
     with (project / "runtime.log").open("w+") as log:
         process = subprocess.Popen(
             [
-                os.environ["LITTLE_ACTORS_TEST_RUNTIME"],
+                os.environ["DURABLE_ACTORS_TEST_RUNTIME"],
                 "dev",
                 "--project",
                 str(project),

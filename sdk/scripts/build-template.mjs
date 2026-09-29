@@ -33,7 +33,7 @@ async function buildTemplate(template) {
         const manifest = new URL("pyproject.toml", destination)
         await writeFile(
             manifest,
-            (await readFile(manifest, "utf8")).replace("little-actors[codegen]", `little-actors[codegen]==${version}`)
+            (await readFile(manifest, "utf8")).replace("durable-actors[codegen]", `durable-actors[codegen]==${version}`)
         )
     }
     const metadata = JSON.parse(await readFile(new URL("package.json", destination), "utf8"))

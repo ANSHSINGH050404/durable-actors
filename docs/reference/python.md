@@ -1,13 +1,13 @@
 # Python SDK
 
-The `little-actors` distribution provides actor authoring, a Python executor, and synchronous clients, driven by the shared TypeScript `durable-actors` CLI. Install `little-actors[codegen]` in development environments for generation and type checking. See the [quickstart](../../sdk-python/README.md) and [runnable example](../../examples/python).
+The `durable-actors` distribution provides actor authoring, a Python executor, and synchronous clients, driven by the shared TypeScript `durable-actors` CLI. Install `durable-actors[codegen]` in development environments for generation and type checking. See the [quickstart](../../sdk-python/README.md) and [runnable example](../../examples/python).
 
 ## Actor definitions and typing
 
 ```python
 from typing import Annotated, Literal
 from pydantic import BaseModel, Field
-from little_actors import Actor, emitted, ephemeral
+from durable_actors import Actor, emitted, ephemeral
 
 class Message(BaseModel):
     role: Literal["user", "assistant"]
@@ -54,7 +54,7 @@ Methods run serially by default. Use ordinary `def` for RPCs and socket hooks. S
 
 ```python
 import time
-from little_actors import Actor, reentrant
+from durable_actors import Actor, reentrant
 
 class Counter(Actor):
     count: int = 0
@@ -104,7 +104,7 @@ Declare `Actor[Metadata, Incoming, Outgoing, Tag]` to type both ends of the sock
 ```python
 from typing import Literal
 from pydantic import BaseModel
-from little_actors import Actor, ActorSocket
+from durable_actors import Actor, ActorSocket
 
 class Member(BaseModel):
     name: str
@@ -125,11 +125,11 @@ class Room(Actor[Member, Message, Message, Tag]):
         pass
 ```
 
-Import `ActorSocket` from `little_actors`. `self.get_connections()` returns typed sockets in synchronous handlers. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
+Import `ActorSocket` from `durable_actors`. `self.get_connections()` returns typed sockets in synchronous handlers. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
 
 ```python
 from generated import actors
-from little_actors import StateSnapshot, StateUpdate
+from durable_actors import StateSnapshot, StateUpdate
 
 room = actors.Room.get("lobby")
 with room.connect(actors.Room.Metadata(name="Ada")) as connection:
@@ -145,7 +145,7 @@ with room.connect(actors.Room.Metadata(name="Ada")) as connection:
 
 `connection.receive()` blocks until a message arrives; pass `timeout=5` to wait up to five seconds and raise `TimeoutError` if no message arrives. Use a `with` block to close the WebSocket connection, or call `connection.close()` explicitly.
 
-`StateSnapshot` contains all emittable fields; `StateUpdate.changes` contains changed fields. Optional fields without a schema default use the typed `UNSET` sentinel, exported from `little_actors`. This preserves the distinction between omission and an explicit `None`. Use `model_fields_set`, `isinstance(value, Unset)`, or `model_dump(exclude_unset=True)` when processing patches. `prepare_websocket(metadata)` returns a short-lived grant when another process will connect. Reconnect explicitly with a new grant after expiry or connection loss.
+`StateSnapshot` contains all emittable fields; `StateUpdate.changes` contains changed fields. Optional fields without a schema default use the typed `UNSET` sentinel, exported from `durable_actors`. This preserves the distinction between omission and an explicit `None`. Use `model_fields_set`, `isinstance(value, Unset)`, or `model_dump(exclude_unset=True)` when processing patches. `prepare_websocket(metadata)` returns a short-lived grant when another process will connect. Reconnect explicitly with a new grant after expiry or connection loss.
 
 Metadata is limited to 64 KiB and messages to 16 MiB. Application messages cannot use the reserved top-level types `state` or `state_update`.
 
@@ -159,7 +159,7 @@ Metadata is limited to 64 KiB and messages to 16 MiB. Application messages canno
 | `durable-actors generate [src/actors.py] --out-dir generated` | Generate from source, or the server when source is omitted, then type-check the client. |
 | `durable-actors generate --language python` | Explicitly select Python clients for a published schema. |
 
-Use the existing Node CLI (`pnpm exec durable-actors`). The Python package has no console command. Install `little-actors[codegen]` in your project's virtual environment. The CLI runs strict mypy before source compilation and reload, and after generation. Invalid edits leave the last working deployment running. The SDK and generated-client tests also validate Pyright compatibility.
+Use the existing Node CLI (`pnpm exec durable-actors`). The Python package has no console command. Install `durable-actors[codegen]` in your project's virtual environment. The CLI runs strict mypy before source compilation and reload, and after generation. Invalid edits leave the last working deployment running. The SDK and generated-client tests also validate Pyright compatibility.
 
 The CLI selects `DURABLE_ACTORS_PYTHON`, then the active `VIRTUAL_ENV`, then the project's `.venv/bin/python`, then `python3`. Set `DURABLE_ACTORS_ENTRYPOINT=src/actors.py` in `.env`; the Python template creates this setting. `.env.local` and `.env` work just as they do for TypeScript projects. `DURABLE_ACTORS_PROJECT` overrides the project directory, and `DURABLE_ACTORS_DATA_DIR` the local state directory. `dev --port 0` selects a free port. `DURABLE_ACTORS_BINARY` selects a native executable instead of downloading it. Keep native runtime, TypeScript CLI, and Python SDK versions aligned.
 
@@ -210,7 +210,7 @@ For clients using short-lived application sessions, pass an `ActorSessionTranspo
 
 ```python
 from generated import actors
-from little_actors import ActorSession, ActorSessionTransport
+from durable_actors import ActorSession, ActorSessionTransport
 
 def get_session() -> ActorSession:
     return authorize_with_your_backend()
@@ -227,7 +227,7 @@ Set `DURABLE_ACTORS_TELEMETRY=1` for JSON invocation timing on stderr, or pass a
 ## Sandbox resources
 
 ```python
-from little_actors import Actor, sandbox
+from durable_actors import Actor, sandbox
 
 @sandbox(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
 class CustomerAgent(Actor):
@@ -249,7 +249,7 @@ Hosted compilation has a ten-minute budget for dependency installation and packa
 Python source is packaged from the project, excluding hidden directories, `node_modules`, `venv`, `__pycache__`, `dist`, `target`, `generated`, and any directory containing `pyvenv.cfg`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
 
 ```toml
-[tool.little-actors]
+[tool.durable-actors]
 include = ["templates/*.txt", "data/*.json"]
 ```
 
@@ -259,4 +259,4 @@ Use `importlib.resources` for packaged resources. Source and resources are limit
 
 Python package versions are stamped and verified with the native and TypeScript versions by `scripts/release.mjs`. CI runs Python 3.11, 3.13, and 3.14, checks mypy and Pyright, and tests against a built Rust runtime. The release workflow publishes the tested wheel and source distribution through PyPI trusted publishing after native and image validation.
 
-Before the first publication, the package owner must configure the `little-actors` PyPI project (or a pending publisher) for GitHub owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`. See [PyPI's trusted publishing setup](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).
+Before the first publication, the package owner must configure the `durable-actors` PyPI project (or a pending publisher) for GitHub owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`. See [PyPI's trusted publishing setup](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).

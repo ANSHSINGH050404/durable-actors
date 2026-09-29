@@ -4,7 +4,7 @@ from pydantic import BaseModel, TypeAdapter
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
-from little_actors.connection import Connection, StateSnapshot
+from durable_actors.connection import Connection, StateSnapshot
 
 
 class Message(BaseModel):

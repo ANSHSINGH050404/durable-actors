@@ -23,10 +23,10 @@ async function compilePythonContract(entrypoint: string): Promise<unknown> {
     const project = process.cwd()
     const executable = await pythonExecutable(project)
     await checkPython(project, [entrypoint], executable)
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-build-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-build-"))
     try {
         return JSON.parse(
-            await runPython(executable, project, "little_actors.build", [project, entrypoint, directory, "local"])
+            await runPython(executable, project, "durable_actors.build", [project, entrypoint, directory, "local"])
         )
     } finally {
         await rm(directory, { recursive: true, force: true })
@@ -36,7 +36,7 @@ async function compilePythonContract(entrypoint: string): Promise<unknown> {
 async function generatePythonClient(contract: unknown, directory: string): Promise<void> {
     const project = process.cwd()
     const executable = await pythonExecutable(project)
-    await runPython(executable, project, "little_actors.codegen", [directory], JSON.stringify(contract))
+    await runPython(executable, project, "durable_actors.codegen", [directory], JSON.stringify(contract))
     await checkPython(project, [directory], executable)
 }
 
@@ -56,7 +56,7 @@ function runPython(
                 if (!error) return resolve(stdout)
                 const hint =
                     error.code === "ENOENT" || stderr.includes("No module named")
-                        ? "\nInstall little-actors[codegen] in the project virtual environment; DURABLE_ACTORS_PYTHON can select another interpreter."
+                        ? "\nInstall durable-actors[codegen] in the project virtual environment; DURABLE_ACTORS_PYTHON can select another interpreter."
                         : ""
                 reject(new Error(`${module} failed: ${stdout}${stderr || error.message}${hint}`))
             }

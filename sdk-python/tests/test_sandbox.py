@@ -3,13 +3,13 @@ import sys
 
 import pytest
 
-from little_actors import Actor
-from little_actors.codegen import generate_client
-from little_actors.contract import public_contract
+from durable_actors import Actor
+from durable_actors.codegen import generate_client
+from durable_actors.contract import public_contract
 
 
 def test_sandbox_options_preserve_actor_types_and_publish_runtime_overrides(tmp_path):
-    from little_actors import sandbox
+    from durable_actors import sandbox
 
     @sandbox(cpu=2, memory_mib=2048, idle_timeout_ms=60000, regions=["canada"])
     class Agent(Actor):
@@ -29,7 +29,7 @@ def test_sandbox_options_preserve_actor_types_and_publish_runtime_overrides(tmp_
     assert Agent().increment() == 1
     generate_client(contract, tmp_path / "resource_client")
     source = tmp_path / "usage.py"
-    source.write_text("""from little_actors import Actor, sandbox
+    source.write_text("""from durable_actors import Actor, sandbox
 from resource_client import actors
 
 @sandbox(cpu=0.125, memory_mib=512, idle_timeout_ms=1000, regions=["canada"])
@@ -79,14 +79,14 @@ def check() -> int:
     ],
 )
 def test_invalid_resource_options_fail_before_publication(options):
-    from little_actors import sandbox
+    from durable_actors import sandbox
 
     with pytest.raises(ValueError):
         sandbox(**options)
 
 
 def test_unspecified_sandbox_defaults_are_inherited_and_repeated_decorators_are_rejected():
-    from little_actors import sandbox
+    from durable_actors import sandbox
 
     class Default(Actor):
         pass

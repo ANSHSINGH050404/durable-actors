@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field, TypeAdapter
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
-from little_actors.client import ActorProtocolError
-from little_actors.connection import Connection
-from little_actors.subscription import Subscription
+from durable_actors.client import ActorProtocolError
+from durable_actors.connection import Connection
+from durable_actors.subscription import Subscription
 
 
 class State(BaseModel):

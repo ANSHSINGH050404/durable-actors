@@ -5,8 +5,8 @@ import pytest
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
-from little_actors import Actor, ephemeral, reentrant
-from little_actors.runtime import ActorRuntime
+from durable_actors import Actor, ephemeral, reentrant
+from durable_actors.runtime import ActorRuntime
 
 
 class Value(BaseModel):
@@ -110,7 +110,7 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
 async def test_socket_messages_are_typed_and_emit_persisted_changes():
     from fixtures.effects import Effects
 
-    from little_actors import ActorSocket, emitted
+    from durable_actors import ActorSocket, emitted
 
     class Room(Actor[Value, Value, Value]):
         value: Value = emitted(Value(count=0))

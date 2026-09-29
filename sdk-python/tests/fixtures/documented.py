@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from little_actors import Actor, emitted
+from durable_actors import Actor, emitted
 
 
 class Note(BaseModel):

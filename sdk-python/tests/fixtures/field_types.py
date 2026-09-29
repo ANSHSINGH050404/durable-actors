@@ -1,7 +1,7 @@
 from threading import Lock
 from typing import assert_type
 
-from little_actors import Actor, ActorSocket, emitted, ephemeral, reentrant
+from durable_actors import Actor, ActorSocket, emitted, ephemeral, reentrant
 
 
 class TypedActor(Actor[str, str, str]):

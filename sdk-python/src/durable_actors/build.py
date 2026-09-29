@@ -70,7 +70,7 @@ def install_dependencies(project: Path, output: Path, settings: Document) -> Non
 def runtime_versions() -> dict[str, str]:
     versions: dict[str, str] = {}
     visited: set[tuple[str, tuple[str, ...]]] = set()
-    pending = [Requirement("little-actors")]
+    pending = [Requirement("durable-actors")]
     while pending:
         requirement = pending.pop()
         name = canonicalize_name(requirement.name)
@@ -92,7 +92,7 @@ def runtime_versions() -> dict[str, str]:
 def install_requirements(
     project: Path, directory: Path, arguments: list[str], versions: dict[str, str]
 ) -> None:
-    with TemporaryDirectory(prefix="little-actors-constraints-") as temporary:
+    with TemporaryDirectory(prefix="durable-actors-constraints-") as temporary:
         constraints = Path(temporary) / "runtime.txt"
         constraints.write_text("".join(f"{name}=={value}\n" for name, value in versions.items()))
         subprocess.run(
@@ -146,8 +146,8 @@ def runtime_requirements(dependencies: list[str]) -> list[str]:
     result: list[str] = []
     for dependency in dependencies:
         requirement = Requirement(dependency)
-        if canonicalize_name(requirement.name) == "little-actors":
-            if version("little-actors") not in requirement.specifier:
+        if canonicalize_name(requirement.name) == "durable-actors":
+            if version("durable-actors") not in requirement.specifier:
                 raise ValueError("actor SDK version must match the build runtime")
         else:
             result.append(dependency)
@@ -156,7 +156,7 @@ def runtime_requirements(dependencies: list[str]) -> list[str]:
 
 def write_artifact(project: Path, output: Path, module: str, settings: Document) -> None:
     paths = source_paths(project, output)
-    for pattern in settings.get("tool", {}).get("little-actors", {}).get("include", []):
+    for pattern in settings.get("tool", {}).get("durable-actors", {}).get("include", []):
         for path in project.glob(pattern):
             if path.is_file():
                 if (
@@ -170,12 +170,12 @@ def write_artifact(project: Path, output: Path, module: str, settings: Document)
         raise ValueError("actor source artifact exceeds 32 MiB")
     artifact = output / "actors.pyz"
     with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("little-actors.json", json.dumps({"version": 1, "module": module}))
+        archive.writestr("durable-actors.json", json.dumps({"version": 1, "module": module}))
         directories: set[str] = set()
         for path in sorted(paths):
             relative = path.relative_to(project)
-            if str(relative) == "little-actors.json":
-                raise ValueError("little-actors.json is reserved for the artifact manifest")
+            if str(relative) == "durable-actors.json":
+                raise ValueError("durable-actors.json is reserved for the artifact manifest")
             archive.write(path, relative.as_posix())
             directories.update(
                 parent.as_posix() + "/" for parent in relative.parents if parent != Path(".")
@@ -208,7 +208,7 @@ def source_paths(project: Path, output: Path) -> set[Path]:
 
 def load_artifact(path: Path) -> list[type[Actor[Any, Any, Any, Any]]]:
     with zipfile.ZipFile(path) as archive:
-        manifest = json.loads(archive.read("little-actors.json"))
+        manifest = json.loads(archive.read("durable-actors.json"))
     if manifest.get("version") != 1:
         raise ValueError("unsupported Python actor artifact")
     sys.path.insert(0, str(path.parent / "python"))

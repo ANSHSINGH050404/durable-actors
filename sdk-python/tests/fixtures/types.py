@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from typing_extensions import NotRequired, TypedDict
 
-from little_actors import Actor
+from durable_actors import Actor
 
 
 class Leaf(BaseModel):

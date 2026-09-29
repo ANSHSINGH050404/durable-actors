@@ -3,7 +3,7 @@ from threading import Event
 
 import pytest
 
-from little_actors.client import SocketGrant
+from durable_actors.client import SocketGrant
 
 
 class Clock:
@@ -50,7 +50,7 @@ class Transport:
 
 
 def make_session(clock, callback=None):
-    from little_actors import ActorSession, ActorSessionTransport
+    from durable_actors import ActorSession, ActorSessionTransport
 
     transports = []
 
@@ -105,7 +105,7 @@ def test_sessions_share_refresh_renew_and_close_without_interrupting_active_call
 
 
 def test_session_rejection_invalidates_cached_credentials_and_idle_sessions_stop_renewing():
-    from little_actors import ActorSessionRejectedError
+    from durable_actors import ActorSessionRejectedError
 
     clock = Clock()
     rejected = False
@@ -142,7 +142,7 @@ def test_session_rejection_invalidates_cached_credentials_and_idle_sessions_stop
     ],
 )
 def test_invalid_sessions_never_construct_a_transport(change):
-    from little_actors import ActorSession, ActorSessionTransport
+    from durable_actors import ActorSession, ActorSessionTransport
 
     data = {
         "project_id": "project",

@@ -1,8 +1,8 @@
 [project]
-name = "little-actors-python-example"
+name = "durable-actors-python-example"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["little-actors[codegen]"]
+dependencies = ["durable-actors[codegen]"]
 
 [tool.uv.sources]
-little-actors = { path = "../../sdk-python", editable = true }
+durable-actors = { path = "../../sdk-python", editable = true }

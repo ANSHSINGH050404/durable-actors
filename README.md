@@ -48,7 +48,7 @@ For example, a chat actor can keep a conversation across server restarts, or a d
 
 ## Python
 
-Define actors in Python and generate typed Python clients using the `little-actors` Python package and the shared `durable-actors` CLI. See the [Python quickstart](sdk-python/README.md), [reference](docs/reference/python.md), and [runnable example](examples/python).
+Define actors in Python and generate typed Python clients using the `durable-actors` Python package and the shared `durable-actors` CLI. See the [Python quickstart](sdk-python/README.md), [reference](docs/reference/python.md), and [runnable example](examples/python).
 
 ## Local development
 

@@ -28,7 +28,7 @@ async function main(): Promise<void> {
 async function buildPython(directory: string, entrypoint: string, output: string, mode?: string): Promise<void> {
     const { stdout, stderr } = await promisify(execFile)(
         process.env.DURABLE_ACTORS_PYTHON ?? "python3",
-        ["-m", "little_actors.build", directory, entrypoint, output, ...(mode === "local" ? [mode] : [])],
+        ["-m", "durable_actors.build", directory, entrypoint, output, ...(mode === "local" ? [mode] : [])],
         { maxBuffer: 8 * 1024 * 1024 }
     )
     process.stderr.write(stderr)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from little_actors.build import build_actor
+from durable_actors.build import build_actor
 
 
 @pytest.mark.parametrize("generic", [False, True])
@@ -16,7 +16,7 @@ async def test_artifact_attaches_invokes_and_rehydrates_in_a_fresh_python_proces
 ):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "actors.py").write_text("""from little_actors import Actor
+    (project / "actors.py").write_text("""from durable_actors import Actor
 class Counter(Actor):
     count: int = 0
     def increment(self, amount: int = 1) -> int:
@@ -90,7 +90,7 @@ class Counter(Actor):
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "little_actors.host",
+                "durable_actors.host",
                 *(["--generic"] if generic else []),
                 env={
                     **os.environ,
@@ -116,7 +116,7 @@ async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path
     project.mkdir()
     (project / "eviction_actors.py").write_text("""import os
 from threading import Event
-from little_actors import Actor, reentrant
+from durable_actors import Actor, reentrant
 class Counter(Actor):
     count: int = 0
     @reentrant
@@ -139,7 +139,7 @@ class Counter(Actor):
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "little_actors.host",
+            "durable_actors.host",
             env={
                 **os.environ,
                 "DURABLE_ACTORS_EXECUTOR_SOCKET": socket,

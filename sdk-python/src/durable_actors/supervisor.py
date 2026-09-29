@@ -192,7 +192,7 @@ class Worker(Channel):
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "little_actors.host",
+                "durable_actors.host",
                 "--worker",
                 str(child.fileno()),
                 env={**os.environ, "DURABLE_ACTORS_ENTRYPOINT": entrypoint},

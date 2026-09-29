@@ -3,8 +3,8 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "little-actors"
-version = "0.5.4"
+name = "durable-actors"
+version = "0.5.5"
 description = "Typed Python durable actors and generated clients"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,10 +27,10 @@ testpaths = ["tests"]
 
 [tool.mypy]
 strict = true
-files = ["src/little_actors"]
+files = ["src/durable_actors"]
 
 [tool.pyright]
-include = ["src/little_actors"]
+include = ["src/durable_actors"]
 typeCheckingMode = "strict"
 
 [tool.ruff]
@@ -41,4 +41,4 @@ target-version = "py311"
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/little_actors"]
+packages = ["src/durable_actors"]

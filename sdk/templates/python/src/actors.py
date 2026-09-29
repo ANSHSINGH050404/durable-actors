@@ -1,4 +1,4 @@
-from little_actors import Actor
+from durable_actors import Actor
 
 
 class Counter(Actor):

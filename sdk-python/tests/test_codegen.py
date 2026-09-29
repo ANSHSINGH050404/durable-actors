@@ -8,8 +8,8 @@ import sys
 
 from test_authoring import Chat
 
-from little_actors.codegen import generate_client
-from little_actors.contract import public_contract
+from durable_actors.codegen import generate_client
+from durable_actors.contract import public_contract
 
 
 class Transport:
@@ -39,7 +39,7 @@ def test_generated_client_returns_typed_models_without_actor_source(tmp_path, mo
     assert (package / "py.typed").is_file()
     source = tmp_path / "usage.py"
     source.write_text("""from generated import actors
-from little_actors.client import Client
+from durable_actors.client import Client
 def check(client: Client) -> None:
     chat: actors.Chat.Stub = actors.Chat.get("lobby")
     configured = actors.Chat.get("other", client)
@@ -66,7 +66,7 @@ def check(client: Client) -> None:
 
 
 def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_path, monkeypatch):
-    from little_actors import Actor
+    from durable_actors import Actor
 
     class Parameters(Actor):
         def total(self, initial: int, *values: int) -> int:
@@ -104,7 +104,7 @@ def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_p
 
 
 def test_generated_names_cannot_shadow_client_runtime(tmp_path, monkeypatch):
-    from little_actors import Actor
+    from durable_actors import Actor
 
     class Connection(Actor):
         def call(self, json: str, TypeAdapter: int, argument: bool) -> str:
@@ -142,7 +142,7 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
     from fixtures.effects import Effects
     from fixtures.types import Trees
 
-    from little_actors.runtime import ActorRuntime
+    from durable_actors.runtime import ActorRuntime
 
     generate_client(public_contract([Trees]), tmp_path / "tree_client")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -203,7 +203,7 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
     assert client.pair((7, "seven")) == (7, "seven")
     source = tmp_path / "typed_tree.py"
     source.write_text("""from tree_client import actors
-from little_actors import Client
+from durable_actors import Client
 def check(client: Client, node: actors.Trees.NodeInput) -> None:
     tree = actors.Trees.get("one", client)
     nodes: list[actors.Trees.NodeOutput] = tree.append(node)
@@ -223,7 +223,7 @@ def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypat
     from fixtures.effects import Effects
     from fixtures.types import OptionActor
 
-    from little_actors.runtime import ActorRuntime
+    from durable_actors.runtime import ActorRuntime
 
     runtime = ActorRuntime(OptionActor, Effects())
     generate_client(public_contract([OptionActor]), tmp_path / "options_client")
@@ -277,7 +277,7 @@ def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypat
 def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(tmp_path, monkeypatch):
     import pytest
 
-    from little_actors import Actor
+    from durable_actors import Actor
 
     class Defaults(Actor):
         def greet(self, name: str = "friend", suffix: str = "!") -> list[str]:
@@ -341,7 +341,7 @@ def test_generated_subscription_name_is_reserved(tmp_path):
 
 
 def test_generated_emitted_state_preserves_optional_contract_fields(tmp_path, monkeypatch):
-    from little_actors import Unset
+    from durable_actors import Unset
 
     contract = public_contract([Chat])
     contract["actors"][0]["socket"]["schema"]["definitions"]["State"]["required"] = []
@@ -384,7 +384,7 @@ def test_generated_docstrings_survive_contract_transport(tmp_path, monkeypatch):
 
 
 def test_actor_namespaces_preserve_typed_imports_and_method_types(tmp_path, monkeypatch):
-    from little_actors import Actor
+    from durable_actors import Actor
 
     class Counter(Actor):
         count: int = 0
@@ -403,7 +403,7 @@ def test_actor_namespaces_preserve_typed_imports_and_method_types(tmp_path, monk
     source = tmp_path / "typed_namespace.py"
     source.write_text("""from namespace_client import actors
 from namespace_client.actors import Chat
-from little_actors.client import ActorTransport
+from durable_actors.client import ActorTransport
 
 def check(transport: ActorTransport) -> None:
     chat: actors.Chat.Stub = Chat.get("lobby", transport)
@@ -449,7 +449,7 @@ def test_actor_namespaces_keep_model_and_builtin_names_distinct(tmp_path, monkey
 
     from pydantic import BaseModel
 
-    from little_actors import Actor
+    from durable_actors import Actor
 
     class Stub(BaseModel):
         value: int
@@ -494,7 +494,7 @@ def check() -> None:
 def test_generated_null_types_work_as_fields_arguments_and_socket_metadata(tmp_path, monkeypatch):
     from pydantic import BaseModel
 
-    from little_actors import Actor, SocketGrant
+    from durable_actors import Actor, SocketGrant
 
     class Empty(BaseModel):
         value: None

@@ -209,7 +209,7 @@ def read_field(actor: type[Actor[Any, Any, Any, Any]], name: str, hint: Any) -> 
     persisted, emittable = True, False
     if is_field(default):
         options = default
-        mode = options.metadata.get("little_actors")
+        mode = options.metadata.get("durable_actors")
         persisted, emittable = mode != "ephemeral", mode == "emitted"
         factory = options.default_factory if options.default_factory is not MISSING else None
         default = options.default
