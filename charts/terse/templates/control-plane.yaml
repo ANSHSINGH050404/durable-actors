@@ -119,18 +119,11 @@ spec:
             - {name: DURABLE_ACTORS_GKE_ZONES, value: {{ .Values.zones | toJson | quote }}}
             - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" .Values.storage.authorityBucket | quote }}}
             - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" .Values.storage.artifactBucket | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_PLACEMENTS, value: {{ .Values.storage.replicas.placements | toJson | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_IDLE, value: {{ .Values.storage.replicas.idle | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_MAX_STARTING, value: {{ .Values.storage.replicas.maxStarting | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET, value: {{ .Values.storage.replicas.credentialsSecret | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_RESOURCES, value: {{ .Values.storage.replicas.resources | toJson | quote }}}
+            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ .Values.storage.rapid.buckets | toJson | quote }}}
+            - {name: DURABLE_ACTORS_RAPID_ACK_ZONES, value: {{ .Values.storage.rapid.ackZones | quote }}}
             - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
             - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
               value: {{ .Values.serviceAccount.googleServiceAccount | quote }}
-            - name: DURABLE_ACTORS_REPLICA_SECRET
-              valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: replica-key}
-            - {name: DURABLE_ACTORS_DURABILITY, value: {{ .Values.storage.durability | quote }}}
             - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.pool.idle | quote }}}
             - {name: DURABLE_ACTORS_SPARE_FLEET_MAX, value: {{ .Values.pool.fleetMaximum | quote }}}
             - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ .Values.pool.maxStarting | quote }}}

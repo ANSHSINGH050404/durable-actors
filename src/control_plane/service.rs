@@ -39,7 +39,6 @@ pub struct ControlPlaneService {
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
-    pub(crate) replicas: Option<Arc<crate::replicas::fleet::ReplicaFleet>>,
     pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
     auth: ActorJwtVerifier,
@@ -78,7 +77,6 @@ impl ControlPlaneService {
             traces: crate::request_traces::TraceStore::default(),
             changes: Default::default(),
             runtime_access: None,
-            replicas: None,
             gateway: None,
             region: None,
             placements,
@@ -445,15 +443,6 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
-            ControlPlaneCommand::ReplicaDirectory { command } => {
-                let fleet = self
-                    .replicas
-                    .as_ref()
-                    .context("dedicated replica directory is not configured")?;
-                Ok(ControlPlaneCommandReply::ReplicaDirectory {
-                    reply: fleet.execute_for(principal, command).await?,
-                })
-            }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {
                 self.require_active_host(principal).await?;
                 ensure!(

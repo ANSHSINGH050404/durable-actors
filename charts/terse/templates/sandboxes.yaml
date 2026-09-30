@@ -38,25 +38,3 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "terse.name" . }}
     namespace: {{ .Release.Namespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ include "terse.name" . }}-{{ .Release.Namespace }}-nodes
-rules:
-  - apiGroups: [""]
-    resources: [nodes]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ include "terse.name" . }}-{{ .Release.Namespace }}-nodes
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ include "terse.name" . }}-{{ .Release.Namespace }}-nodes
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "terse.name" . }}
-    namespace: {{ .Release.Namespace }}

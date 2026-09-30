@@ -1,34 +1,48 @@
 use super::*;
 use serde_json::json;
 
-fn policy(durability: &str, zones: &[&str]) -> serde_json::Value {
-    json!({"type":"replicated", "durability":durability, "placements":zones})
-}
-
 #[test]
-fn replica_count_and_placement_are_configurable() -> Result<()> {
-    for zones in [vec!["us-west4-a"], vec!["us-west4-a"; 3]] {
-        let config: PersistenceConfig = serde_json::from_value(policy("zonal", &zones))?;
-        config.validate()?;
-    }
+fn rapid_defaults_to_two_acknowledged_zones() -> Result<()> {
+    let config: PersistenceConfig = serde_json::from_value(json!({
+        "type": "rapid", "archive_bucket": "archive-test",
+        "buckets": [
+            {"bucket": "rapid-test-a", "zone": "us-west4-a"},
+            {"bucket": "rapid-test-b", "zone": "us-west4-b"}
+        ]
+    }))?;
+    config.validate()?;
+    assert_eq!(serde_json::to_value(config)?["ack_zones"], 2);
     Ok(())
 }
 
 #[test]
-fn placement_enforces_the_selected_failure_domain() {
-    for (mode, zones, valid) in [
-        (
-            "regional",
-            vec!["us-west4-a", "us-west4-b", "us-west4-c"],
-            true,
-        ),
-        ("regional", vec!["us-west4-a", "us-west4-a"], false),
-        ("regional", vec!["us-west4-a", "us-west4-b"], true),
-        ("multi_region", vec!["us-west4-a", "us-east4-a"], true),
-        ("multi_region", vec!["us-west4-a", "us-west4-b"], false),
-        ("zonal", vec![], false),
+fn rapid_requires_distinct_buckets_and_acknowledged_zones() {
+    let good = json!({"type":"rapid", "archive_bucket":"archive-test", "buckets":[
+        {"bucket":"rapid-test-a", "zone":"us-west4-a"},
+        {"bucket":"rapid-test-b", "zone":"us-west4-b"}
+    ]});
+    for (path, value) in [
+        (vec!["ack_zones"], json!(0)),
+        (vec!["ack_zones"], json!(3)),
+        (vec!["archive_bucket"], json!("rapid-test-a")),
     ] {
-        let config: PersistenceConfig = serde_json::from_value(policy(mode, &zones)).unwrap();
-        assert_eq!(config.validate().is_ok(), valid, "{mode}: {zones:?}");
+        let mut config = good.clone();
+        config[path[0]] = value;
+        assert!(
+            serde_json::from_value::<PersistenceConfig>(config)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    for field in ["bucket", "zone"] {
+        let mut config = good.clone();
+        config["buckets"][1][field] = config["buckets"][0][field].clone();
+        assert!(
+            serde_json::from_value::<PersistenceConfig>(config)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }

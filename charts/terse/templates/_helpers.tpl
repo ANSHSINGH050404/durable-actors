@@ -8,19 +8,16 @@
 {{- if and .Values.gateway.enabled (eq (empty .Values.gateway.tlsSecret) (empty .Values.gateway.preSharedCert)) }}{{ fail "gateway requires exactly one of tlsSecret or preSharedCert" }}{{ end -}}
 {{- if eq .Values.sandboxNamespace .Release.Namespace }}{{ fail "sandboxNamespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if not (hasKey .Values.zones .Values.region) }}{{ fail "region must have a configured placement zone" }}{{ end -}}
-{{- if ne .Values.storage.durability "zonal" -}}
 {{- if lt (int .Values.replicaCount) 2 }}{{ fail "regional availability requires multiple control-plane replicas" }}{{ end -}}
 {{- range $region, $placements := .Values.zones -}}
 {{- if kindIs "string" $placements }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
 {{- if lt (len $placements) 2 }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
 {{- end -}}
+{{- $zones := dict -}}{{- $buckets := dict -}}
+{{- range .Values.storage.rapid.buckets -}}
+{{- if hasKey $zones .zone }}{{ fail "Rapid buckets require distinct zones" }}{{ end -}}
+{{- if or (hasKey $buckets .bucket) (eq .bucket $.Values.storage.archiveBucket) }}{{ fail "Rapid and Standard buckets must be distinct" }}{{ end -}}
+{{- $_ := set $zones .zone true -}}{{- $_ := set $buckets .bucket true -}}
 {{- end -}}
-{{- $zones := dict -}}{{- $regions := dict -}}
-{{- range .Values.storage.replicas.placements -}}
-{{- $_ := set $zones . true -}}{{- $_ := set $regions (regexReplaceAll "-[a-z]$" . "") true -}}
-{{- end -}}
-{{- if not .Values.storage.replicas.placements }}{{ fail "at least one replica is required" }}{{ end -}}
-{{- if and (eq .Values.storage.durability "zonal") (ne (len $zones) 1) }}{{ fail "zonal persistence requires replicas in one zone" }}{{ end -}}
-{{- if and (eq .Values.storage.durability "regional") (or (lt (len $zones) 2) (ne (len $regions) 1)) }}{{ fail "regional persistence requires multiple zones in one region" }}{{ end -}}
-{{- if and (eq .Values.storage.durability "multi_region") (lt (len $regions) 2) }}{{ fail "multi_region persistence requires multiple regions" }}{{ end -}}
+{{- if gt (int .Values.storage.rapid.ackZones) (len $zones) }}{{ fail "ackZones exceeds configured Rapid zones" }}{{ end -}}
 {{- end -}}

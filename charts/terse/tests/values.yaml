@@ -4,6 +4,10 @@ storage:
   authorityBucket: test-authority
   artifactBucket: test-code
   archiveBucket: test-archive
+  rapid:
+    buckets:
+      - {bucket: test-rapid-a, zone: us-west4-a}
+      - {bucket: test-rapid-b, zone: us-west4-b}
 
 serviceAccount:
   googleServiceAccount: test-control@test-project.iam.gserviceaccount.com

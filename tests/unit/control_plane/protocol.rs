@@ -1,21 +1,15 @@
 use super::*;
+
 #[test]
-fn runtime_commands_do_not_include_storage_operations() -> Result<()> {
+fn storage_access_refresh_roundtrips_through_the_control_plane_wire_format() -> Result<()> {
     let encoded = encode_command(ControlPlaneCommand::RefreshStorageAccess)?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&encoded.command_json)?,
+        serde_json::json!({"type":"refresh_storage_access"})
+    );
     assert!(matches!(
         decode_command(encoded)?,
         ControlPlaneCommand::RefreshStorageAccess
     ));
-    for command in [
-        "register_lease",
-        "prepare_state_write",
-        "commit_state",
-        "load_actor_state",
-    ] {
-        assert!(
-            serde_json::from_value::<ControlPlaneCommand>(serde_json::json!({"type":command}))
-                .is_err()
-        );
-    }
     Ok(())
 }

@@ -687,16 +687,13 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
 }
 
 #[tokio::test]
-async fn replicated_resume_seeds_the_new_epoch_before_returning_an_activation() -> Result<()> {
+async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
     use crate::state_transport::SnapshotWriter;
     let mut f = Fixture::new()?;
     let directory = tempfile::tempdir()?;
     let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
     f.runtime = f.runtime.with_persistence(
-        crate::bucket::PersistenceConfig::Replicated {
-            placements: vec!["us-west4-a".into()],
-            durability: crate::bucket::Durability::Zonal,
-        },
+        rapid_policy(),
         Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
     )?;
     let first = request("first");
@@ -729,78 +726,100 @@ async fn replicated_resume_seeds_the_new_epoch_before_returning_an_activation() 
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    let key = crate::storage::snapshot_object_name(&f.actor, 1, &format!("{:032x}", 2))?;
     let stored = snapshots
-        .get(&key)
+        .get(&plan.object_name)
         .await?
-        .context("new replica group was not seeded")?;
-    let snapshot = crate::state_log::StateSnapshot::decode(&stored.bytes)?;
-    assert_eq!(snapshot.owner_epoch, 2);
+        .context("durable base missing")?;
+    assert_eq!(resumed.placement.owner_epoch, 2);
     assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_slice()));
     Ok(())
 }
 
+fn rapid_policy() -> crate::bucket::PersistenceConfig {
+    serde_json::from_value(
+        serde_json::json!({"type":"rapid", "archive_bucket":"archive-test", "buckets":[
+            {"bucket":"rapid-test-a", "zone":"us-west4-a"},
+            {"bucket":"rapid-test-b", "zone":"us-west4-b"}
+        ]}),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
-async fn replica_placement_changes_recover_the_old_epoch_before_starting_the_new_policy()
--> Result<()> {
-    use crate::bucket::{BucketSnapshots, Durability, PersistenceConfig};
+async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_epoch() -> Result<()>
+{
     use crate::state_transport::SnapshotWriter;
     let mut f = Fixture::new()?;
-    let snapshots = Arc::new(BucketSnapshots(f.bucket.clone()));
-    f.runtime = f.runtime.with_persistence(
-        PersistenceConfig::Replicated {
-            placements: vec!["us-west4-a".into(); 3],
-            durability: Durability::Zonal,
-        },
-        snapshots.clone(),
-    )?;
-    let active = f
+    let snapshots = Arc::new(RejectingSnapshots {
+        inner: crate::bucket::BucketSnapshots(f.bucket.clone()),
+        reject: AtomicBool::new(false),
+    });
+    f.runtime = f
+        .runtime
+        .with_persistence(rapid_policy(), snapshots.clone())?;
+    let first = f
         .runtime
         .register_activation(&f.actor, &request("first"), "us-east", true, None)
         .await?;
     let plan = f
         .runtime
-        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .prepare_actor_write(&f.actor, &first.placement.lease, 1, 1)
         .await?;
     let bytes = crate::state_log::StateSnapshot::new(
         1,
         1,
-        "write".into(),
+        "ambiguous".into(),
         serde_json::json!({"count":42}),
         serde_json::json!(42),
     )?
     .encode()?;
-    f.runtime.write_snapshot(&plan, bytes).await?;
-    f.runtime = f.runtime.with_persistence(
-        PersistenceConfig::Replicated {
-            placements: vec![
-                "us-west4-a".into(),
-                "us-west4-b".into(),
-                "us-west4-c".into(),
-            ],
-            durability: Durability::Regional,
-        },
-        snapshots.clone(),
-    )?;
-    assert!(f.runtime.get_owner(&f.actor.storage_key()).await?.is_some());
+    f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+    f.clock.0.store(11_000, Ordering::SeqCst);
+    snapshots.reject.store(true, Ordering::SeqCst);
     assert!(
         f.runtime
             .register_activation(&f.actor, &request("next"), "us-east", false, None)
             .await
             .is_err()
     );
-    f.clock.0.store(11_000, Ordering::SeqCst);
+    assert_eq!(
+        f.runtime
+            .get_owner(&f.actor.storage_key())
+            .await?
+            .unwrap()
+            .owner_epoch,
+        1
+    );
+    snapshots.reject.store(false, Ordering::SeqCst);
     let resumed = f
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    let state = crate::state_log::StateSnapshot::decode(resumed.state.as_ref().unwrap())?;
-    assert_eq!(state.owner_epoch, 2);
-    assert_eq!(state.state_version, 1);
-    assert_eq!(state.result, serde_json::json!(42));
-    f.runtime = f
-        .runtime
-        .with_persistence(PersistenceConfig::Local, snapshots)?;
-    assert!(f.runtime.get_owner(&f.actor.storage_key()).await.is_err());
+    assert_eq!(resumed.state.as_deref(), Some(bytes.as_slice()));
     Ok(())
+}
+
+struct RejectingSnapshots {
+    inner: crate::bucket::BucketSnapshots,
+    reject: AtomicBool,
+}
+
+#[async_trait]
+impl crate::bucket::SnapshotStore for RejectingSnapshots {
+    async fn get(&self, object: &str) -> Result<Option<bytes::Bytes>> {
+        self.inner.get(object).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix).await
+    }
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, bytes::Bytes)>> {
+        self.inner.latest(prefix).await
+    }
+    async fn put(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
+        ensure!(
+            !self.reject.load(Ordering::SeqCst),
+            "snapshot persistence unavailable"
+        );
+        self.inner.put(object, bytes).await
+    }
 }

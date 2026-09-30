@@ -199,7 +199,7 @@ impl SandboxCluster for Kubernetes {
 async fn reap_completed(pods: &Api<Pod>) -> Result<()> {
     for phase in ["Failed", "Succeeded"] {
         let params = ListParams::default()
-            .labels("app.kubernetes.io/managed-by=terse,terse.ai/purpose!=replica")
+            .labels("app.kubernetes.io/managed-by=terse")
             .fields(&format!("status.phase={phase}"));
         for pod in pods.list(&params).await? {
             delete_pod(

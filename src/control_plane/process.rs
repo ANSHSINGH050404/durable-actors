@@ -42,12 +42,6 @@ pub struct ControlPlaneStorageConfig {
     pub bucket: String,
     pub persistence: crate::bucket::PersistenceConfig,
     pub artifact_bucket: String,
-    pub replica_secret: String,
-    pub archive_bucket: String,
-    pub replica_idle: usize,
-    pub replica_max_starting: usize,
-    pub replica_credentials_secret: String,
-    pub replica_resources: serde_json::Value,
 }
 
 pub struct SandboxProviderConfig {
@@ -140,37 +134,12 @@ async fn control_plane_routes(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let archive = GcsBucket::new(&config.storage.archive_bucket).await?;
-    archive.require_standard().await?;
-    let replica_pods = crate::replicas::fleet::KubernetesReplicas::new(
-        kube::Client::try_default().await?,
-        crate::replicas::fleet::ReplicaPodConfig {
-            namespace: config.sandbox_provider.gke.namespace.clone(),
-            image: config.sandbox_provider.runtime_image.clone(),
-            archive_bucket: config.storage.archive_bucket.clone(),
-            credentials_secret: config.storage.replica_credentials_secret.clone(),
-            resources: config.storage.replica_resources.clone(),
-        },
-        config.storage.replica_secret.clone(),
-    )?;
-    let fleet = Arc::new(crate::replicas::fleet::ReplicaFleet::new(
-        database.clone(),
-        replica_pods,
-        authority.clone(),
-        Arc::new(archive),
+    let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
         &config.storage.persistence,
-        config.storage.replica_secret.clone(),
-        config.storage.replica_idle,
-        config.storage.replica_max_starting,
-        Arc::new(crate::clock::SystemClock),
+        authority.clients(),
     )?);
-    fleet.start(stop.clone());
-    let snapshots = Arc::new(
-        crate::replicas::directory::DedicatedSnapshots::for_control_plane(
-            fleet.clone(),
-            config.storage.replica_secret.clone(),
-        )?,
-    );
+    crate::bucket::RapidSnapshots::validate_gcs(&config.storage.persistence, authority.clients())
+        .await?;
     let storage = Arc::new(
         RuntimeStorageReader::new(authority, Arc::new(crate::clock::SystemClock))?
             .with_persistence(config.storage.persistence, snapshots)?,
@@ -187,8 +156,7 @@ async fn control_plane_routes(
             database.clone(),
             config.storage.token_issuer.clone(),
             stop.clone(),
-        )
-        .with_replica_secret(config.storage.replica_secret.clone())?,
+        ),
     );
     let placements = storage.clone();
     let gateway =
@@ -220,7 +188,6 @@ async fn control_plane_routes(
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.changes = changes;
-    service.replicas = Some(fleet);
     service.gateway = Some(gateway);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
@@ -299,14 +266,13 @@ impl ControlPlaneProcessConfig {
         crate::storage::validate_bucket(&bucket)?;
         let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
         crate::storage::validate_bucket(&artifact_bucket)?;
-        let persistence = crate::bucket::PersistenceConfig::Replicated {
-            placements: serde_json::from_str(&required(
-                &mut get,
-                "DURABLE_ACTORS_REPLICA_PLACEMENTS",
-            )?)?,
-            durability: serde_json::from_value(serde_json::Value::String(
-                get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into()),
-            ))?,
+        let persistence = crate::bucket::PersistenceConfig::Rapid {
+            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
+            buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
+            ack_zones: get("DURABLE_ACTORS_RAPID_ACK_ZONES")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(2),
         };
         persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");
@@ -314,12 +280,6 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
-            replica_idle: get("DURABLE_ACTORS_REPLICA_IDLE").map(|v| v.parse()).transpose()?.unwrap_or(192),
-            replica_max_starting: get("DURABLE_ACTORS_REPLICA_MAX_STARTING").map(|v| v.parse()).transpose()?.unwrap_or(32),
-            replica_credentials_secret: get("DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET").unwrap_or_else(|| "terse-replica-credentials".into()),
-            replica_resources: get("DURABLE_ACTORS_REPLICA_RESOURCES").map(|v| serde_json::from_str(&v)).transpose()?.unwrap_or_else(|| serde_json::json!({"requests":{"cpu":"50m","memory":"64Mi"},"limits":{"memory":"512Mi"}})),
-            replica_secret: required(&mut get, "DURABLE_ACTORS_REPLICA_SECRET")?,
-            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
             persistence,
             artifact_bucket,
             token_issuer: required(&mut get, "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT")?,

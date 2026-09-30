@@ -174,17 +174,14 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn production_defaults_to_zonal_replicas_and_gke() -> Result<()> {
+fn production_defaults_to_two_rapid_zones_and_gke() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
     })?;
     assert!(matches!(
         config.storage.persistence,
-        crate::bucket::PersistenceConfig::Replicated {
-            durability: crate::bucket::Durability::Zonal,
-            ..
-        }
+        crate::bucket::PersistenceConfig::Rapid { ack_zones: 2, .. }
     ));
     assert_eq!(
         config.sandbox_provider.gke.zones["north-america-west"],
@@ -257,12 +254,8 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
         ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
         (
-            "DURABLE_ACTORS_REPLICA_SECRET",
-            "0123456789abcdef0123456789abcdef",
-        ),
-        (
-            "DURABLE_ACTORS_REPLICA_PLACEMENTS",
-            r#"["us-west4-a","us-west4-a","us-west4-a"]"#,
+            "DURABLE_ACTORS_RAPID_BUCKETS",
+            r#"[{"bucket":"rapid-test-a","zone":"us-west4-a"},{"bucket":"rapid-test-b","zone":"us-west4-b"}]"#,
         ),
         (
             "DURABLE_ACTORS_GKE_ZONES",

@@ -66,11 +66,11 @@ impl HostStorage {
         let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
         if matches!(
             config.persistence,
-            crate::bucket::PersistenceConfig::Replicated { .. }
+            crate::bucket::PersistenceConfig::Rapid { .. }
         ) {
-            let snapshots = crate::replicas::directory::DedicatedSnapshots::new(
-                client.clone(),
-                config.replica_token.context("replica capability missing")?,
+            let snapshots = crate::bucket::RapidSnapshots::gcs(
+                &config.persistence,
+                clients.clone().context("Rapid persistence requires GCS")?,
             )?;
             runtime = runtime.with_persistence(config.persistence, Arc::new(snapshots))?;
         }

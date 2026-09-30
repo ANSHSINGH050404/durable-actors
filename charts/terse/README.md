@@ -1,27 +1,61 @@
 # Terse on GKE Sandbox
 
-The chart runs the Rust control plane and HTTPS/WebSocket gateway in Kubernetes. Actor hosts and their dedicated Rust storage replicas run under Google-managed gVisor. The control plane prewarms pods, downloads immutable code artifacts from Standard GCS into actor pods, and tracks pod assignments in PostgreSQL. GCS conditional writes retain ownership and leases.
+The chart runs the Rust control plane and HTTPS/WebSocket gateway in Kubernetes. Each active actor uses one gVisor pod. State writes go directly to precreated GCS Rapid buckets; no storage pods are started, assigned, or contacted during activation.
 
-Every actor activation receives its own replica group. The default is **one actor pod plus three replica pods across three zones**, with three control-plane instances spread across zones. Replica processes never execute customer code or serve multiple actor activations. Every member of the current group must commit each write to its disk-backed SQLite WAL with `synchronous=FULL` before the actor acknowledges it. Healthy writes go directly from the actor to its replicas. When replica capacity is unavailable, writes persist synchronously to GCS through the control plane until a replacement group is ready.
+Each write starts Standard and Rapid uploads together. The default acknowledgment requires **Standard to succeed or two distinct Rapid zones to succeed**, whichever happens first. Standard GCS is the permanent archive; when Rapid wins, the Standard upload continues asynchronously. Google Storage Transfer Service retries missing archives hourly, including writes whose actor died before uploading. GCS lifecycle rules expire Rapid snapshots and abandoned uploads after seven days, independently of archival completion.
+
+Seven days is the recovery budget, not a guarantee that archival will finish. Before Standard succeeds, an acknowledged write is protected only by the configured Rapid zones. If all its Rapid copies expire before archival succeeds, the write is lost. Monitor transfer failures and lag well before the retention deadline. Lifecycle deletion is asynchronous; seven days is eligibility, not an exact deletion deadline.
 
 ## Prerequisites
 
-- Regional GKE Standard with Workload Identity Federation, enforced NetworkPolicy, and both ordinary and COS Sandbox node pools across the configured zones. Enable Gateway API for the supplied public gateway. Keep the application control plane on ordinary nodes. A zonal GKE control plane remains a zone-level dependency even with nodes in other zones.
-- Standard GCS authority, artifact, and archive buckets with uniform access and public access prevention. Archive placement must cover the promised failure domain. Do not apply blanket expiry rules to actor state or referenced code.
-- PostgreSQL reachable by the control plane, preferably private Cloud SQL with regional HA. Bucket fallback and replica replacement require this database. The database user needs schema migration privileges. The chart does not run PostgreSQL in Kubernetes.
-- A Google service account with `roles/storage.objectUser` on the three buckets and `storage.buckets.get` on the archive bucket. Grant `roles/cloudsql.client` when using the Cloud SQL proxy. Bind both Kubernetes identities, `<control-namespace>/<release>-terse` and `<sandbox-namespace>/replica`, with `roles/iam.workloadIdentityUser`.
-- An existing Secret in the control namespace containing `postgres-url`, `api-key`, `replica-key` (at least 32 random bytes), and `jwt-signing-key` (base64 Ed25519 PKCS#8). Create `storage.replicas.credentialsSecret` in the sandbox namespace containing the same `replica-key`; do not label it as a customer Secret. Customer pods cannot read Kubernetes Secrets or access the metadata server.
-- For HTTPS, a matching TLS Secret or a Google-managed Compute Engine SSL certificate. Configure exactly one of `gateway.tlsSecret` and `gateway.preSharedCert`.
+- Regional GKE Standard with Workload Identity, enforced NetworkPolicy, Gateway API, and ordinary and COS Sandbox node pools across the configured compute zones. Run the control plane on ordinary nodes.
+- Standard authority, artifact, and archive buckets with uniform access and public access prevention. Keep the archive indefinitely; its location determines the permanent failure domain. Do not expire referenced actor history or code.
+- Two Rapid buckets in supported distinct zones, with the lifecycle and transfer configuration below. Buckets are shared infrastructure; actor data is isolated by credential prefixes.
+- PostgreSQL, preferably private Cloud SQL with regional HA. The database user needs migration privileges.
+- A Google service account with `roles/storage.objectUser` on the application buckets and `storage.buckets.get` on the Rapid and archive buckets. `roles/storage.legacyBucketReader` supplies the latter at bucket scope. Bind `<control-namespace>/<release>-terse` with `roles/iam.workloadIdentityUser`; customer pods use downscoped credentials and cannot reach the metadata server.
+- A control-namespace Secret containing `postgres-url`, `api-key`, and `jwt-signing-key` (base64 Ed25519 PKCS#8).
+- A matching TLS Secret or Google-managed Compute Engine certificate. Set exactly one of `gateway.tlsSecret` and `gateway.preSharedCert`.
 
-Control-plane replicas coordinate deployment updates through PostgreSQL session locks. PostgreSQL also stores trace status and short-lived actor credentials; LISTEN/NOTIFY wakes observers across instances, with periodic polling after missed notifications. Kubernetes inventory is fetched once per reconciliation pass. GKE Workload Identity supplies control-plane and replica credentials. Actor pods receive downscoped tokens limited to their ownership object and unique deployment artifact prefix; the shared cache keys each token by issuer and its complete permission boundary, refreshes before expiry, and fences abandoned refresh claims. Hot actor persistence does not use this cache or PostgreSQL.
+## Provision storage
 
-All control-plane instances must share the same database, buckets, credentials and pool configuration. The chart grants pod lifecycle/exec and Secret-read access in the sandbox namespace, plus read-only node metadata for placement and drain detection. Customer Secrets must have `terse.ai/customer-secret: "true"` and be named in deployment `secretRefs`.
+Use Google Cloud CLI 553 or newer. Substitute your own globally unique bucket names. Create each Rapid bucket once:
 
-Network policies allow customer pods to reach the control plane, authenticated replicas, DNS, and public internet endpoints. Only replica pods receive metadata-server access. Set `networkPolicy.dnsCidrs` for DNS listeners using host networking or link-local addresses, such as GKE NodeLocal DNS.
+```sh
+gcloud storage buckets create gs://ACTOR_RAPID_A --project=PROJECT \
+  --location=us-west4 --placement=us-west4-a --default-storage-class=RAPID \
+  --enable-hierarchical-namespace --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets create gs://ACTOR_RAPID_B --project=PROJECT \
+  --location=us-west4 --placement=us-west4-b --default-storage-class=RAPID \
+  --enable-hierarchical-namespace --uniform-bucket-level-access --public-access-prevention
+```
+
+Edit `rapid-lifecycle.json` to select the retention in days, then apply it to both Rapid buckets. Do not apply this policy to Standard. These commands replace the bucket's lifecycle configuration.
+
+```sh
+gcloud storage buckets update gs://ACTOR_RAPID_A --lifecycle-file=charts/terse/rapid-lifecycle.json
+gcloud storage buckets update gs://ACTOR_RAPID_B --lifecycle-file=charts/terse/rapid-lifecycle.json
+```
+
+Enable `storagetransfer.googleapis.com`. Get the project's Storage Transfer service agent through [googleServiceAccounts.get](https://docs.cloud.google.com/storage-transfer/docs/reference/rest/v1/googleServiceAccounts/get). Grant it `roles/storage.objectViewer` and `roles/storage.legacyBucketReader` on both Rapid sources, and `roles/storage.objectUser` and `roles/storage.legacyBucketReader` on the Standard destination, at bucket scope. Configure one scheduled transfer per source:
+
+```sh
+gcloud transfer jobs create gs://ACTOR_RAPID_A gs://ACTOR_ARCHIVE --project=PROJECT \
+  --name=actors-rapid-a-to-standard --schedule-repeats-every=1h \
+  --include-prefixes=durable-actors-v3-snapshots- --overwrite-when=never
+gcloud transfer jobs create gs://ACTOR_RAPID_B gs://ACTOR_ARCHIVE --project=PROJECT \
+  --name=actors-rapid-b-to-standard --schedule-repeats-every=1h \
+  --include-prefixes=durable-actors-v3-snapshots- --overwrite-when=never
+```
+
+Keep these jobs enabled before accepting writes. They copy published immutable snapshots and leave Rapid copies until lifecycle expiration. Do not include `durable-actors-v3-uploads-`: [Storage Transfer can copy unfinalized Rapid objects](https://docs.cloud.google.com/storage/docs/rapid/create-zonal-buckets#transfer_data_with_storage_transfer_service). The runtime uses flat, hashed actor keys to avoid creating hierarchical folders. It finalizes an upload under a separate prefix and atomically moves it into the published snapshot prefix before acknowledging that zone.
+
+Alert on failed transfer operations and repeated `rapid_archive_deferred` logs. Regularly verify a transfer finishes inside the retention window. Hourly scheduling is a retry interval, not a completion SLA; choose retention to cover outages and the time needed to drain your backlog. There is no application cleanup worker. See [GCS lifecycle semantics](https://docs.cloud.google.com/storage/docs/lifecycle).
+
+For incident preservation, copy selected data to a separate Standard bucket or a prefix outside both managed prefixes before it becomes eligible for deletion. Rapid does not support native object holds. Do not rename a referenced snapshot out of the live namespace.
 
 ## Install
 
-Copy `values.yaml`, then set the runtime image digest, bucket names, Google service account, namespaces, and zones. The chart creates application resources; cluster/node pools, Cloud SQL, Google IAM, buckets, and certificates are provisioned separately.
+Copy `values.yaml` and supply the image digest, Google service account, bucket names, namespaces, and zones:
 
 ```yaml
 replicaCount: 3
@@ -33,65 +67,35 @@ storage:
   authorityBucket: actor-ownership
   artifactBucket: actor-code
   archiveBucket: actor-archive
-  durability: regional
-  replicas:
-    placements: [us-west4-a, us-west4-b, us-west4-c]
-    idle: 192
-    maxStarting: 32
-    credentialsSecret: terse-replica-credentials
-    resources:
-      requests: {cpu: 50m, memory: 64Mi}
-      limits: {memory: 512Mi}
+  rapid:
+    ackZones: 2
+    buckets:
+      - {bucket: actor-rapid-a, zone: us-west4-a}
+      - {bucket: actor-rapid-b, zone: us-west4-b}
 ```
 
-For Cloud SQL, `postgres-url` uses `127.0.0.1:5432`; the proxy establishes the private authenticated connection. The native sidecar starts before the control plane. Leave `cloudSql.instanceConnectionName` empty when connecting directly to another PostgreSQL service.
+`ackZones` is configurable from one to the number of buckets. Every configured bucket must occupy a different zone; startup verifies the actual GCS class and placement. At most seven Rapid buckets fit in the ten-rule credential access boundary alongside authority, archive, and code. Keep the storage configuration identical across controllers and immutable for existing ownership records.
 
 ```sh
 helm lint charts/terse -f production-values.yaml
 helm template actors charts/terse --namespace terse-control -f production-values.yaml
 helm upgrade --install actors charts/terse --namespace terse-control --create-namespace -f production-values.yaml
-kubectl -n terse-control get gateway actors-terse
 ```
 
-For a global Google-managed certificate, set `gateway.preSharedCert`, clear `gateway.tlsSecret`, and set `gateway.addressName` to a reserved global address. Point the public hostname at that address. Installation does not change DNS. An external HTTPS/WebSocket load balancer can route to the control-plane Service with `gateway.enabled: false`.
+With Cloud SQL, `postgres-url` points to `127.0.0.1:5432`; the native proxy sidecar starts before the control plane. Leave `cloudSql.instanceConnectionName` empty for a direct database connection. Configure DNS and certificates separately. `networkPolicy.dnsCidrs` allows host-networked or link-local DNS listeners.
 
-## Assignment and writes
+## Writes and recovery
 
-The controller records ready spares by pod UID and disk identity. It atomically reserves available members on distinct nodes, persists membership, and binds each disk permanently to the actor's ownership epoch. When configured for three regional copies, it can run with two copies in distinct surviving zones. If fewer than two failure domains are available, it retains bucket durability. Identical retries are idempotent; rebinding a disk or reviving a closed group is rejected. A resumed actor durably seeds its recovered baseline before activation returns.
+An actor writes the same immutable snapshot to Standard and all configured Rapid zones in parallel and acknowledges once Standard succeeds or `ackZones` Rapid publications succeed. The remaining operations may be canceled; recovery requires successful listings from more than `bucket_count - ackZones` Rapid zones so it intersects every possible acknowledged set. Recovery also reads Standard and chooses the highest consistent version. It fails when it cannot establish this read quorum or cannot read the permanent archive. A known immutable checkpoint can be read from any surviving copy.
 
-The actor caches direct replica endpoints and sends ordered compressed state records in parallel. Each replica checks its disk identity, assignment, epoch, version and content before committing. After a failed or ambiguous write, the controller seals the old group and verifies its final archive before accepting the write through GCS. It seeds a fresh group from that verified checkpoint before publishing new endpoints. All members of each published group remain required; a failed member is never simply ignored. An unsuccessful request may still have persisted, so retrying callers must allow an unknown outcome.
+Ownership and leases still use conditional writes to the authority bucket. Epoch-specific keys prevent late writes from changing a successor's state. The host checks its conservative lease deadline before and after persistence; a failed or canceled write permanently fences that host. Recovery waits for the previous lease to expire or be released. After an unclean stop, it republishes the selected tail to the configured quorum before claiming ownership, because an ambiguous write may have reached only one zone. Lease fencing assumes clock skew stays below its five-second safety margin. Clean shutdown records the final snapshot reference in ownership. No remote replica preparation, sealing, or baseline reseeding is needed.
 
-Bucket mode writes archive data synchronously and records its checkpoint in PostgreSQL before returning. Group transitions are serialized by PostgreSQL session locks and recheck GCS ownership. Lost controller sessions cannot publish membership or checkpoints. When all requested zones regain warm capacity, the controller seals a reduced group so subsequent writes can restore the full replica count. Storage failure alone does not expire a live actor's lease. Actors lost with their compute zone recover after ownership fencing; connection retries and a recovery delay remain possible.
+An unsuccessful request may have persisted; callers must allow an unknown outcome. Standard upload concurrency is bounded to eight per host; saturation and errors defer to managed transfer. Customer tokens cover only that actor's ownership object, snapshot/upload prefixes, and immutable deployment code.
 
-The placement list controls replica count. Zonal placement uses one zone; regional placement requires multiple zones in one region. Every requested zone needs schedulable Sandbox nodes in the Kubernetes cluster. GKE clusters do not span regions: this chart's dedicated-pod provisioner currently targets one cluster, so a cross-region deployment requires a multi-cluster provider and an archive strategy that preserves that failure guarantee. Do not configure remote regions in a single GKE cluster and expect them to be scheduled.
+## Capacity and cutover
 
-## Archival, recovery and retirement
+The default actor pool keeps 64 ready pods per image and region, with 0.5 CPU and 256 MiB per pod. `pool.fleetMaximum` bounds idle spares, not active actors. Exhausted actor pools use pod creation. Large snapshots increase memory, transfer, and GCS operation costs; each version is an independent object in every successful Rapid zone and eventually Standard.
 
-Each replica stores compressed state records and a materialized head on a disk-backed `emptyDir`. The volume survives a container process restart but not pod deletion or node loss. Independent copies and GCS archives provide durability beyond that disk.
+This is a breaking storage change. Dedicated replica records and archives are not read by this runtime. Provision fresh storage and import any state you need before cutover; do not point the new runtime at existing replica-backed ownership and expect transparent recovery. Drain the old deployment while its controllers can still archive, then replace controllers and actor images together. Delete the old dedicated replica pods after stopping the old controllers; the new runtime has no replica pool or replica reconciler. Historical SQL migrations remain unchanged so their checksums remain valid; their unused replica tables can be removed after old-data handling is complete.
 
-The designated uploader archives at 16 MiB or an oldest pending record age of 10 seconds, checked every 100 ms. These are batching thresholds, not payload limits or a guaranteed maximum lag. Batches begin with an independently decodable state checkpoint. Other replicas verify the GCS batch before pruning covered local records. If the uploader fails, followers try after 30 seconds. Upload errors retain local records and retry; disk exhaustion fails writes.
-
-Recovery verifies that the old owner has released or expired, seals original surviving replicas, and selects consistent state. A new empty disk is never a witness. Sealing one original member prevents the old group from obtaining another all-copy acknowledgment. If no original copy survives and no verified final checkpoint exists, recovery blocks instead of silently rolling back to an older periodic archive.
-
-The default actor idle timeout is 10 seconds, subject to active invocations and socket lifecycle. Replicas do not expire independently when writes become quiet. To retire a group, the controller persists a closing marker, seals it, flushes remaining records immediately, verifies the final GCS checkpoint, and persists the closed record before deleting pods by UID. Archive failures can keep replicas alive after the actor stops. Controller restarts retry this sequence from PostgreSQL.
-
-Assigned replicas have a zero-disruption PDB and are marked unsafe for blind autoscaler eviction. A node marked unschedulable triggers a controlled transition through bucket persistence. Forced node/pod failures use the same sealing and archival checks. Never remove these protections to force a scale-down. Used replicas are deleted rather than rebound; fresh spares replenish the pool. Replica startup slots are divided across zones so an unavailable zone cannot consume the entire default startup budget.
-
-GCS history remains after pod deletion. History is retained indefinitely; retention/compaction must preserve checkpoints referenced by dormant actors. The replica WAL is internal persistence machinery, separate from customer SQLite APIs.
-
-## Code and capacity
-
-Build a source image extending the published runtime image, containing application source and dependencies. Deploy its digest with `imageRef`, `workingDirectory`, and `actorEntrypoint`. A temporary Sandbox builder runs the compiler and publishes a generation-pinned, checksummed artifact. Rust downloads it in parallel into the assigned actor; there is no GCS filesystem mount.
-
-```dockerfile
-FROM RUNTIME_IMAGE_AT_SHA256_DIGEST
-COPY --chown=10000:10000 . /customer
-WORKDIR /customer
-```
-
-Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.5 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
-
-`pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted actor pools use the cold pod-creation path; exhausted replica pools use bucket persistence while spares start. Python switches the prewarmed Bun process to its Python executor on assignment.
-
-
-Size node capacity and autoscaling so the surviving zones can handle the workload after a zone loss.
+Source builds use the pinned Google Rust SDK's opt-in append API. Repository and Docker builds set `--cfg google_cloud_unstable_storage_bidi` in `.cargo/config.toml`. Builds outside this repository, including `cargo install`, must supply `RUSTFLAGS="--cfg google_cloud_unstable_storage_bidi"`.

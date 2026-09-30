@@ -18,7 +18,6 @@ pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
     pub persistence: super::PersistenceConfig,
     pub region: String,
-    pub replica_token: Option<String>,
     pub token: Option<StorageToken>,
 }
 
@@ -51,7 +50,6 @@ impl std::fmt::Debug for StorageToken {
 
 pub(crate) struct RuntimeAccess {
     location: BucketLocation,
-    replicas: Option<crate::replicas::access::Access>,
     tokens: Option<StorageTokens>,
     persistence: super::PersistenceConfig,
 }
@@ -59,7 +57,6 @@ pub(crate) struct RuntimeAccess {
 impl RuntimeAccess {
     pub fn new(location: BucketLocation, persistence: super::PersistenceConfig) -> Result<Self> {
         Ok(Self {
-            replicas: None,
             tokens: match &location {
                 BucketLocation::Gcs { .. } => Some(StorageTokens {
                     source: Arc::new(GcsTokenSource {
@@ -91,11 +88,6 @@ impl RuntimeAccess {
         self
     }
 
-    pub fn with_replica_secret(mut self, secret: String) -> Result<Self> {
-        self.replicas = Some(crate::replicas::access::Access::new(secret)?);
-        Ok(self)
-    }
-
     pub(crate) fn validate_code(&self, code: &crate::artifacts::ArtifactManifest) -> Result<()> {
         let BucketLocation::Gcs {
             artifact_bucket, ..
@@ -118,11 +110,6 @@ impl RuntimeAccess {
         code_snapshot: Option<&str>,
     ) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
-            replica_token: self
-                .replicas
-                .as_ref()
-                .map(|access| access.scoped(actor))
-                .transpose()?,
             bucket: self.location.clone(),
             persistence: self.persistence.clone(),
             region: region.into(),
@@ -278,13 +265,25 @@ fn boundary(
         &["storage.objectUser"],
         format!("resource.name == {}", serde_json::to_string(&owner)?),
     )];
-    if matches!(persistence, super::PersistenceConfig::Local) {
-        let prefix = crate::storage_paths::snapshots(actor)?;
-        let resource = format!("projects/_/buckets/{bucket}/objects/{prefix}");
-        rules.push(rule(bucket, &["storage.objectViewer", "storage.objectCreator"], format!(
-            "resource.name.startsWith({}) || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith({})",
-            serde_json::to_string(&resource)?, serde_json::to_string(&prefix)?
-        )));
+    let prefix = crate::storage_paths::snapshots(actor)?;
+    match persistence {
+        super::PersistenceConfig::Local => rules.push(snapshot_rule(bucket, &[&prefix], false)?),
+        super::PersistenceConfig::Rapid {
+            archive_bucket,
+            buckets,
+            ..
+        } => {
+            let prefix = super::rapid::object_name(&prefix)?;
+            rules.push(snapshot_rule(archive_bucket, &[&prefix], false)?);
+            let uploads = prefix.replacen("snapshots-", "uploads-", 1);
+            for placement in buckets {
+                rules.push(snapshot_rule(
+                    &placement.bucket,
+                    &[&prefix, &uploads],
+                    true,
+                )?);
+            }
+        }
     }
     if let Some(code) = code {
         ensure!(
@@ -306,6 +305,22 @@ fn boundary(
         ));
     }
     Ok(json!({"accessBoundary": {"accessBoundaryRules": rules}}))
+}
+
+fn snapshot_rule(bucket: &str, prefixes: &[&str], mutable: bool) -> Result<Value> {
+    let expressions = prefixes.iter().map(|prefix| {
+        let resource = format!("projects/_/buckets/{bucket}/objects/{prefix}");
+        Ok(format!(
+            "resource.name.startsWith({}) || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith({})",
+            serde_json::to_string(&resource)?, serde_json::to_string(prefix)?
+        ))
+    }).collect::<Result<Vec<_>>>()?;
+    let roles: &[&str] = if mutable {
+        &["storage.objectUser"]
+    } else {
+        &["storage.objectViewer", "storage.objectCreator"]
+    };
+    Ok(rule(bucket, roles, expressions.join(" || ")))
 }
 
 fn artifact_prefix(code: &crate::artifacts::ArtifactManifest) -> Result<String> {

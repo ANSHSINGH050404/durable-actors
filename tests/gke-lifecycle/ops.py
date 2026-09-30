@@ -155,44 +155,29 @@ def released(actor):
 
 
 def archive(prefixes):
-    script = """import json,sqlite3,sys
-c=sqlite3.connect('file:/data/replica.sqlite?mode=ro',uri=True); c.row_factory=sqlite3.Row
-out=[]
-for prefix in json.loads(sys.argv[1]):
- r=c.execute('SELECT sealed,version,checkpoint_version,latest IS NULL AS payload_released,checkpoint IS NULL AS checkpoint_released FROM streams WHERE prefix=?',(prefix,)).fetchone()
- assert r is not None, 'missing replica epoch'
- d=dict(r);d['prefix']=prefix;d['pending']=c.execute('SELECT count(*) FROM records WHERE prefix=?',(prefix,)).fetchone()[0];d['archive_keys']=[r[0] for r in c.execute('SELECT key FROM archives WHERE prefix=?',(prefix,))];out.append(d)
-print(json.dumps(out))"""
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        copies = {
-            f"{R['release']}-terse-r{i}": json.loads(
-                kubectl(
-                    "-n",
-                    R["namespace"],
-                    "exec",
-                    f"{R['release']}-terse-r{i}-0",
-                    "--",
-                    "python3",
-                    "-c",
-                    script,
-                    json.dumps(prefixes),
-                )
-            )
-            for i in range(3)
-        }
-        if all(
-            r["sealed"]
-            and r["payload_released"]
-            and r["checkpoint_released"]
-            and r["pending"] == 0
-            and r["archive_keys"]
-            for rows in copies.values()
-            for r in rows
-        ):
-            return copies
+        archived = {}
+        for prefix in prefixes:
+            actor = prefix.split("/snapshots/", 1)[1].rsplit("/", 2)[0]
+            owner_key = "durable-actors/v3/owners/" + actor + ".json"
+            owner = json.loads(run(["gcloud", "storage", "cat", f"gs://{R['buckets']['owner']}/{owner_key}", f"--project={R['project']}"]))
+            snapshot = owner.get("base")
+            if snapshot is None:
+                archived[prefix] = None
+                continue
+            logical = snapshot["object"].split("/snapshots/", 1)[1]
+            parts = logical.split("/", 4)
+            actor_hash = base64.urlsafe_b64encode(hashlib.sha256("/".join(parts[:4]).encode()).digest()).decode().rstrip("=")
+            key = "durable-actors-v3-snapshots-" + actor_hash + "~" + parts[4].replace("/", "~")
+            result = subprocess.run(["gcloud", "storage", "cat", f"gs://{R['buckets']['archive']}/{key}", f"--project={R['project']}"], capture_output=True)
+            if result.returncode or base64.urlsafe_b64encode(hashlib.sha256(result.stdout).digest()).decode().rstrip("=") != snapshot["digest"]:
+                break
+            archived[prefix] = {"object": key, "digest": snapshot["digest"]}
+        if len(archived) == len(prefixes):
+            return archived
         time.sleep(1)
-    raise RuntimeError("replicas did not finish GCS archival")
+    raise RuntimeError("Standard archive did not catch up")
 
 
 def evidence(host):

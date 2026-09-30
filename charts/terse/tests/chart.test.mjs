@@ -30,57 +30,28 @@ for (const [name, overrides, cpuMillis] of [
     })
 }
 
-for (const [durability, placements] of [
-    ["zonal", ["us-west4-a", "us-west4-a", "us-west4-a"]],
-    ["regional", ["us-west4-a", "us-west4-b", "us-west4-c"]],
-    ["multi_region", ["us-west4-a", "us-east4-a"]]
-]) {
-    test(`renders ${durability} dedicated replica policy and HTTPS ingress`, () => {
-        const result = render({ storage: { durability, replicas: { placements } } })
-        assert.equal(result.status, 0, result.stderr)
-        assert.match(result.stdout, /kind: Gateway/)
-        assert.match(result.stdout, /DURABLE_ACTORS_REPLICA_PLACEMENTS/)
-        assert.match(result.stdout, /DURABLE_ACTORS_REPLICA_IDLE/)
-        assert.match(result.stdout, /terse.ai\/assigned: "true"/)
-        assert.match(result.stdout, /automountServiceAccountToken: false/)
-        assert.match(result.stdout, /port: 7200/)
-    })
-}
-
-test("production defaults spread compute and storage across three zones", () => {
+test("renders two Rapid zones, an acknowledgment quorum, and the Standard archive", () => {
     const result = render()
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /DURABLE_ACTORS_DURABILITY, value: "regional"/)
-    const placements = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_REPLICA_PLACEMENTS"))
-    const zones = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_GKE_ZONES"))
-    for (const zone of ["us-west4-a", "us-west4-b", "us-west4-c"]) {
-        assert.ok(placements.includes(zone))
-        assert.ok(zones.includes(zone))
-    }
+    assert.match(result.stdout, /DURABLE_ACTORS_RAPID_ACK_ZONES, value: "2"/)
+    assert.match(result.stdout, /DURABLE_ACTORS_ARCHIVE_BUCKET, value: "test-archive"/)
+    const buckets = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_RAPID_BUCKETS"))
+    for (const value of ["test-rapid-a", "test-rapid-b", "us-west4-a", "us-west4-b"]) assert.ok(buckets.includes(value))
     assert.match(result.stdout, /replicas: 3/)
+    assert.match(result.stdout, /kind: Gateway/)
     assert.match(result.stdout, /whenUnsatisfiable: DoNotSchedule/)
-    assert.match(result.stdout, /minDomains: 2/)
 })
+
 for (const [name, override] of [
-    ["single regional control plane", { replicaCount: 1 }],
-    ["single regional compute zone", { zones: { "north-america-west": "us-west4-a" } }],
-    ["regional copies in one zone", { storage: { durability: "regional", replicas: { placements: ["us-west4-a", "us-west4-a"] } } }],
-    ["multi-region copies in one region", { storage: { durability: "multi_region" } }],
-    ["empty replica set", { storage: { replicas: { placements: [] } } }],
-    ["unknown policy", { storage: { durability: "best_effort" } }],
+    ["single control plane", { replicaCount: 1 }],
+    ["single compute zone", { zones: { "north-america-west": "us-west4-a" } }],
+    ["duplicate Rapid zones", { storage: { rapid: { buckets: [{ bucket: "rapid-one", zone: "us-west4-a" }, { bucket: "rapid-two", zone: "us-west4-a" }] } } }],
+    ["impossible quorum", { storage: { rapid: { ackZones: 3 } } }],
+    ["empty Rapid set", { storage: { rapid: { buckets: [] } } }],
+    ["zero acknowledgments", { storage: { rapid: { ackZones: 0 } } }],
     ["mutable image", { image: { digest: "latest" } }],
     ["shared trust namespace", { sandboxNamespace: "terse-control" }]
-])
-    test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
-
-test("dedicated replicas have storage identity access while customer pods stay isolated", () => {
-    const result = render()
-    assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /name: replica\n  namespace: terse-sandboxes/)
-    assert.match(result.stdout, /169\.254\.169\.254\/32/)
-    assert.match(result.stdout, /maxUnavailable: 0/)
-    assert.match(result.stdout, /resources: \[nodes\]/)
-})
+]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
 
 test("sandboxes can resolve DNS through kube-dns and GKE NodeLocal DNS pods", () => {
     const result = render()

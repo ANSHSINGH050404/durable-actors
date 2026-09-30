@@ -1,0 +1,11 @@
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 7,
+        "matchesPrefix": ["durable-actors-v3-snapshots-", "durable-actors-v3-uploads-"]
+      }
+    }
+  ]
+}

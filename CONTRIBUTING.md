@@ -25,6 +25,8 @@ pnpm --dir sdk build
 cargo build --locked
 ```
 
+Repository builds set the pinned Google SDK’s Rapid append opt-in in `.cargo/config.toml`. When building outside the checkout (including `cargo install`), set `RUSTFLAGS="--cfg google_cloud_unstable_storage_bidi"`.
+
 The SDK build includes the observer UI and actor template. A full native bundle can be built with `pnpm build`.
 
 ## Find your way around
@@ -35,7 +37,7 @@ The SDK build includes the observer UI and actor template. A full native bundle 
 | `sdk-python/`           | Python actors, executor, and generated clients |
 | `sdk/`                  | TypeScript SDK, compiler, generated client, and CLI |
 | `packages/observer-ui/` | Actor observability UI                              |
-| `charts/terse/`          | GKE Sandbox and storage replica deployment          |
+| `charts/terse/`          | GKE Sandbox and GCS Rapid storage deployment          |
 | `tests/`                | Rust tests and repository script tests              |
 | `examples/`             | Chat, AI chat, and collaborative documents          |
 | `docs/`                 | API and configuration references                    |

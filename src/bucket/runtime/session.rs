@@ -18,7 +18,6 @@ impl RuntimeStorage {
             record.lease.id == *host && record.lease.session_id == session,
             "actor ownership changed"
         );
-        self.snapshots.seal(&record.stream()?.prefix).await?;
         let checkpoint = self.upload_checkpoint(&record)?;
         self.release_with_checkpoint(actor, host, session, Some(checkpoint))
             .await

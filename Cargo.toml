@@ -13,7 +13,6 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
-zstd = "0.13"
 walkdir = "2"
 kube = { version = "2.0.1", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "runtime", "ws"] }
 k8s-openapi = { version = "0.26", features = ["v1_34"] }
@@ -37,7 +36,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
-google-cloud-storage = "1.17.0"
+google-cloud-storage = "=1.17.0"
 google-cloud-auth = "1.15.0"
 anyhow = "1.0.104"
 async-trait = "0.1.92"

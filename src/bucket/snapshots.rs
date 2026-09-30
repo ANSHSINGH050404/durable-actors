@@ -10,73 +10,71 @@ use std::sync::Arc;
 pub enum PersistenceConfig {
     #[default]
     Local,
-    Replicated {
-        placements: Vec<String>,
-        #[serde(default)]
-        durability: Durability,
+    Rapid {
+        buckets: Vec<RapidBucket>,
+        archive_bucket: String,
+        #[serde(default = "default_ack_zones")]
+        ack_zones: usize,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReplicaPlacement {
-    pub id: String,
-    pub address: String,
+pub struct RapidBucket {
+    pub bucket: String,
     pub zone: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Durability {
-    #[default]
-    Zonal,
-    Regional,
-    MultiRegion,
+fn default_ack_zones() -> usize {
+    2
 }
 
 impl PersistenceConfig {
     pub(crate) fn same_backend(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Local, Self::Local) | (Self::Replicated { .. }, Self::Replicated { .. })
-        )
+        self == other
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
-        let Self::Replicated {
-            placements,
-            durability,
+        let Self::Rapid {
+            buckets,
+            archive_bucket,
+            ack_zones,
         } = self
         else {
             return Ok(());
         };
-        ensure!(!placements.is_empty(), "at least one replica is required");
+        crate::storage::validate_bucket(archive_bucket)?;
+        ensure!(
+            *ack_zones > 0 && *ack_zones <= buckets.len(),
+            "acknowledgments must require 1..=configured Rapid zones"
+        );
+        ensure!(
+            buckets.len() <= 7,
+            "at most seven Rapid buckets fit in the credential access boundary"
+        );
         let mut zones = HashSet::new();
-        let mut regions = HashSet::new();
-        for zone in placements {
-            let (region, suffix) = zone.rsplit_once('-').ok_or_else(|| {
-                anyhow::anyhow!("replica placement must name a Google Cloud zone")
-            })?;
+        let mut names = HashSet::new();
+        for placement in buckets {
+            crate::storage::validate_bucket(&placement.bucket)?;
+            let (region, suffix) = placement
+                .zone
+                .rsplit_once('-')
+                .ok_or_else(|| anyhow::anyhow!("Rapid placement must name a Google Cloud zone"))?;
             ensure!(
                 suffix.len() == 1
                     && suffix.as_bytes()[0].is_ascii_lowercase()
                     && region.chars().last().is_some_and(|c| c.is_ascii_digit()),
-                "invalid replica zone"
+                "invalid Rapid zone"
             );
-            zones.insert(zone);
-            regions.insert(region);
-        }
-        match durability {
-            Durability::Zonal => ensure!(zones.len() == 1, "zonal durability requires one zone"),
-            Durability::Regional => ensure!(
-                zones.len() >= 2 && regions.len() == 1,
-                "regional durability requires distinct zones in one region"
-            ),
-            Durability::MultiRegion => ensure!(
-                regions.len() >= 2,
-                "multi-region durability requires distinct regions"
-            ),
+            ensure!(
+                zones.insert(&placement.zone),
+                "Rapid buckets must occupy distinct zones"
+            );
+            ensure!(
+                names.insert(&placement.bucket) && placement.bucket != *archive_bucket,
+                "Rapid and Standard buckets must be distinct"
+            );
         }
         Ok(())
     }
@@ -88,8 +86,6 @@ pub(crate) trait SnapshotStore: Send + Sync {
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>>;
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()>;
-    async fn prepare(&self, prefix: &str) -> Result<()>;
-    async fn seal(&self, prefix: &str) -> Result<()>;
 }
 
 pub(crate) struct BucketSnapshots(pub Arc<dyn Bucket>);
@@ -127,13 +123,6 @@ impl SnapshotStore for BucketSnapshots {
             replace(self.0.as_ref(), object, None, bytes.to_vec()).await?,
             "conflicting immutable snapshot"
         );
-        Ok(())
-    }
-
-    async fn prepare(&self, _: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn seal(&self, _: &str) -> Result<()> {
         Ok(())
     }
 }

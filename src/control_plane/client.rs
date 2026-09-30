@@ -227,19 +227,3 @@ mod lease_fence_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/client_refresh_tests.rs"]
 mod refresh_tests;
-
-#[async_trait::async_trait]
-impl crate::replicas::directory::ReplicaDirectory for ControlPlaneClient {
-    async fn execute(
-        &self,
-        command: crate::replicas::directory::DirectoryCommand,
-    ) -> Result<crate::replicas::directory::DirectoryReply> {
-        match self
-            .execute(ControlPlaneCommand::ReplicaDirectory { command })
-            .await?
-        {
-            ControlPlaneCommandReply::ReplicaDirectory { reply } => Ok(reply),
-            _ => anyhow::bail!("unexpected replica directory reply"),
-        }
-    }
-}

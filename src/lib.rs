@@ -18,5 +18,3 @@ pub mod storage_paths;
 pub(crate) mod artifacts;
 mod request_traces;
 mod sockets;
-
-pub mod replicas;

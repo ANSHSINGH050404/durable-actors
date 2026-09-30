@@ -7,6 +7,7 @@ struct MemoryBucket {
     objects: Mutex<HashMap<String, BucketObject>>,
     owner_reads: std::sync::atomic::AtomicUsize,
     reject_snapshots: std::sync::atomic::AtomicBool,
+    delay_snapshot: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
 }
 #[async_trait]
 impl Bucket for MemoryBucket {
@@ -23,6 +24,13 @@ impl Bucket for MemoryBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        if key.contains("/snapshots/") {
+            let delayed = self.delay_snapshot.lock().unwrap().take();
+            if let Some((entered, resume)) = delayed {
+                entered.add_permits(1);
+                resume.acquire().await?.forget();
+            }
+        }
         ensure!(
             !key.contains("/snapshots/")
                 || !self
@@ -177,4 +185,70 @@ async fn persistence_failure_fences_the_host_and_requests_replacement() -> Resul
     assert!(storage.stop.is_cancelled());
     assert!(storage.ensure_authority().is_err());
     Ok(())
+}
+
+#[tokio::test]
+async fn a_late_persisted_write_cannot_acknowledge_after_the_lease_expires() -> Result<()> {
+    let (bucket, storage, plan, bytes) = pending_write().await?;
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    *bucket.delay_snapshot.lock().unwrap() = Some((entered.clone(), resume.clone()));
+    let writer = crate::host::persistence::ActorPersistence::new(storage.clone());
+    let key = plan.object_name.clone();
+    let writing = tokio::spawn(async move { writer.write_snapshot(&plan, bytes).await });
+    entered.acquire().await?.forget();
+    assert!(
+        storage
+            .fence
+            .lock()
+            .unwrap()
+            .check(Instant::now() + Duration::from_secs(31))
+            .is_err()
+    );
+    resume.add_permits(1);
+    assert!(writing.await?.is_err());
+    assert!(bucket.get(&key).await?.is_some());
+    assert!(storage.stop.is_cancelled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn canceling_an_ambiguous_write_permanently_fences_the_host() -> Result<()> {
+    let (bucket, storage, plan, bytes) = pending_write().await?;
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    *bucket.delay_snapshot.lock().unwrap() =
+        Some((entered.clone(), Arc::new(tokio::sync::Semaphore::new(0))));
+    let writer = crate::host::persistence::ActorPersistence::new(storage.clone());
+    let writing = tokio::spawn(async move { writer.write_snapshot(&plan, bytes).await });
+    entered.acquire().await?.forget();
+    writing.abort();
+    assert!(writing.await.unwrap_err().is_cancelled());
+    assert!(storage.ensure_authority().is_err());
+    assert!(storage.stop.is_cancelled());
+    Ok(())
+}
+
+async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePlan, Vec<u8>)> {
+    let bucket = Arc::new(MemoryBucket::default());
+    let storage = Arc::new(host_storage(bucket.clone()).await?);
+    storage
+        .register(&HostLeaseRequest {
+            id: storage.host.clone(),
+            session_id: storage.session.clone(),
+            route: "http://host".into(),
+            duration_ms: 30_000,
+        })
+        .await?;
+    let plan = storage
+        .prepare_state_write(storage.actor.as_ref().unwrap(), &storage.host, 1, 0)
+        .await?;
+    let bytes = StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        serde_json::json!({"count":1}),
+        serde_json::json!(1),
+    )?
+    .encode()?;
+    Ok((bucket, storage, plan, bytes))
 }

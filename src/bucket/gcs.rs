@@ -29,6 +29,13 @@ pub(crate) struct GcsClients {
 }
 
 impl GcsBucket {
+    pub(crate) fn with_clients(bucket: &str, clients: GcsClients) -> Result<Self> {
+        Ok(Self {
+            bucket: bucket_name(bucket)?,
+            clients,
+        })
+    }
+
     pub(crate) fn clients(&self) -> GcsClients {
         self.clients.clone()
     }

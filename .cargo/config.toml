@@ -1,0 +1,3 @@
+# The pinned Google SDK requires this opt-in for Rapid append writes.
+[build]
+rustflags = ["--cfg", "google_cloud_unstable_storage_bidi"]

@@ -10,20 +10,14 @@ zones:
 storage:
   authorityBucket: ""
   artifactBucket: ""
-  durability: regional
   archiveBucket: ""
-  replicas:
-    placements: [us-west4-a, us-west4-b, us-west4-c]
-    idle: 192
-    maxStarting: 32
-    credentialsSecret: terse-replica-credentials
-    resources:
-      requests: {cpu: 50m, memory: 64Mi}
-      limits: {memory: 512Mi}
+  rapid:
+    ackZones: 2
+    buckets: []
 cloudSql:
   instanceConnectionName: ""
   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
-# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key and replica-key.
+# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key.
 credentialsSecret: terse-credentials
 serviceAccount:
   googleServiceAccount: ""
@@ -53,4 +47,3 @@ gateway:
 networkPolicy:
   enabled: true
   dnsCidrs: []
-  replicaCidrs: []

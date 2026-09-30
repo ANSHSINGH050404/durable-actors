@@ -24,7 +24,6 @@ spec:
             matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
       ports:
         - {protocol: TCP, port: 7100}
-        - {protocol: TCP, port: 7200}
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: kube-system}
@@ -36,18 +35,6 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    - to:
-        - podSelector:
-            matchLabels: {terse.ai/purpose: replica}
-      ports:
-        - {protocol: TCP, port: 7200}
-    {{- range .Values.networkPolicy.replicaCidrs }}
-    - to:
-        - ipBlock: {cidr: {{ . | quote }}}
-      ports:
-        - {protocol: TCP, port: 7200}
-        - {protocol: TCP, port: 443}
-    {{- end }}
     {{- range .Values.networkPolicy.dnsCidrs }}
     - to:
         - ipBlock: {cidr: {{ . | quote }}}
