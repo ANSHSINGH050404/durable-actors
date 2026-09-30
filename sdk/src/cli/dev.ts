@@ -172,9 +172,7 @@ async function publishLocalCode(
 ): Promise<void> {
     if (options.entrypoint.endsWith(".py")) await checkPython(project, [options.entrypoint])
     await client.registerDeployment({
-        imageRef: "local",
-        workingDirectory: project,
-        actorEntrypoint: options.entrypoint,
+        localSource: { workingDirectory: project, actorEntrypoint: options.entrypoint },
         secretRefs: []
     })
     console.log("Updated local actors.")

@@ -160,11 +160,14 @@ impl ControlPlaneService {
                     .await?
             }
         };
-        if compiled_contract.is_none() && prepared.code_snapshot.is_some() {
+        if compiled_contract.is_none()
+            && prepared.code_snapshot.is_some()
+            && supplied_contract.is_none()
+        {
             previous
                 .as_ref()
                 .filter(|old| old.code_snapshot == prepared.code_snapshot)
-                .context("compiled deployment has no matching source contract")?;
+                .context("a new bundle requires its actor contract")?;
             let record = admin
                 .deployment_contract(&source.project_id)
                 .await?
@@ -879,60 +882,28 @@ impl HostProvisioner for SandboxHostProvisioner {
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
-        previous: Option<&HostLaunchSpec>,
-        region: &str,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
     ) -> Result<(
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
     )> {
-        let image = self
-            .runtime_image
-            .as_ref()
-            .context("hosted code preparation requires a runtime image")?;
-        let input = super::admin::DeploymentSource::from(source);
-        if let Some(previous) = previous.filter(|old| {
-            old.source.as_ref() == Some(&input)
-                && old.image_ref == *image
-                && old.code_snapshot.is_some()
-        }) {
-            let mut prepared = previous.clone();
-            prepared.secret_refs.clone_from(&source.secret_refs);
-            return Ok((prepared, None));
-        }
-        let built = self
-            .provider
-            .build_code(&crate::sandbox::BuildCodeRequest {
-                image_ref: input.image_ref.clone(),
-                working_directory: input.working_directory.clone(),
-                actor_entrypoint: input
-                    .actor_entrypoint
-                    .clone()
-                    .unwrap_or_else(|| "src/actors.ts".into()),
-                canonical_region: region.into(),
-            })
-            .await?;
-        let contract = super::contracts::PublicActorContract::new(built.contract)?;
-        let artifact = if input
-            .actor_entrypoint
+        let snapshot = source
+            .code_snapshot
             .as_deref()
-            .is_some_and(|entrypoint| entrypoint.ends_with(".py"))
-        {
-            "actors.pyz"
-        } else {
-            "actors.mjs"
-        };
-        let prepared = HostLaunchSpec {
-            sandboxes: Default::default(),
-            project_id: source.project_id.clone(),
-            source: Some(input),
-            image_ref: image.clone(),
-            code_snapshot: Some(built.code_snapshot),
-            working_directory: "/customer".into(),
-            actor_entrypoint: Some(artifact.into()),
-            secret_refs: source.secret_refs.clone(),
-        };
+            .context("hosted deployments require a compiled bundle")?;
+        let manifest = crate::artifacts::ArtifactManifest::decode(snapshot)?;
+        self.runtime_access
+            .as_ref()
+            .context("hosted deployments require artifact storage access")?
+            .validate_code(&manifest)?;
+        let mut prepared = source.clone();
+        prepared.image_ref = self
+            .runtime_image
+            .clone()
+            .context("hosted deployments require a runtime image")?;
         prepared.validate()?;
-        Ok((prepared, Some(contract)))
+        Ok((prepared, None))
     }
     async fn wait_ready(&self, host: &HostId) -> Result<()> {
         match &self.pool {

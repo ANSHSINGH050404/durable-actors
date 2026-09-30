@@ -32,20 +32,15 @@ pub(crate) struct HostLaunchSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DeploymentSource {
-    pub image_ref: String,
-    pub working_directory: String,
-    pub actor_entrypoint: Option<String>,
+pub(crate) enum DeploymentSource {
+    Local(LocalSource),
 }
 
-impl From<&HostLaunchSpec> for DeploymentSource {
-    fn from(spec: &HostLaunchSpec) -> Self {
-        Self {
-            image_ref: spec.image_ref.clone(),
-            working_directory: spec.working_directory.clone(),
-            actor_entrypoint: spec.actor_entrypoint.clone(),
-        }
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LocalSource {
+    pub working_directory: String,
+    pub actor_entrypoint: Option<String>,
 }
 
 impl HostLaunchSpec {

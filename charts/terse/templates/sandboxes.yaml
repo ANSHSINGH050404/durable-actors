@@ -22,9 +22,6 @@ rules:
     resources: [pods]
     verbs: [create, get, list, watch, patch, delete]
   - apiGroups: [""]
-    resources: [pods/exec]
-    verbs: [get, create]
-  - apiGroups: [""]
     resources: [secrets]
     verbs: [get]
 ---

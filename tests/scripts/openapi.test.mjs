@@ -79,9 +79,12 @@ test("deployment schemas describe both hosted and local registration and the com
     const ajv = new Ajv({ strict: false })
     const register = ajv.compile(deployment.put.requestBody.content["application/json"].schema)
     const read = ajv.compile(deployment.get.responses["200"].content["application/json"].schema)
-    for (const imageRef of ["im-source", "local"]) {
-        const value = { imageRef, workingDirectory: "/customer", actorEntrypoint: null, secretRefs: [] }
-        assert.ok(register({ imageRef, workingDirectory: "/customer" }), ajv.errorsText(register.errors))
+    for (const source of [
+        { bundle: { bucket: "code", files: [{ path: "actors.mjs", object: "bundle/actors.mjs", generation: 1, sha256: "A".repeat(43) }] } },
+        { localSource: { workingDirectory: "/project", actorEntrypoint: "actors.ts" } }
+    ]) {
+        const value = { ...source, secretRefs: [] }
+        assert.ok(register(source), ajv.errorsText(register.errors))
         assert.ok(read(value), ajv.errorsText(read.errors))
         for (const field of Object.keys(value)) {
             const incomplete = { ...value }
@@ -98,6 +101,18 @@ test("websocket discovery requires metadata and enforces grant limits", async ()
         assert.ok(validate(request), JSON.stringify(request))
     for (const request of [{}, { metadata: {}, unknown: true }, { metadata: {}, authorizationLifetimeMs: 999 }, { metadata: {}, authorizationLifetimeMs: 86400001 }])
         assert.equal(validate(request), false, JSON.stringify(request))
+})
+
+test("compiled deployments pin each artifact generation and checksum", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const ajv = new Ajv({ strict: false })
+    const deploy = ajv.compile(spec.components.schemas.Deployment)
+    const bundle = { bucket: "code", files: [{ path: "actors.mjs", object: "bundle/actors.mjs", generation: 42, sha256: "A".repeat(43) }] }
+    assert.ok(deploy({ bundle }), ajv.errorsText(deploy.errors))
+    assert.equal(deploy({ bundle, localSource: { workingDirectory: "/project" } }), false)
+    for (const invalid of [{ generation: 0 }, { sha256: "bad" }, { object: "" }]) {
+        assert.equal(deploy({ bundle: { ...bundle, files: [{ ...bundle.files[0], ...invalid }] } }), false)
+    }
 })
 
 test("OpenAPI accepts the compiler's public contract fixture", async () => {

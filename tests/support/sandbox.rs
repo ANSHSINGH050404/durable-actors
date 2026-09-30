@@ -6,9 +6,6 @@ impl SandboxProvider for UnusedSandboxProvider {
     async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
         anyhow::bail!("unexpected spare inspection")
     }
-    async fn build_code(&self, _: &BuildCodeRequest) -> Result<BuiltActorCode> {
-        anyhow::bail!("unexpected code build")
-    }
     async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
         anyhow::bail!("unexpected socket lookup")
     }
@@ -26,7 +23,8 @@ pub(crate) fn code_artifact(generation: i64) -> String {
         bucket: "test-artifacts".into(),
         files: vec![crate::artifacts::ArtifactFile {
             path: "actors.mjs".into(),
-            object: "durable-actors/artifacts/test/actors.mjs".into(),
+            object: "durable-actors/v3/artifacts/00000000-0000-4000-8000-000000000001/actors.mjs"
+                .into(),
             generation,
             sha256: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0; 32]),
         }],

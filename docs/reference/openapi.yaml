@@ -55,19 +55,26 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Builds the supplied source image, replaces the current deployment, and restarts its actors while preserving saved state. Local development registers source from the filesystem with imageRef set to local.
+            description: Registers a compiled GCS bundle and its actor contract. Build and upload with any compatible toolchain before calling this endpoint. Replaces the deployment and restarts actors while preserving saved state. The bundle must use the configured artifact bucket and durable-actors/v3/artifacts/{UUID}/ paths. A new bundle requires contract; resubmitting the current bundle may omit it to retain the current contract. Local development registers localSource with its project directory and entrypoint.
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema: { $ref: "#/components/schemas/Deployment" }
                         examples:
-                            chat:
+                            compiled:
                                 value:
-                                    imageRef: registry.example/customer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                                    workingDirectory: /customer
-                                    actorEntrypoint: src/actors.ts
-                                    secretRefs: []
+                                    bundle:
+                                        bucket: actor-code
+                                        files:
+                                            - path: actors.mjs
+                                              object: durable-actors/v3/artifacts/00000000-0000-4000-8000-000000000001/actors.mjs
+                                              generation: 123456789
+                                              sha256: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                    contract: { version: 1, actors: [], typescript: { declarations: "export interface ActorTypes {}", dependencies: {} } }
+                            local:
+                                value:
+                                    localSource: { workingDirectory: /project, actorEntrypoint: src/actors.ts }
             responses:
                 "200": { $ref: "#/components/responses/Changed" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
@@ -793,25 +800,50 @@ components:
                 messages: { type: integer, minimum: 0 }
                 failures: { type: integer, minimum: 0 }
                 metadata: { description: Metadata saved with a retained onConnect event. }
-        Deployment:
+        ActorBundle:
             type: object
             additionalProperties: false
-            required: [imageRef, workingDirectory]
+            required: [bucket, files]
             properties:
-                imageRef:
-                    type: string
-                    minLength: 1
-                    maxLength: 255
-                    description: Immutable OCI source image reference pinned by sha256 digest for GKE deployments; local for development. Maximum 255 UTF-8 bytes.
+                bucket: { type: string, minLength: 3 }
+                files:
+                    type: array
+                    minItems: 1
+                    description: Unique relative paths including exactly one actors.mjs or actors.pyz entrypoint. Objects must belong to one immutable artifact deployment.
+                    items:
+                        type: object
+                        additionalProperties: false
+                        required: [path, object, generation, sha256]
+                        properties:
+                            path: { type: string, minLength: 1 }
+                            object: { type: string, minLength: 1 }
+                            generation: { type: integer, minimum: 1 }
+                            sha256: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Base64url-encoded SHA256 without padding. }
+        LocalSource:
+            type: object
+            additionalProperties: false
+            required: [workingDirectory]
+            properties:
                 workingDirectory:
                     type: string
                     pattern: "^/"
-                    description: Absolute project path inside the image. Maximum 1024 UTF-8 bytes.
+                    maxLength: 1024
+                    description: Absolute project directory in the local development server.
                 actorEntrypoint:
                     type: [string, "null"]
                     minLength: 1
+                    maxLength: 1024
                     default: null
-                    description: TypeScript or Python source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
+                    description: TypeScript or Python source path; null uses src/actors.ts.
+        Deployment:
+            type: object
+            additionalProperties: false
+            oneOf:
+                - required: [bundle]
+                - required: [localSource]
+            properties:
+                bundle: { $ref: "#/components/schemas/ActorBundle" }
+                localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs:
                     type: array
                     maxItems: 16
@@ -827,11 +859,13 @@ components:
         CurrentDeployment:
             type: object
             additionalProperties: false
-            required: [imageRef, workingDirectory, actorEntrypoint, secretRefs]
+            required: [secretRefs]
+            oneOf:
+                - required: [bundle]
+                - required: [localSource]
             properties:
-                imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
-                workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
-                actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }
+                bundle: { $ref: "#/components/schemas/ActorBundle" }
+                localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
         PublicActorContract:
             type: object

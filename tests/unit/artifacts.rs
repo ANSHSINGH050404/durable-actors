@@ -79,16 +79,3 @@ fn python_code_manifests_include_the_entrypoint_and_installed_dependencies() -> 
     assert_eq!(decoded.files.len(), 2);
     Ok(())
 }
-
-#[test]
-fn compiled_artifact_collection_preserves_dependency_paths() -> Result<()> {
-    let root = tempfile::tempdir()?;
-    std::fs::create_dir_all(root.path().join("python/dependency"))?;
-    std::fs::write(root.path().join("actors.pyz"), b"code")?;
-    std::fs::write(root.path().join("python/dependency/module.so"), b"native")?;
-    assert_eq!(
-        compiled_files(root.path())?,
-        vec!["actors.pyz", "python/dependency/module.so"]
-    );
-    Ok(())
-}

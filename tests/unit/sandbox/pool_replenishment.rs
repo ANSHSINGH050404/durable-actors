@@ -1,7 +1,7 @@
 use super::*;
 use crate::sandbox::{
-    ActorHostHandle, BuildCodeRequest, BuiltActorCode, CreateSpareRequest, EnsureHostRequest,
-    HostTermination, SocketCredentials, SocketCredentialsRequest, TerminateHostsRequest,
+    ActorHostHandle, CreateSpareRequest, EnsureHostRequest, HostTermination, SocketCredentials,
+    SocketCredentialsRequest, TerminateHostsRequest,
 };
 
 fn handle(name: String) -> SpareHandle {
@@ -242,9 +242,6 @@ impl SandboxProvider for RegionalProvider {
     }
     async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
         Ok(())
-    }
-    async fn build_code(&self, _: &BuildCodeRequest) -> Result<BuiltActorCode> {
-        anyhow::bail!("unexpected build")
     }
     async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
         anyhow::bail!("unexpected credentials")

@@ -29,9 +29,6 @@ impl SandboxProvider for Provider {
             .map(|spare| spare.resource_id.clone())
             .collect())
     }
-    async fn build_code(&self, _: &BuildCodeRequest) -> Result<BuiltActorCode> {
-        anyhow::bail!("unexpected build")
-    }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("unexpected assignment")
     }

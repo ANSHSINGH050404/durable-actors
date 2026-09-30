@@ -96,6 +96,21 @@ impl RuntimeAccess {
         Ok(self)
     }
 
+    pub(crate) fn validate_code(&self, code: &crate::artifacts::ArtifactManifest) -> Result<()> {
+        let BucketLocation::Gcs {
+            artifact_bucket, ..
+        } = &self.location
+        else {
+            anyhow::bail!("compiled GCS bundles require GCS storage");
+        };
+        ensure!(
+            code.bucket == *artifact_bucket,
+            "code artifact belongs to another bucket"
+        );
+        artifact_prefix(code)?;
+        Ok(())
+    }
+
     pub async fn bootstrap(
         &self,
         region: &str,

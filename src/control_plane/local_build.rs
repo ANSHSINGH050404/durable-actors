@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::{
-    admin::{DeploymentSource, HostLaunchSpec},
+    admin::{DeploymentSource, HostLaunchSpec, LocalSource},
     contracts::PublicActorContract,
 };
 
@@ -63,7 +63,10 @@ impl LocalBuilds {
             .compile(&self.project, entrypoint, directory.path())
             .await?;
         let mut spec = source.clone();
-        spec.source = Some(DeploymentSource::from(source));
+        spec.source = Some(DeploymentSource::Local(LocalSource {
+            working_directory: source.working_directory.clone(),
+            actor_entrypoint: source.actor_entrypoint.clone(),
+        }));
         spec.actor_entrypoint = Some(
             directory
                 .path()

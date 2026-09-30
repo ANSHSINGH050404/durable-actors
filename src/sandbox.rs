@@ -66,22 +66,6 @@ pub struct CreateSpareRequest {
     pub resources: ResourceLimits,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildCodeRequest {
-    pub image_ref: String,
-    pub working_directory: String,
-    pub actor_entrypoint: String,
-    pub canonical_region: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuiltActorCode {
-    pub code_snapshot: String,
-    pub contract: serde_json::Value,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
@@ -177,7 +161,6 @@ pub struct SocketCredentials {
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
-    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }

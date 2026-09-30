@@ -142,9 +142,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         path: "/v1/projects/default/deployment",
         authorization: "Bearer test-key",
         body: {
-            imageRef: "local",
-            workingDirectory: await realpath(project),
-            actorEntrypoint: "actors.ts",
+            localSource: { workingDirectory: await realpath(project), actorEntrypoint: "actors.ts" },
             secretRefs: []
         }
     })

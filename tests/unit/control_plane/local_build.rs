@@ -33,8 +33,11 @@ async fn builds_preserve_the_current_code_until_successful_publication_and_keep_
     let first = builds.prepare(&source).await?;
     let first_path = PathBuf::from(first.spec.actor_entrypoint.as_ref().unwrap());
     assert_eq!(
-        first.spec.source.as_ref().unwrap().actor_entrypoint,
-        source.actor_entrypoint
+        first.spec.source,
+        Some(DeploymentSource::Local(LocalSource {
+            working_directory: source.working_directory.clone(),
+            actor_entrypoint: source.actor_entrypoint.clone(),
+        }))
     );
     assert_eq!(first.contract.document()["version"], 1);
     first.commit().await;

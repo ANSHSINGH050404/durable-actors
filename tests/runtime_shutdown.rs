@@ -264,14 +264,14 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         assert.equal(await new RemoteActorClient().invoke('Counter', 'fresh', 'label', []), 'before');
         const rejected = await fetch(`${{origin}}/v1/projects/default/deployment`, {{
             method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
-            body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+            body: JSON.stringify({{ localSource: {{ workingDirectory, actorEntrypoint: 'actors.ts' }}, secretRefs: [] }})
         }});
         assert.notEqual(rejected.status, 200);
         assert.equal(await new RemoteActorClient().invoke('Counter', 'after-error', 'label', []), 'before');
         await fs.writeFile(source, original.replace('return "before"', 'return "after"'));
         const deployed = await fetch(`${{origin}}/v1/projects/default/deployment`, {{
             method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
-            body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+            body: JSON.stringify({{ localSource: {{ workingDirectory, actorEntrypoint: 'actors.ts' }}, secretRefs: [] }})
         }});
         assert.equal(deployed.status, 200, await deployed.text());
         client = new RemoteActorClient();
@@ -281,7 +281,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         for (const [projectId, increment] of [['team-a', 1], ['team-b', 2]]) {{
             const response = await fetch(`${{origin}}/v1/projects/${{projectId}}/deployment`, {{
                 method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
-                body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+                body: JSON.stringify({{ localSource: {{ workingDirectory, actorEntrypoint: 'actors.ts' }}, secretRefs: [] }})
             }});
             assert.equal(response.status, 200, await response.text());
             const scoped = new RemoteActorClient({{ projectId, controlPlaneUrl: origin, apiKey }});

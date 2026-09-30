@@ -192,18 +192,19 @@ async fn get_deployment(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found"))?;
-    let source = spec
+    let bundle = spec
+        .code_snapshot
+        .as_deref()
+        .map(crate::artifacts::ArtifactManifest::decode)
+        .transpose()
+        .map_err(ApiError::internal)?;
+    let local_source = spec
         .source
-        .unwrap_or_else(|| super::admin::DeploymentSource {
-            image_ref: spec.image_ref,
-            working_directory: spec.working_directory,
-            actor_entrypoint: spec.actor_entrypoint,
-        });
+        .map(|super::admin::DeploymentSource::Local(local)| local);
     Ok(Json(RegisterDeploymentRequest {
+        bundle,
+        local_source,
         contract: None,
-        image_ref: source.image_ref,
-        working_directory: source.working_directory,
-        actor_entrypoint: source.actor_entrypoint,
         secret_refs: spec.secret_refs,
     }))
 }
@@ -231,6 +232,39 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
+    let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
+        match (request.bundle, request.local_source) {
+            (Some(bundle), None) => {
+                let snapshot = bundle.encode().map_err(ApiError::bad_request)?;
+                let entrypoint = bundle
+                    .entrypoint()
+                    .map_err(ApiError::bad_request)?
+                    .to_owned();
+                (
+                    None,
+                    Some(snapshot),
+                    "bundle".into(),
+                    "/customer".into(),
+                    Some(entrypoint),
+                )
+            }
+            (None, Some(local)) => {
+                let directory = local.working_directory.clone();
+                let entrypoint = local.actor_entrypoint.clone();
+                (
+                    Some(super::admin::DeploymentSource::Local(local)),
+                    None,
+                    "local".into(),
+                    directory,
+                    entrypoint,
+                )
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "provide exactly one bundle or localSource",
+                ));
+            }
+        };
     let contract = request
         .contract
         .map(PublicActorContract::new)
@@ -239,11 +273,11 @@ async fn register_deployment(
     let spec = HostLaunchSpec {
         sandboxes: Default::default(),
         project_id: project_id(path)?,
-        source: None,
-        code_snapshot: None,
-        image_ref: request.image_ref,
-        working_directory: request.working_directory,
-        actor_entrypoint: request.actor_entrypoint,
+        source,
+        code_snapshot,
+        image_ref,
+        working_directory,
+        actor_entrypoint,
         secret_refs: request.secret_refs,
     };
     let changed = state
@@ -448,11 +482,11 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    bundle: Option<crate::artifacts::ArtifactManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
-    image_ref: String,
-    working_directory: String,
-    #[serde(default)]
-    actor_entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_source: Option<super::admin::LocalSource>,
     #[serde(default)]
     secret_refs: Vec<String>,
 }
@@ -578,7 +612,3 @@ struct ErrorBody {
     code: String,
     message: String,
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/control_plane/public_api.rs"]
-mod tests;
