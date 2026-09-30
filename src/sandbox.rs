@@ -21,7 +21,7 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            cpu_millis: 250,
+            cpu_millis: 500,
             memory_mib: 256,
         }
     }

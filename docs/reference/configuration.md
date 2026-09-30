@@ -69,7 +69,7 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_SPARE_FLEET_MAX` | `256` | Maximum unassigned spares across pools. Active actors do not count against this budget. |
 | `DURABLE_ACTORS_SPARE_MAX_STARTING` | `32` | Maximum simultaneous spare starts across control-plane replicas. |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`          | `600`                | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                      |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `250`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `500`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
 | `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `256`                | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
@@ -90,7 +90,7 @@ export class CustomerAgent extends Actor {}
 
 | Option | Meaning | Default when omitted |
 | --- | --- | --- |
-| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.25. |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.5. |
 | `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 256. |
 | `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |

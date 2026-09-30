@@ -89,7 +89,7 @@ COPY --chown=10000:10000 . /customer
 WORKDIR /customer
 ```
 
-Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.25 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
+Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.5 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
 
 `pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted actor pools use the cold pod-creation path; exhausted replica pools use bucket persistence while spares start. Python switches the prewarmed Bun process to its Python executor on assignment.
 

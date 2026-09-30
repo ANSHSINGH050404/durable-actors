@@ -18,6 +18,18 @@ function render(overrides = {}) {
     }
 }
 
+for (const [name, overrides, cpuMillis] of [
+    ["default", {}, 500],
+    ["configured", { pool: { cpuMillis: 750 } }, 750]
+]) {
+    test(`renders ${name} sandbox CPU allocation`, () => {
+        const result = render(overrides)
+        assert.equal(result.status, 0, result.stderr)
+        const cpu = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_HOST_CPU_MILLIS"))
+        assert.match(cpu, new RegExp(`value: "${cpuMillis}"`))
+    })
+}
+
 for (const [durability, placements] of [
     ["zonal", ["us-west4-a", "us-west4-a", "us-west4-a"]],
     ["regional", ["us-west4-a", "us-west4-b", "us-west4-c"]],

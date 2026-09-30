@@ -36,7 +36,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     let resources = &config.sandbox_provider.pool.resources;
-    assert_eq!((resources.cpu_millis, resources.memory_mib), (250, 256));
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (500, 256));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
