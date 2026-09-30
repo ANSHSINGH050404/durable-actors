@@ -204,9 +204,10 @@ fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() ->
 fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> Result<()> {
     let issuer = socket_issuer()?;
     let now = unix_millis()?;
-    for deadline in [now + 25_000, now + 300_000] {
+    for deadline in [now + 25_000, now + 300_000, now + 600_000] {
         let issued = issuer.issue_session("project".into(), "credential".into(), deadline)?;
-        assert!(issued.expires_at_ms <= deadline.min(unix_millis()? + 60_000));
+        assert!(issued.expires_at_ms <= deadline.min(unix_millis()? + 300_000));
+        assert!(issued.expires_at_ms >= deadline.min(now + 300_000) - 1000);
         let authorization = format!("Bearer {}", issued.token);
         let verifier = issuer.session_verifier()?;
         let session = verifier.authenticate(&authorization, "project")?;
@@ -247,6 +248,20 @@ fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> 
 }
 
 #[test]
+fn sessions_respect_a_shorter_configured_jwt_lifetime() -> Result<()> {
+    let mut issuer = socket_issuer()?;
+    issuer.max_lifetime = Duration::from_secs(30);
+    let now = unix_millis()?;
+    let issued = issuer.issue_session("project".into(), "credential".into(), now + 300_000)?;
+    assert!(issued.expires_at_ms <= unix_millis()? + 30_000);
+    assert!(issued.expires_at_ms >= now + 29_000);
+    issuer
+        .session_verifier()?
+        .authenticate(&format!("Bearer {}", issued.token), "project")?;
+    Ok(())
+}
+
+#[test]
 fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
     let issuer = socket_issuer()?;
     let issued = issuer.issue_session(
@@ -266,7 +281,7 @@ fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
         ("nbf", serde_json::json!(session.iat + 60)),
         ("iat", serde_json::json!(session.iat + 60)),
         ("exp", serde_json::json!(session.iat)),
-        ("exp", serde_json::json!(session.iat + 61)),
+        ("exp", serde_json::json!(session.iat + 301)),
         ("projectId", serde_json::json!("")),
         ("projectId", serde_json::json!("../other")),
         ("unexpected", serde_json::json!(true)),

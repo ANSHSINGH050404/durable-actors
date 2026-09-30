@@ -21,7 +21,7 @@ class ActorSession(BaseModel):
     """Short-lived credentials returned by a trusted application backend.
 
     expires_at_ms is a Unix timestamp in milliseconds. Sessions must belong
-    to the requested project and use HTTPS outside localhost.
+    to the requested project, last at most five minutes, and use HTTPS outside localhost.
     """
 
     model_config = ConfigDict(strict=True, frozen=True)
@@ -171,7 +171,7 @@ class ActorSessionTransport:
         if (
             session.project_id != self._project_id
             or not session.token.strip()
-            or not 5 < remaining <= 65
+            or not 5 < remaining <= 305
         ):
             raise ValueError("actor session is expired or invalid")
         return remaining

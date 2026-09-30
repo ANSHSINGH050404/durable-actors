@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { ActorSessionRejectedError, ActorSessionTransport } from "../../src/client-runtime/session.js"
 
-function fixture() {
+function fixture(lifetimeMs = 300_000) {
     let now = 1_000_000
     let exchanges = 0
     let transports = 0
@@ -20,7 +20,7 @@ function fixture() {
                     projectId: "project",
                     controlPlaneUrl: "https://actors.example",
                     token: `session-${exchanges}`,
-                    expiresAtMs: now + 60_000
+                    expiresAtMs: now + lifetimeMs
                 }
             }
         },
@@ -65,7 +65,7 @@ test("concurrent and warm invocations share a session and transport", async () =
 })
 
 test("active sessions renew in the background and an explicit denial clears authorization", async () => {
-    const f = fixture()
+    const f = fixture(60_000)
     await f.client.invoke("Counter", "one", "read", [])
     f.advance(46_000)
     f.scheduled[0]()
@@ -80,7 +80,7 @@ test("active sessions renew in the background and an explicit denial clears auth
 })
 
 test("transient renewal failure never extends authorization expiry", async () => {
-    const f = fixture()
+    const f = fixture(60_000)
     await f.client.invoke("Counter", "one", "read", [])
     f.advance(46_000)
     f.fail(new Error("auth service unavailable"))
@@ -109,7 +109,7 @@ test("session responses cannot cross projects, use insecure remote origins, or e
         { projectId: "other" },
         { controlPlaneUrl: "http://actors.example" },
         { token: "" },
-        { expiresAtMs: Date.now() + 300_000 }
+        { expiresAtMs: Date.now() + 306_000 }
     ]) {
         const client = new ActorSessionTransport(
             {
@@ -153,4 +153,16 @@ test("session transport never replays an invocation failure", async () => {
     await assert.rejects(client.invoke("Counter", "one", "increment", []), /outcome_unknown/)
     assert.equal(calls, 1)
     client.dispose()
+})
+
+test("a five-minute session survives the customer's 135-second idle return without authorization", async () => {
+    const f = fixture()
+    await f.client.invoke("Counter", "one", "read", [])
+    f.advance(135_000)
+    await f.client.invoke("Counter", "one", "read", [])
+    assert.deepEqual(f.stats(), { exchanges: 1, transports: 1, calls: 2 })
+    f.advance(161_000)
+    await f.client.invoke("Counter", "one", "read", [])
+    assert.deepEqual(f.stats(), { exchanges: 2, transports: 2, calls: 3 })
+    f.client.dispose()
 })

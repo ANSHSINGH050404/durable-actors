@@ -27,7 +27,7 @@ export { ActorSessionRejectedError } from "./errors.js"
 
 /**
  * Reuses actor targets and renews runtime-issued sessions through a trusted backend.
- * Sessions require an HTTPS origin (except localhost) and at most 60 seconds of validity.
+ * Sessions require an HTTPS origin (except localhost) and at most five minutes of validity.
  * Renewal stops after a minute without invocations; dispose cancels it immediately.
  */
 export class ActorSessionTransport implements ActorRpcTransport {
@@ -111,7 +111,7 @@ export class ActorSessionTransport implements ActorRpcTransport {
         if (origin.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname))
             throw new Error("Actor sessions require HTTPS outside localhost")
         const remaining = session.expiresAtMs - this.now()
-        if (remaining <= 5_000 || remaining > 65_000) throw new Error("Actor session is expired or invalid")
+        if (remaining <= 5_000 || remaining > 305_000) throw new Error("Actor session is expired or invalid")
         return remaining
     }
 

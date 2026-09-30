@@ -10,6 +10,8 @@ use super::{
 };
 use crate::actor::ActorKey;
 
+pub(super) const MAX_SESSION_LIFETIME_SECONDS: i64 = 300;
+
 #[derive(Clone)]
 pub(crate) struct SessionVerifier {
     keys: Arc<HashMap<String, DecodingKey>>,
@@ -105,7 +107,7 @@ impl ActorSession {
             self.iat <= now + 5
                 && self.expires_at > now
                 && self.expires_at > self.iat
-                && self.expires_at.saturating_sub(self.iat) <= 60,
+                && self.expires_at.saturating_sub(self.iat) <= MAX_SESSION_LIFETIME_SECONDS,
             "invalid actor session lifetime"
         );
         Ok(())

@@ -112,8 +112,13 @@ impl ActorJwtIssuer {
         deadline_ms: i64,
     ) -> Result<IssuedActorToken> {
         let now = unix_millis()? / 1000;
-        let expires_at = (deadline_ms / 1000)
-            .min(now.saturating_add(i64::try_from(self.max_lifetime.as_secs().min(60))?));
+        let expires_at = (deadline_ms / 1000).min(
+            now.saturating_add(i64::try_from(
+                self.max_lifetime
+                    .as_secs()
+                    .min(super::session::MAX_SESSION_LIFETIME_SECONDS as u64),
+            )?),
+        );
         let session = super::session::ActorSession {
             iss: self.issuer.clone(),
             aud: self.session_audience(),

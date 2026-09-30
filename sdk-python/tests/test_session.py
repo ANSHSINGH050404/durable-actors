@@ -49,7 +49,7 @@ class Transport:
         self.closed = True
 
 
-def make_session(clock, callback=None):
+def make_session(clock, callback=None, lifetime_ms=60000):
     from durable_actors import ActorSession, ActorSessionTransport
 
     transports = []
@@ -61,7 +61,7 @@ def make_session(clock, callback=None):
             project_id="project",
             control_plane_url="https://control.test",
             token=str(len(transports)),
-            expires_at_ms=int(clock.now * 1000 + 60000),
+            expires_at_ms=int(clock.now * 1000 + lifetime_ms),
         )
 
     def create(session):
@@ -136,7 +136,7 @@ def test_session_rejection_invalidates_cached_credentials_and_idle_sessions_stop
     [
         {"project_id": "wrong"},
         {"expires_at_ms": 1004000},
-        {"expires_at_ms": 1200000},
+        {"expires_at_ms": 1306000},
         {"control_plane_url": "http://remote.test"},
         {"token": " "},
     ],
@@ -159,3 +159,16 @@ def test_invalid_sessions_never_construct_a_transport(change):
     ) as session:
         with pytest.raises(ValueError):
             session.invoke("Chat", "one", "read", [])
+
+
+def test_five_minute_session_survives_135_second_idle_without_authorization():
+    clock = Clock()
+    session, transports = make_session(clock, lifetime_ms=300000)
+    with session:
+        session.invoke("Chat", "one", "read", [])
+        clock.now += 135
+        session.invoke("Chat", "one", "read", [])
+        assert len(transports) == 1
+        clock.now += 161
+        session.invoke("Chat", "one", "read", [])
+        assert len(transports) == 2
