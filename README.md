@@ -1,36 +1,14 @@
-<div align="center">
-  <h1 align="center">Durable Actors</h1>
+# Durable Actors
 
-  <p align="center"><strong>Durable state for collaborative apps and AI agents.</strong></p>
-  <p align="center">TypeScript and Python actors. Rust runtime.</p>
+> Open source alternative Durable Objects
 
-  <p align="center">
-    <a href="https://github.com/TerseAI/durable-actors/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/TerseAI/durable-actors?style=flat&amp;logo=github&amp;color=f5a623"></a>
-    <a href="https://www.npmjs.com/package/durable-actors"><img alt="durable-actors on npm" src="https://img.shields.io/npm/v/durable-actors?label=npm&amp;logo=npm&amp;color=cb3837"></a>
-    <a href="https://crates.io/crates/durable-actors"><img alt="durable-actors on crates.io" src="https://img.shields.io/crates/v/durable-actors?logo=rust&amp;color=dea584"></a>
-    <a href="https://github.com/TerseAI/durable-actors/actions/workflows/ci.yml"><img alt="CI status on main" src="https://img.shields.io/github/actions/workflow/status/TerseAI/durable-actors/ci.yml?branch=main&amp;event=push&amp;label=CI&amp;logo=githubactions"></a>
-    <a href="https://github.com/TerseAI/durable-actors/blob/main/LICENSE.md"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  </p>
+If you've been burned by memory limits in Durable Objects, the lack of observability or want to avoid the lock in, Durable Actors is a self-hostable alternative that could work for you!
 
-  <p align="center">
-    <a href="#local-development"><img alt="Quickstart" src="https://img.shields.io/badge/quickstart-local%20development-22c55e?logo=rocket&amp;logoColor=white"></a>
-    <a href="https://github.com/TerseAI/durable-actors/tree/main/docs"><img alt="Documentation" src="https://img.shields.io/badge/docs-Durable%20Actors-2563eb?logo=readthedocs&amp;logoColor=white"></a>
-    <a href="https://useterse.ai"><img alt="Terse website" src="https://img.shields.io/badge/website-useterse.ai-000000"></a>
-    <a href="https://www.linkedin.com/company/terse-inc"><img alt="Terse on LinkedIn" src="https://img.shields.io/badge/LinkedIn-Terse-0a66c2"></a>
-  </p>
+> Use Durable Actors to build persistence and coordination for Software Factories, Multiplayer AI and agent fleets.
 
-  <p align="center">
-    <a href="#local-development">Quickstart</a> ·
-    <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/reference/typescript.md">SDK</a> ·
-    <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.md">HTTP API</a> ·
-    <a href="https://github.com/TerseAI/durable-actors/tree/main/examples">Examples</a> ·
-    <a href="https://github.com/TerseAI/durable-actors/blob/main/CONTRIBUTING.md">Contributing</a>
-  </p>
-</div>
+Get it working end-2-end in minutes. Define your actor class, generate your type-safe client and easily integrate into your existing tech stack.
 
----
-
-Durable Actors provides open-source TypeScript and Python SDKs with a Rust runtime for building apps and AI agents that share persistent state.
+<img width="1599" height="676" alt="o11y-screenshot" src="https://github.com/user-attachments/assets/ac390257-8534-4911-830c-0e9155b36831" />
 
 ### Start with a coding agent
 
