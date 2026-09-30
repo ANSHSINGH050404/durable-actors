@@ -25,9 +25,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
     """Base class for durable actors with typed RPCs and WebSocket hooks.
 
-    Public def methods become synchronous RPCs. Annotated fields persist by
-    default; emitted() also broadcasts their saved changes, and ephemeral() excludes
-    temporary values. Use field defaults or factories instead of a constructor.
+    Public def methods become synchronous RPCs. Every field must declare persisted()
+    or ephemeral(); emitted(persisted(...)) also broadcasts saved changes.
+    Use field defaults or factories instead of a constructor.
 
     Generic parameters describe connection metadata, incoming application
     messages, outgoing application messages, and allowed connection tags. Outgoing

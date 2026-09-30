@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from durable_actors import Actor
+from durable_actors import Actor, persisted
 from durable_actors.codegen import generate_client
 from durable_actors.contract import public_contract
 
@@ -13,7 +13,7 @@ def test_sandbox_options_preserve_actor_types_and_publish_runtime_overrides(tmp_
 
     @sandbox(cpu=2, memory_mib=2048, idle_timeout_ms=60000, regions=["canada"])
     class Agent(Actor):
-        count: int = 0
+        count: int = persisted(0)
 
         def increment(self) -> int:
             self.count += 1

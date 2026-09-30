@@ -1,4 +1,4 @@
-from durable_actors import Actor, ActorSocket, emitted
+from durable_actors import Actor, ActorSocket, emitted, persisted
 from pydantic import BaseModel, Field
 
 
@@ -17,7 +17,7 @@ class Message(BaseModel):
 class Chat(Actor[Member, Message, Message]):
     """A durable chat room with live message history."""
 
-    messages: list[Message] = emitted(default_factory=list)
+    messages: list[Message] = emitted(persisted(default_factory=list))
 
     def append(self, message: Message) -> list[Message]:
         """Save and broadcast a message, returning the complete chat history."""

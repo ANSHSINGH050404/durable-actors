@@ -15,13 +15,13 @@ pnpm install
 uv sync
 ```
 
-Define `src/actors.py`. Annotated fields persist; `emitted()` also broadcasts saved changes.
+Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Wrap persisted fields with `emitted()` to broadcast saved changes.
 
 ```python
-from durable_actors import Actor, emitted
+from durable_actors import Actor, emitted, persisted
 
 class Counter(Actor):
-    count: int = emitted(0)
+    count: int = emitted(persisted(0))
 
     def increment(self, amount: int = 1) -> int:
         self.count += amount

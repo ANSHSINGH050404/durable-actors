@@ -16,9 +16,9 @@ const runtime = process.env.DURABLE_ACTORS_TEST_RUNTIME
 const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))
 )
-const source = `from durable_actors import Actor, emitted
+const source = `from durable_actors import Actor, emitted, persisted
 class Counter(Actor):
-    count: int = emitted(0)
+    count: int = emitted(persisted(0))
     def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
@@ -71,6 +71,11 @@ def use() -> None:
         await assert.rejects(
             run(process.execPath, [cli, "generate", "actors.py"], { cwd: directory, env }),
             /Incompatible return value/u
+        )
+        await writeFile(path.join(directory, "actors.py"), source.replace("emitted(persisted(0))", "0"))
+        await assert.rejects(
+            run(process.execPath, [cli, "generate", "actors.py"], { cwd: directory, env }),
+            /Counter.count: actor fields must declare exactly one of persisted\(\) or ephemeral\(\)/u
         )
     }
 )

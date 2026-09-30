@@ -90,16 +90,20 @@ def _describe_actor(actor: type[Actor[Any, Any, Any, Any]]) -> Definition:
     methods: dict[str, Method] = {}
     reentrant_methods: set[str] = set()
     for name, value in vars(actor).items():
-        if name.startswith("_") or name in fields or name in hints:
+        if (name.startswith("__") and name.endswith("__")) or name in fields or name in hints:
             continue
         if isinstance(value, (staticmethod, classmethod, property)):
+            if name.startswith("_"):
+                continue
             raise ValueError(
                 f"{actor.__name__}.{name}: public accessors and static methods are unsupported"
             )
         if not inspect.isfunction(value):
             raise ValueError(
-                f"{actor.__name__}.{name}: public members must be methods; fields require annotations"
+                f"{actor.__name__}.{name}: members must be methods; fields require annotations"
             )
+        if name.startswith("_"):
+            continue
         if (
             inspect.iscoroutinefunction(value)
             or inspect.isgeneratorfunction(value)
@@ -204,15 +208,19 @@ def documentation(value: object) -> Document:
 def read_field(actor: type[Actor[Any, Any, Any, Any]], name: str, hint: Any) -> Field:
     if name in RESERVED | HOOKS | {"id"}:
         raise ValueError(f"reserved actor field: {name}")
-    default = getattr(actor, name, MISSING)
-    factory: Callable[[], object] | None = None
-    persisted, emittable = True, False
-    if is_field(default):
-        options = default
-        mode = options.metadata.get("durable_actors")
-        persisted, emittable = mode != "ephemeral", mode == "emitted"
-        factory = options.default_factory if options.default_factory is not MISSING else None
-        default = options.default
+    options = getattr(actor, name, MISSING)
+    if not is_field(options) or options.metadata.get("durable_actors") not in (
+        "persisted",
+        "ephemeral",
+    ):
+        raise ValueError(
+            f"{actor.__name__}.{name}: actor fields must declare exactly one of "
+            "persisted() or ephemeral()"
+        )
+    persisted = options.metadata["durable_actors"] == "persisted"
+    emittable = bool(options.metadata.get("durable_actors_emitted"))
+    factory = options.default_factory if options.default_factory is not MISSING else None
+    default = options.default
     if default is MISSING and factory is None:
         raise ValueError(f"{name}: actor fields require defaults")
     if emittable and name.startswith("_"):

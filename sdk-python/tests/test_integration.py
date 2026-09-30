@@ -20,14 +20,14 @@ from durable_actors.codegen import generate_client
 )
 def test_python_actor_generated_client_and_durable_restart(tmp_path):
     (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
-from durable_actors import Actor, sandbox
+from durable_actors import Actor, persisted, sandbox
 import os
 class Count(BaseModel):
     value: int
 @sandbox(cpu=0.5, memory_mib=512, idle_timeout_ms=60000)
 class Counter(Actor):
     'A durable counter.'
-    count: int = 0
+    count: int = persisted(0)
     def increment(self, amount: int = 1) -> Count:
         'Increment the count and return its new value.'
         self.count += amount
@@ -76,11 +76,11 @@ def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
     from durable_actors import StateSnapshot, StateUpdate
 
     (tmp_path / "socket_actors.py").write_text("""from pydantic import BaseModel
-from durable_actors import Actor, ActorSocket, emitted, reentrant
+from durable_actors import Actor, ActorSocket, emitted, persisted, reentrant
 class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
-    count: int = emitted(0)
+    count: int = emitted(persisted(0))
     def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
         socket.set_tags("connected")
     @reentrant
@@ -126,10 +126,10 @@ class Room(Actor[Payload, Payload, Payload]):
     not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_generated_subscription_delivers_state_while_calling_rpcs(tmp_path, monkeypatch):
-    (tmp_path / "actors.py").write_text("""from durable_actors import Actor, emitted
+    (tmp_path / "actors.py").write_text("""from durable_actors import Actor, emitted, persisted
 class Counter(Actor[None, None, None]):
-    count: int = emitted(0)
-    label: str = emitted("ready")
+    count: int = emitted(persisted(0))
+    label: str = emitted(persisted("ready"))
     def increment(self) -> int:
         self.count += 1
         return self.count
@@ -158,9 +158,9 @@ class Counter(Actor[None, None, None]):
 )
 def test_sync_reentrant_rpc_allows_another_rpc_to_release_its_wait(tmp_path, monkeypatch):
     (tmp_path / "actors.py").write_text("""from threading import Event
-from durable_actors import Actor, ephemeral, reentrant
+from durable_actors import Actor, ephemeral, persisted, reentrant
 class Waiting(Actor):
-    count: int = 0
+    count: int = persisted(0)
     entered: Event = ephemeral(default_factory=Event)
     release: Event = ephemeral(default_factory=Event)
     @reentrant
@@ -203,9 +203,9 @@ class Waiting(Actor):
     not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 def test_actor_calls_another_actor_through_a_source_reference(tmp_path):
-    (tmp_path / "relay_actors.py").write_text("""from durable_actors import Actor
+    (tmp_path / "relay_actors.py").write_text("""from durable_actors import Actor, persisted
 class Counter(Actor):
-    count: int = 0
+    count: int = persisted(0)
     def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count

@@ -384,10 +384,10 @@ def test_generated_docstrings_survive_contract_transport(tmp_path, monkeypatch):
 
 
 def test_actor_namespaces_preserve_typed_imports_and_method_types(tmp_path, monkeypatch):
-    from durable_actors import Actor
+    from durable_actors import Actor, persisted
 
     class Counter(Actor):
-        count: int = 0
+        count: int = persisted(0)
 
         def total(self, initial: int = 0, *values: int) -> int:
             return initial + sum(values)
@@ -449,7 +449,7 @@ def test_actor_namespaces_keep_model_and_builtin_names_distinct(tmp_path, monkey
 
     from pydantic import BaseModel
 
-    from durable_actors import Actor
+    from durable_actors import Actor, persisted
 
     class Stub(BaseModel):
         value: int
@@ -458,7 +458,7 @@ def test_actor_namespaces_keep_model_and_builtin_names_distinct(tmp_path, monkey
         value: int
 
     class Names(Actor):
-        payload: State = State(value=0)
+        payload: State = persisted(State(value=0))
 
         def echo(self, value: Stub) -> Stub:
             return value

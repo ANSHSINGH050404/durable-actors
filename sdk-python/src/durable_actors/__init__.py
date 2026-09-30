@@ -11,6 +11,7 @@ from .connection import StateSnapshot as StateSnapshot
 from .connection import StateUpdate as StateUpdate
 from .fields import emitted as emitted
 from .fields import ephemeral as ephemeral
+from .fields import persisted as persisted
 from .generated import UNSET as UNSET
 from .generated import Unset as Unset
 from .json import JsonValue as JsonValue

@@ -27,9 +27,9 @@ def test_hosted_build_installs_dependencies_before_import_and_bundles_resources(
     (project / "src").mkdir()
     (project / "src/actors.py").write_text("""from importlib.resources import files
 from build_dep import initial_count
-from durable_actors import Actor
+from durable_actors import Actor, persisted
 class Counter(Actor):
-    count: int = initial_count
+    count: int = persisted(initial_count)
     def read(self) -> str:
         return f"{self.count}:{files('data').joinpath('message.txt').read_text()}"
 """)

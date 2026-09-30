@@ -5,7 +5,7 @@ import pytest
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
-from durable_actors import Actor, ephemeral, reentrant
+from durable_actors import Actor, ephemeral, persisted, reentrant
 from durable_actors.runtime import ActorRuntime
 
 
@@ -14,7 +14,7 @@ class Value(BaseModel):
 
 
 class Counter(Actor):
-    value: Value = Value(count=0)
+    value: Value = persisted(Value(count=0))
     calls: int = ephemeral(0)
 
     def increment(self, amount: int = 1) -> Value:
@@ -78,7 +78,7 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
     loop = asyncio.get_running_loop()
 
     class Shared(Actor):
-        count: int = 0
+        count: int = persisted(0)
 
         @reentrant
         def wait_and_fail(self) -> None:
@@ -113,7 +113,7 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
     from durable_actors import ActorSocket, emitted
 
     class Room(Actor[Value, Value, Value]):
-        value: Value = emitted(Value(count=0))
+        value: Value = emitted(persisted(Value(count=0)))
 
         def on_message(self, socket: ActorSocket[Value, Value], message: Value) -> None:
             self.value = message
@@ -147,7 +147,7 @@ async def test_sync_handlers_keep_order_and_drain_before_eviction(evict):
     loop = asyncio.get_running_loop()
 
     class Blocking(Actor):
-        count: int = 0
+        count: int = persisted(0)
 
         def hold(self) -> int:
             assert self.id == "one"
@@ -267,7 +267,7 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
     loop = asyncio.get_running_loop()
 
     class Concurrent(Actor):
-        count: int = 0
+        count: int = persisted(0)
 
         @reentrant
         def hold(self, index: int) -> None:

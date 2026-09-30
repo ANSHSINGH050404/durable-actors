@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from durable_actors import Actor, emitted
+from durable_actors import Actor, emitted, persisted
 
 
 class Note(BaseModel):
@@ -15,7 +15,7 @@ class Notebook(Actor):
     Examples may contain """quotes""", backslashes like \notes, and Unicode: café.
     '''
 
-    notes: list[Note] = emitted(default_factory=list)
+    notes: list[Note] = emitted(persisted(default_factory=list))
 
     def save(self, note: Note) -> Note:
         """Save a note and return the saved value.

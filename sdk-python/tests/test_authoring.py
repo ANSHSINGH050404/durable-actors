@@ -1,9 +1,10 @@
+from dataclasses import MISSING, field
 from typing import Annotated, ClassVar, Literal
 
 import pytest
 from pydantic import BaseModel
 
-from durable_actors import Actor, emitted, ephemeral, reentrant
+from durable_actors import Actor, emitted, ephemeral, persisted, reentrant
 from durable_actors.contract import describe_actor, public_contract
 
 
@@ -13,7 +14,7 @@ class Message(BaseModel):
 
 
 class Chat(Actor[Message, Message, Message]):
-    messages: list[Message] = emitted(default_factory=list)
+    messages: list[Message] = emitted(persisted(default_factory=list))
     busy: bool = ephemeral(False)
 
     def append(self, message: Message) -> list[Message]:
@@ -51,11 +52,44 @@ def test_missing_public_annotations_are_rejected():
         describe_actor(Bad)
 
 
-def test_fields_persist_by_default_and_class_variables_are_not_state():
+@pytest.mark.parametrize("name", ["count", "_count"])
+@pytest.mark.parametrize("default", [MISSING, 0, field(default=0), field(default_factory=int)])
+def test_fields_require_an_explicit_persistence_choice(name, default):
+    members = {"__annotations__": {name: int}}
+    if default is not MISSING:
+        members[name] = default
+    actor = type("Unmarked", (Actor,), members)
+
+    with pytest.raises(ValueError, match=rf"Unmarked\.{name}.*persisted\(\).*ephemeral\(\)"):
+        describe_actor(actor)
+
+
+@pytest.mark.parametrize("name", ["count", "_count"])
+def test_unannotated_fields_are_rejected(name):
+    actor = type("Unannotated", (Actor,), {name: 0})
+
+    with pytest.raises(ValueError, match="fields require annotations"):
+        describe_actor(actor)
+
+
+def test_persistence_helpers_cannot_be_combined_or_repeated():
+    for outer in (persisted, ephemeral):
+        for inner in (persisted, ephemeral):
+            with pytest.raises(ValueError, match="exactly one"):
+                outer(inner(0))
+
+
+def test_emission_requires_one_explicit_persisted_field():
+    for value in (0, field(default=0), ephemeral(0), emitted(persisted(0))):
+        with pytest.raises(ValueError, match="persisted.*cannot be repeated"):
+            emitted(value)
+
+
+def test_explicit_persisted_fields_and_class_variables_are_not_state():
     class Counter(Actor):
-        count: int = 0
-        history: list[int] = []
-        _secret: str = "private"
+        count: int = persisted(0)
+        history: list[int] = persisted([])
+        _secret: str = persisted("private")
         version: ClassVar[int] = 1
 
     definition = describe_actor(Counter)
@@ -122,7 +156,6 @@ def test_variadic_rpc_parameters_must_be_last():
 
 
 def test_field_factories_run_on_activation_and_create_fresh_values():
-    from dataclasses import field
     from threading import Lock
 
     resources = []
@@ -133,7 +166,7 @@ def test_field_factories_run_on_activation_and_create_fresh_values():
         return lock
 
     class Guarded(Actor):
-        values: list[int] = field(default_factory=list)
+        values: list[int] = persisted(default_factory=list)
         lock: object = ephemeral(default_factory=create_lock)
 
     public_contract([Guarded])
@@ -194,9 +227,10 @@ def test_contract_uses_serialized_types_for_results():
     assert result["properties"]["doubled"]["type"] == "integer"
 
 
-def test_actor_fields_require_defaults():
+@pytest.mark.parametrize("marker", [persisted, ephemeral])
+def test_actor_fields_require_defaults(marker):
     class Missing(Actor):
-        count: int
+        count: int = marker(MISSING)
 
     with pytest.raises(ValueError, match="require defaults"):
         describe_actor(Missing)
@@ -206,7 +240,7 @@ def test_persisted_field_defaults_honor_annotation_constraints():
     from pydantic import Field
 
     class Invalid(Actor):
-        count: Annotated[int, Field(ge=0)] = -1
+        count: Annotated[int, Field(ge=0)] = persisted(-1)
 
     with pytest.raises(ValueError, match="greater than or equal"):
         describe_actor(Invalid)
@@ -214,7 +248,7 @@ def test_persisted_field_defaults_honor_annotation_constraints():
 
 def test_emitted_fields_must_be_public():
     class Private(Actor):
-        _secret: str = emitted("private")
+        _secret: str = emitted(persisted("private"))
 
     with pytest.raises(ValueError, match="must be public"):
         describe_actor(Private)
@@ -230,17 +264,19 @@ def test_field_helpers_preserve_static_value_types(tmp_path):
     actors.write_text(source)
     invalid = tmp_path / "invalid.py"
     invalid.write_text("""from actors import TypedActor
-from durable_actors import emitted, ephemeral
+from durable_actors import emitted, ephemeral, persisted
 
-bad_default: int = emitted("bad")
+bad_default: int = emitted(persisted("bad"))
 bad_factory: int = ephemeral(default_factory=list)
+bad_persisted_default: int = persisted("bad")
+bad_persisted_factory: int = persisted(default_factory=list)
 
 def misuse(actor: TypedActor) -> None:
     actor.messages.append(1)
     actor.busy = "bad"
 """)
     for checker, flags in (("mypy", ["--strict"]), ("pyright", [])):
-        for target, expected_errors in ((actors, 0), (invalid, 4)):
+        for target, expected_errors in ((actors, 0), (invalid, 6)):
             result = subprocess.run(
                 [sys.executable, "-m", checker, *flags, str(target)],
                 cwd=tmp_path,
@@ -249,7 +285,7 @@ def misuse(actor: TypedActor) -> None:
             )
             assert result.returncode == bool(expected_errors), result.stdout + result.stderr
             if expected_errors:
-                assert "4 errors" in result.stdout, result.stdout
+                assert "6 errors" in result.stdout, result.stdout
 
 
 def test_subscription_method_name_is_reserved():

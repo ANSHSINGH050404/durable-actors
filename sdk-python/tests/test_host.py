@@ -16,9 +16,9 @@ async def test_artifact_attaches_invokes_and_rehydrates_in_a_fresh_python_proces
 ):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "actors.py").write_text("""from durable_actors import Actor
+    (project / "actors.py").write_text("""from durable_actors import Actor, persisted
 class Counter(Actor):
-    count: int = 0
+    count: int = persisted(0)
     def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
@@ -116,9 +116,9 @@ async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path
     project.mkdir()
     (project / "eviction_actors.py").write_text("""import os
 from threading import Event
-from durable_actors import Actor, reentrant
+from durable_actors import Actor, persisted, reentrant
 class Counter(Actor):
-    count: int = 0
+    count: int = persisted(0)
     @reentrant
     def hold(self) -> None:
         self.broadcast(os.getpid())

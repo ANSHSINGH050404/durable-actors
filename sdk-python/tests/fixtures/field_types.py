@@ -1,13 +1,13 @@
 from threading import Lock
 from typing import assert_type
 
-from durable_actors import Actor, ActorSocket, emitted, ephemeral, reentrant
+from durable_actors import Actor, ActorSocket, emitted, ephemeral, persisted, reentrant
 
 
 class TypedActor(Actor[str, str, str]):
-    count: int = 0
-    version: int = emitted(0)
-    messages: list[str] = emitted(default_factory=list)
+    count: int = persisted(0)
+    version: int = emitted(persisted(0))
+    messages: list[str] = emitted(persisted(default_factory=list))
     busy: bool = ephemeral(False)
     lock: Lock = ephemeral(default_factory=Lock)
 
