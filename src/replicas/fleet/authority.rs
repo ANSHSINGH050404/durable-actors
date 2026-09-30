@@ -55,13 +55,13 @@ impl Authority {
         Ok(())
     }
 
-    pub async fn retire_if_inactive(&self, prefix: &str, disrupted: bool) -> Result<bool> {
+    pub async fn retire_if_inactive(&self, prefix: &str) -> Result<bool> {
         let (key, object, owner, epoch) = self.owner(prefix).await?;
         ensure!(epoch <= owner.epoch, "replica group is ahead of ownership");
         if epoch < owner.epoch || owner.sealed {
             return Ok(true);
         }
-        if !disrupted && owner.lease.expires_at_ms > self.clock.now_ms()? {
+        if owner.lease.expires_at_ms > self.clock.now_ms()? {
             return Ok(false);
         }
         let mut value: serde_json::Value = serde_json::from_slice(&object.bytes)?;

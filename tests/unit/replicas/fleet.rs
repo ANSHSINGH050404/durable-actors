@@ -8,6 +8,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+#[path = "failover.rs"]
+mod failover;
+
 struct Nodes {
     deleted: Mutex<Vec<String>>,
 }
@@ -90,7 +93,26 @@ impl ReplicaPeers for Peers {
             .get(&replica.id)
             .cloned()
             .context("original disk lost")?;
-        Ok(bytes.map(|bytes| (format!("{prefix}1.json"), bytes)))
+        bytes
+            .map(|bytes| {
+                Ok((
+                    format!(
+                        "{prefix}{}.json",
+                        crate::state_log::StateSnapshot::decode(&bytes)?.state_version
+                    ),
+                    bytes,
+                ))
+            })
+            .transpose()
+    }
+    async fn seed(&self, replica: &ReplicaPlacement, _: &str, bytes: Bytes) -> Result<()> {
+        *self
+            .copies
+            .lock()
+            .unwrap()
+            .get_mut(&replica.id)
+            .context("replica missing")? = Some(bytes);
+        Ok(())
     }
     async fn flush(&self, replica: &ReplicaPlacement, prefix: &str) -> Result<()> {
         let bytes = self
@@ -104,7 +126,11 @@ impl ReplicaPeers for Peers {
         self.archive
             .write(&super::super::record::Batch {
                 prefix: prefix.into(),
-                records: vec![super::super::record::Record::encode(1, &bytes, None)?],
+                records: vec![super::super::record::Record::encode(
+                    crate::state_log::StateSnapshot::decode(&bytes)?.state_version,
+                    &bytes,
+                    None,
+                )?],
             })
             .await?;
         Ok(())
@@ -133,6 +159,10 @@ async fn retirement_keeps_original_copies_until_final_archive_is_verified_and_su
         let actor = crate::actor::ActorKey { project_id:"p".into(),actor_name:"Counter".into(),actor_id:"one".into() };
         let prefix = format!("{}{:032x}/",crate::storage_paths::snapshots(&actor)?,1);
         authority.compare_and_swap(&crate::storage_paths::owner(&actor.storage_key())?,None,serde_json::to_vec(&serde_json::json!({"actor":actor,"epoch":1,"sealed":false,"lease":{"id":"host","session_id":"session","route":"http://host","expires_at_ms":100000}}))?).await?;
+        fleet.registry.reserve_spares(&fleet.zones, 3, 3).await?;
+        for pod in fleet.registry.unassigned().await? {
+            fleet.registry.update_pod(&nodes.ensure(&pod, None, &[]).await?).await?;
+        }
         let group = fleet.prepare(&prefix).await?;
         assert_eq!(group.replicas.len(),3);
         let bytes: Bytes = crate::state_log::StateSnapshot::new(1,1,"write".into(),serde_json::json!({"count":42}),serde_json::json!(42))?.encode()?.into();
@@ -175,10 +205,17 @@ async fn losing_all_original_copies_never_turns_an_old_archive_into_a_final_chec
         let nodes = Arc::new(Nodes {
             deleted: Mutex::new(vec![]),
         });
-        let group = registry.claim(&prefix, &["us-west4-a".into()]).await?;
-        let pod = nodes.ensure(&group.pods[0], Some(&prefix), &[]).await?;
-        registry.update_pod(&pod).await?;
-        registry.ready(&prefix).await?;
+        registry
+            .reserve_spares(&["us-west4-a".into()], 1, 1)
+            .await?;
+        let pod = registry.unassigned().await?.remove(0);
+        registry
+            .update_pod(&nodes.ensure(&pod, None, &[]).await?)
+            .await?;
+        let mut update = registry.lock(&prefix).await?;
+        update.claim(&["us-west4-a".into()], &[pod.name]).await?;
+        update.ready().await?;
+        drop(update);
         let fleet = ReplicaFleet {
             registry,
             pods: nodes.clone(),
@@ -190,7 +227,7 @@ async fn losing_all_original_copies_never_turns_an_old_archive_into_a_final_chec
             max_starting: 1,
         };
         assert!(fleet.finish(&prefix).await.is_err());
-        assert!(!fleet.group(&prefix).await?.archived);
+        assert_ne!(fleet.registry.lookup(&prefix).await?.state, "archived");
         assert!(nodes.deleted.lock().unwrap().is_empty());
         Ok(())
     })
@@ -203,6 +240,344 @@ fn archived_state_uses_compact_binary_encoding_on_the_directory_protocol() -> Re
         serde_json::from_value(serde_json::json!({"groups":[],"keys":[],"data":"AAEC/w=="}))?;
     assert_eq!(serde_json::to_value(reply)?["data"], "AAEC/w==");
     Ok(())
+}
+
+struct Fixture {
+    _directory: tempfile::TempDir,
+    fleet: ReplicaFleet,
+    bucket: Arc<ArchiveBucket>,
+    peers: Arc<Peers>,
+    prefix: String,
+}
+
+impl Fixture {
+    async fn new(url: &str) -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        let bucket = Arc::new(ArchiveBucket {
+            disk: FileBucket::new(directory.path().to_path_buf())?,
+            fail: AtomicBool::new(false),
+        });
+        let peers = Arc::new(Peers {
+            archive: Archive(bucket.clone()),
+            copies: Mutex::new(Default::default()),
+        });
+        let fleet = ReplicaFleet {
+            registry: Registry::new(PostgresDatabase::lazy(url)?),
+            pods: Arc::new(Nodes {
+                deleted: Mutex::new(vec![]),
+            }),
+            peers: peers.clone(),
+            authority: Authority::new(bucket.clone(), Arc::new(Time)),
+            archive: Archive(bucket.clone()),
+            zones: vec![
+                "us-west4-a".into(),
+                "us-west4-b".into(),
+                "us-west4-c".into(),
+            ],
+            idle: 0,
+            max_starting: 3,
+        };
+        let actor = crate::actor::ActorKey {
+            project_id: "project".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let prefix = format!("{}{:032x}/", crate::storage_paths::snapshots(&actor)?, 1);
+        bucket.compare_and_swap(&crate::storage_paths::owner(&actor.storage_key())?, None,
+            serde_json::to_vec(&serde_json::json!({"actor":actor,"epoch":1,"sealed":false,"lease":{"id":"host","session_id":"session","route":"http://host","expires_at_ms":100000}}))?).await?;
+        Ok(Self {
+            _directory: directory,
+            fleet,
+            bucket,
+            peers,
+            prefix,
+        })
+    }
+
+    async fn warm(&self, zones: &[&str]) -> Result<()> {
+        let zones = zones
+            .iter()
+            .map(|zone| (*zone).to_owned())
+            .collect::<Vec<_>>();
+        self.fleet
+            .registry
+            .reserve_spares(&zones, zones.len(), zones.len())
+            .await?;
+        for pod in self.fleet.registry.unassigned().await? {
+            let ready = self.fleet.pods.ensure(&pod, None, &[]).await?;
+            self.fleet.registry.update_pod(&ready).await?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(version: u64) -> Result<Bytes> {
+        Ok(crate::state_log::StateSnapshot::new(
+            version,
+            1,
+            format!("write-{version}"),
+            serde_json::json!({"count":version}),
+            serde_json::json!(version),
+        )?
+        .encode()?
+        .into())
+    }
+
+    async fn write(&self, version: u64) -> Result<DirectoryReply> {
+        use base64::Engine;
+        let command = serde_json::from_value(serde_json::json!({"Write": {
+            "object": format!("{}{version}.json", self.prefix),
+            "data": base64::engine::general_purpose::STANDARD.encode(Self::snapshot(version)?)
+        }}))?;
+        self.fleet.execute(command).await
+    }
+}
+
+#[tokio::test]
+async fn cold_activation_can_write_and_recover_without_replica_capacity() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        let group = fixture.fleet.prepare(&fixture.prefix).await?;
+        assert!(group.replicas.is_empty());
+        fixture.write(1).await?;
+        fixture.fleet.finish(&fixture.prefix).await?;
+        let snapshots = super::super::directory::DedicatedSnapshots::new(
+            Arc::new(fixture.fleet),
+            "unused".into(),
+        )?;
+        assert_eq!(
+            snapshots.latest(&fixture.prefix).await?.unwrap().1,
+            Fixture::snapshot(1)?
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn replica_loss_archives_the_old_tail_before_continuing_writes() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture
+            .warm(&["us-west4-a", "us-west4-b", "us-west4-c"])
+            .await?;
+        let group = fixture.fleet.prepare(&fixture.prefix).await?;
+        assert_eq!(group.replicas.len(), 3);
+        for copy in fixture.peers.copies.lock().unwrap().values_mut() {
+            *copy = Some(Fixture::snapshot(1)?);
+        }
+        fixture
+            .peers
+            .copies
+            .lock()
+            .unwrap()
+            .remove(&group.replicas[0].id);
+        fixture.write(2).await?;
+        assert_eq!(
+            fixture
+                .fleet
+                .archive
+                .get(&fixture.prefix, 1)
+                .await?
+                .unwrap(),
+            Fixture::snapshot(1)?
+        );
+        assert_eq!(
+            fixture
+                .fleet
+                .archive
+                .get(&fixture.prefix, 2)
+                .await?
+                .unwrap(),
+            Fixture::snapshot(2)?
+        );
+        fixture.fleet.finish(&fixture.prefix).await?;
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn fallback_keeps_the_recovery_requirement_when_all_copies_are_lost() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture
+            .warm(&["us-west4-a", "us-west4-b", "us-west4-c"])
+            .await?;
+        fixture.fleet.prepare(&fixture.prefix).await?;
+        fixture.peers.copies.lock().unwrap().clear();
+        assert!(fixture.write(2).await.is_err());
+        assert!(fixture.fleet.finish(&fixture.prefix).await.is_err());
+        assert!(
+            fixture
+                .fleet
+                .archive
+                .get(&fixture.prefix, 2)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn bucket_fallback_requires_a_successful_durable_write() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture.fleet.prepare(&fixture.prefix).await?;
+        fixture.bucket.fail.store(true, Ordering::SeqCst);
+        assert!(fixture.write(1).await.is_err());
+        fixture.bucket.fail.store(false, Ordering::SeqCst);
+        fixture.write(1).await?;
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn replacement_group_uses_surviving_zones_and_is_seeded_before_publication() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture.fleet.prepare(&fixture.prefix).await?;
+        fixture.write(1).await?;
+        fixture.warm(&["us-west4-b", "us-west4-c"]).await?;
+        let reply = fixture.write(2).await?;
+        let group = &reply.groups[0];
+        assert_eq!(
+            group
+                .replicas
+                .iter()
+                .map(|copy| copy.zone.as_str())
+                .collect::<Vec<_>>(),
+            vec!["us-west4-b", "us-west4-c"]
+        );
+        for copy in &group.replicas {
+            assert_eq!(
+                fixture.peers.copies.lock().unwrap()[&copy.id],
+                Some(Fixture::snapshot(2)?)
+            );
+        }
+        fixture.fleet.finish(&fixture.prefix).await?;
+        assert_eq!(
+            fixture
+                .fleet
+                .registry
+                .lookup(&fixture.prefix)
+                .await?
+                .checkpoint
+                .unwrap()
+                .object,
+            format!("{}2.json", fixture.prefix)
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn one_available_zone_keeps_bucket_durability() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture
+            .warm(&["us-west4-b", "us-west4-b", "us-west4-b"])
+            .await?;
+        assert!(
+            fixture
+                .fleet
+                .prepare(&fixture.prefix)
+                .await?
+                .replicas
+                .is_empty()
+        );
+        fixture.write(1).await?;
+        assert_eq!(
+            fixture
+                .fleet
+                .archive
+                .get(&fixture.prefix, 1)
+                .await?
+                .unwrap(),
+            Fixture::snapshot(1)?
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn failed_archive_transition_is_retried_after_control_plane_restart() -> Result<()> {
+    with_postgres(async |db| {
+        let mut fixture = Fixture::new(&db.url).await?;
+        fixture
+            .warm(&["us-west4-a", "us-west4-b", "us-west4-c"])
+            .await?;
+        fixture.fleet.prepare(&fixture.prefix).await?;
+        for copy in fixture.peers.copies.lock().unwrap().values_mut() {
+            *copy = Some(Fixture::snapshot(1)?);
+        }
+        fixture.bucket.fail.store(true, Ordering::SeqCst);
+        assert!(fixture.write(2).await.is_err());
+        assert_eq!(
+            fixture.fleet.registry.lookup(&fixture.prefix).await?.state,
+            "switching"
+        );
+        fixture.fleet.registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
+        fixture.bucket.fail.store(false, Ordering::SeqCst);
+        fixture.write(2).await?;
+        fixture.fleet.finish(&fixture.prefix).await?;
+        assert_eq!(
+            fixture
+                .fleet
+                .registry
+                .lookup(&fixture.prefix)
+                .await?
+                .checkpoint
+                .unwrap()
+                .object,
+            format!("{}2.json", fixture.prefix)
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn bucket_writes_reject_stale_owners_conflicting_retries_and_gaps() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = Fixture::new(&db.url).await?;
+        fixture.fleet.prepare(&fixture.prefix).await?;
+        fixture.write(1).await?;
+        fixture.write(1).await?;
+        assert!(fixture.write(3).await.is_err());
+        let object = format!("{}1.json", fixture.prefix);
+        let different = crate::state_log::StateSnapshot::new(
+            1,
+            1,
+            "different".into(),
+            serde_json::json!({}),
+            serde_json::Value::Null,
+        )?
+        .encode()?;
+        assert!(
+            fixture
+                .fleet
+                .write(&object, different.into())
+                .await
+                .is_err()
+        );
+        let actor = crate::storage_paths::actor_from_snapshot(&object)?;
+        let key = crate::storage_paths::owner(&actor.storage_key())?;
+        let previous = fixture.bucket.get(&key).await?.unwrap();
+        let mut owner: serde_json::Value = serde_json::from_slice(&previous.bytes)?;
+        owner["epoch"] = 2.into();
+        fixture
+            .bucket
+            .compare_and_swap(&key, Some(previous.generation), serde_json::to_vec(&owner)?)
+            .await?;
+        assert!(fixture.write(2).await.is_err());
+        Ok(())
+    })
+    .await
 }
 
 struct ActivationOwner {
@@ -231,27 +606,22 @@ enum DuringAssignment {
     Nothing,
     Fence,
     Expire,
-    Close,
     Fail,
 }
 struct ActivationPeers {
     owner: Arc<ActivationOwner>,
-    registry: Registry,
     action: DuringAssignment,
     assigned: std::sync::atomic::AtomicUsize,
 }
 #[async_trait]
 impl ReplicaPeers for ActivationPeers {
-    async fn assign(&self, _: &ReplicaPlacement, assignment: &Assignment) -> Result<()> {
+    async fn assign(&self, _: &ReplicaPlacement, _assignment: &Assignment) -> Result<()> {
         let assigned = self.assigned.fetch_add(1, Ordering::SeqCst);
         match self.action {
             DuringAssignment::Nothing => {}
             DuringAssignment::Fence => self.owner.value.lock().unwrap()["epoch"] = 2.into(),
             DuringAssignment::Expire => {
                 self.owner.value.lock().unwrap()["lease"]["expires_at_ms"] = 0.into()
-            }
-            DuringAssignment::Close => {
-                self.registry.close(&assignment.prefix).await?;
             }
             DuringAssignment::Fail if assigned > 0 => anyhow::bail!("replica unavailable"),
             DuringAssignment::Fail => {}
@@ -260,6 +630,9 @@ impl ReplicaPeers for ActivationPeers {
     }
     async fn seal(&self, _: &ReplicaPlacement, _: &str) -> Result<Option<(String, Bytes)>> {
         anyhow::bail!("unexpected seal")
+    }
+    async fn seed(&self, _: &ReplicaPlacement, _: &str, _: Bytes) -> Result<()> {
+        anyhow::bail!("unexpected seed")
     }
     async fn flush(&self, _: &ReplicaPlacement, _: &str) -> Result<()> {
         anyhow::bail!("unexpected flush")
@@ -290,7 +663,6 @@ impl ActivationFixture {
         let registry = Registry::new(PostgresDatabase::lazy(url)?);
         let peers = Arc::new(ActivationPeers {
             owner: owner.clone(),
-            registry: registry.clone(),
             action,
             assigned: 0.into(),
         });
@@ -346,6 +718,7 @@ async fn activation_authorizes_once_and_rechecks_ownership_after_assigning_all_r
 -> Result<()> {
     with_postgres(async |db| {
         let fixture = ActivationFixture::new(&db.url, DuringAssignment::Nothing)?;
+        fixture.warm_spares().await?;
         let reply = fixture.activate().await?;
         assert_eq!(reply.groups[0].replicas.len(), 3);
         assert_eq!(fixture.peers.assigned.load(Ordering::SeqCst), 3);
@@ -391,22 +764,13 @@ async fn activation_rejects_foreign_actor_host_and_session_before_claiming_repli
 }
 
 #[tokio::test]
-async fn activation_never_publishes_ready_after_fencing_expiry_closure_or_partial_assignment()
--> Result<()> {
-    for action in [
-        DuringAssignment::Fence,
-        DuringAssignment::Expire,
-        DuringAssignment::Close,
-        DuringAssignment::Fail,
-    ] {
+async fn activation_never_publishes_ready_after_fencing_or_expiry() -> Result<()> {
+    for action in [DuringAssignment::Fence, DuringAssignment::Expire] {
         with_postgres(async |db| {
             let fixture = ActivationFixture::new(&db.url, action)?;
             fixture.warm_spares().await?;
             assert!(fixture.activate().await.is_err());
             assert!(fixture.peers.assigned.load(Ordering::SeqCst) > 0);
-            if matches!(action, DuringAssignment::Fail) {
-                assert_eq!(fixture.peers.assigned.load(Ordering::SeqCst), 2);
-            }
             let group = fixture.fleet.registry.lookup(&fixture.prefix).await?;
             assert!(!group.ever_ready);
             assert_ne!(group.state, "ready");
@@ -418,35 +782,31 @@ async fn activation_never_publishes_ready_after_fencing_expiry_closure_or_partia
 }
 
 #[tokio::test]
-async fn preparing_an_unchanged_claimed_pod_needs_no_database_connection() -> Result<()> {
+async fn partial_assignment_uses_bucket_mode_without_publishing_an_incomplete_group() -> Result<()>
+{
+    with_postgres(async |db| {
+        let fixture = ActivationFixture::new(&db.url, DuringAssignment::Fail)?;
+        fixture.warm_spares().await?;
+        let reply = fixture.activate().await?;
+        assert!(reply.groups[0].replicas.is_empty());
+        assert_eq!(fixture.peers.assigned.load(Ordering::SeqCst), 2);
+        let group = fixture.fleet.registry.lookup(&fixture.prefix).await?;
+        assert_eq!(group.state, "bucket");
+        assert!(!group.ever_ready);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn preparing_a_ready_group_does_not_repeat_assignment() -> Result<()> {
     with_postgres(async |db| {
         let fixture = ActivationFixture::new(&db.url, DuringAssignment::Nothing)?;
-        let claimed = fixture
-            .fleet
-            .registry
-            .claim(&fixture.prefix, &fixture.fleet.zones)
-            .await?;
-        let pod = fixture
-            .fleet
-            .pods
-            .ensure(&claimed.pods[0], Some(&fixture.prefix), &[])
-            .await?;
-        fixture.fleet.registry.update_pod(&pod).await?;
-        let database = PostgresDatabase::connect(&db.url).await?;
-        let mut occupied = Vec::new();
-        for _ in 0..8 {
-            occupied.push(database.connection().await?);
-        }
-        let fleet = ReplicaFleet {
-            registry: Registry::new(database),
-            ..fixture.fleet
-        };
-        let prepared = tokio::time::timeout(
-            Duration::from_secs(1),
-            fleet.prepare_pod(&pod, &fixture.prefix, &[]),
-        )
-        .await??;
-        assert_eq!(prepared, pod);
+        fixture.warm_spares().await?;
+        let first = fixture.activate().await?;
+        let second = fixture.activate().await?;
+        assert_eq!(first.groups[0].replicas, second.groups[0].replicas);
+        assert_eq!(fixture.peers.assigned.load(Ordering::SeqCst), 3);
         Ok(())
     })
     .await

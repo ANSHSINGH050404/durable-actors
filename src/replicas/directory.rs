@@ -19,6 +19,7 @@ pub(crate) enum DirectoryCommand {
     Prepare { prefix: String },
     Lookup { prefix: String },
     Finish { prefix: String },
+    Write { object: String, data: String },
     ReadArchive { object: String },
     ListArchive { prefix: String },
     Groups { prefix: String },
@@ -31,7 +32,7 @@ impl DirectoryCommand {
             | Self::Finish { prefix }
             | Self::ListArchive { prefix }
             | Self::Groups { prefix } => prefix,
-            Self::ReadArchive { object } => object,
+            Self::ReadArchive { object } | Self::Write { object, .. } => object,
         }
     }
 }
@@ -51,7 +52,8 @@ pub(crate) trait ReplicaDirectory: Send + Sync {
 pub(crate) struct DedicatedSnapshots {
     directory: Arc<dyn ReplicaDirectory>,
     token: String,
-    groups: Option<moka::future::Cache<String, Arc<ReplicaSet>>>,
+    groups: Option<moka::future::Cache<String, (Vec<ReplicaPlacement>, Arc<ReplicaSet>)>>,
+    writing: Option<tokio::sync::Mutex<()>>,
     http: reqwest::Client,
 }
 impl DedicatedSnapshots {
@@ -59,6 +61,7 @@ impl DedicatedSnapshots {
         Ok(Self {
             directory,
             token,
+            writing: Some(tokio::sync::Mutex::new(())),
             http: super::client::ReplicaClient::http()?,
             groups: Some(
                 moka::future::Cache::builder()
@@ -72,14 +75,22 @@ impl DedicatedSnapshots {
         Ok(Self {
             directory,
             token,
+            writing: None,
             http: super::client::ReplicaClient::http()?,
             groups: None,
         })
     }
 
+    async fn lock(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        match &self.writing {
+            Some(writing) => Some(writing.lock().await),
+            None => None,
+        }
+    }
+
     async fn cached(&self, prefix: &str) -> Option<Arc<ReplicaSet>> {
         match &self.groups {
-            Some(groups) => groups.get(prefix).await,
+            Some(groups) => groups.get(prefix).await.map(|(_, store)| store),
             None => None,
         }
     }
@@ -98,7 +109,10 @@ impl DedicatedSnapshots {
 
     async fn live(&self, group: &Group) -> Result<Arc<ReplicaSet>> {
         ensure!(!group.archived, "replica group is archived");
-        if let Some(store) = self.cached(&group.prefix).await {
+        if let Some(groups) = &self.groups
+            && let Some((replicas, store)) = groups.get(&group.prefix).await
+            && replicas == group.replicas
+        {
             return Ok(store);
         }
         let store = Arc::new(ReplicaSet::from_replicas(
@@ -107,7 +121,12 @@ impl DedicatedSnapshots {
             self.http.clone(),
         )?);
         if let Some(groups) = &self.groups {
-            groups.insert(group.prefix.clone(), store.clone()).await;
+            groups
+                .insert(
+                    group.prefix.clone(),
+                    (group.replicas.clone(), store.clone()),
+                )
+                .await;
         }
         Ok(store)
     }
@@ -138,6 +157,7 @@ impl DedicatedSnapshots {
 #[async_trait]
 impl SnapshotStore for DedicatedSnapshots {
     async fn prepare(&self, prefix: &str) -> Result<()> {
+        let _writing = self.lock().await;
         let group = self
             .directory
             .execute(DirectoryCommand::Prepare {
@@ -148,11 +168,14 @@ impl SnapshotStore for DedicatedSnapshots {
             .into_iter()
             .next()
             .context("replica group missing")?;
-        self.live(&group).await?;
+        if !group.replicas.is_empty() {
+            self.live(&group).await?;
+        }
         Ok(())
     }
 
     async fn seal(&self, prefix: &str) -> Result<()> {
+        let _writing = self.lock().await;
         self.directory
             .execute(DirectoryCommand::Finish {
                 prefix: prefix.into(),
@@ -165,18 +188,51 @@ impl SnapshotStore for DedicatedSnapshots {
     }
 
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+        let _writing = self.lock().await;
         let (prefix, _) = super::client::position(object)?;
         let store = match self.cached(&prefix).await {
-            Some(store) => store,
-            None => self.live(&self.lookup(&prefix).await?).await?,
+            Some(store) => Some(store),
+            None => {
+                let group = self.lookup(&prefix).await?;
+                if group.replicas.is_empty() {
+                    None
+                } else {
+                    Some(self.live(&group).await?)
+                }
+            }
         };
-        store.put(object, bytes).await
+        if let Some(store) = store {
+            match store.put(object, bytes.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::warn!(%error, %prefix, "replica write requires durable fallback")
+                }
+            }
+        }
+        if let Some(groups) = &self.groups {
+            groups.invalidate(&prefix).await;
+        }
+        let group = self
+            .directory
+            .execute(DirectoryCommand::Write {
+                object: object.into(),
+                data: STANDARD.encode(&bytes),
+            })
+            .await?
+            .groups
+            .into_iter()
+            .next()
+            .context("fallback group missing")?;
+        if !group.replicas.is_empty() {
+            self.live(&group).await?;
+        }
+        Ok(())
     }
 
     async fn get(&self, object: &str) -> Result<Option<Bytes>> {
         let (prefix, _) = super::client::position(object)?;
         let group = self.lookup(&prefix).await?;
-        if group.archived {
+        if group.archived || group.replicas.is_empty() {
             return self.archive_get(object).await;
         }
         self.live(&group).await?.get(object).await
@@ -184,7 +240,7 @@ impl SnapshotStore for DedicatedSnapshots {
 
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
         let group = self.lookup(prefix).await?;
-        if !group.archived {
+        if !group.archived && !group.replicas.is_empty() {
             return self.live(&group).await?.latest(prefix).await;
         }
         match group.checkpoint {
@@ -214,7 +270,7 @@ impl SnapshotStore for DedicatedSnapshots {
             .await?
             .groups
         {
-            if !group.archived {
+            if !group.archived && !group.replicas.is_empty() {
                 keys.extend(self.live(&group).await?.list(&group.prefix).await?);
             }
         }

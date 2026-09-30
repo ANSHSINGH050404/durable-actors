@@ -13,7 +13,7 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(crate) struct GkeConfig {
     pub namespace: String,
-    pub zones: BTreeMap<String, String>,
+    pub zones: BTreeMap<String, Vec<String>>,
     pub public_origin: String,
 }
 
@@ -66,11 +66,11 @@ impl Kubernetes {
         Ok(ready)
     }
 
-    fn zone(&self, region: &str) -> Result<&str> {
+    fn zones(&self, region: &str) -> Result<&[String]> {
         self.config
             .zones
             .get(region)
-            .map(String::as_str)
+            .map(Vec::as_slice)
             .with_context(|| format!("no GKE zone configured for {region}"))
     }
 }
@@ -83,7 +83,7 @@ impl SandboxCluster for Kubernetes {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let pod = spare_pod(request, self.zone(&request.canonical_region)?, &token)?;
+        let pod = spare_pod(request, self.zones(&request.canonical_region)?, &token)?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
             .status
@@ -213,8 +213,8 @@ async fn reap_completed(pods: &Api<Pod>) -> Result<()> {
     Ok(())
 }
 
-fn spare_pod(request: &CreateSpareRequest, zone: &str, token: &str) -> Result<Pod> {
-    let mut pod = base_pod(&request.name, &request.image_ref, zone, &request.resources);
+fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {
+    let mut pod = base_pod(&request.name, &request.image_ref, zones, &request.resources);
     pod["metadata"]["annotations"] =
         json!({"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"});
     pod["spec"]["containers"][0]["env"] = json!([
@@ -226,13 +226,20 @@ fn spare_pod(request: &CreateSpareRequest, zone: &str, token: &str) -> Result<Po
     Ok(serde_json::from_value(pod)?)
 }
 
-fn base_pod(name: &str, image: &str, zone: &str, resources: &ResourceLimits) -> serde_json::Value {
+fn base_pod(
+    name: &str,
+    image: &str,
+    zones: &[String],
+    resources: &ResourceLimits,
+) -> serde_json::Value {
     json!({
         "apiVersion":"v1", "kind":"Pod", "metadata":{"name":name, "labels":{"app.kubernetes.io/managed-by":"terse", "terse.ai/purpose":"actor"}},
         "spec":{
             "runtimeClassName":"gvisor", "automountServiceAccountToken":false, "serviceAccountName":"sandbox",
             "restartPolicy":"Never", "terminationGracePeriodSeconds":15,
-            "nodeSelector":{"topology.kubernetes.io/zone":zone, "sandbox.gke.io/runtime":"gvisor"},
+            "nodeSelector":{"sandbox.gke.io/runtime":"gvisor"},
+            "affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":zones}]}]}}},
+            "topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"terse.ai/purpose":"actor"}}}],
             "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
             "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/usr/local/bin/durable-actors"],
                 "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},

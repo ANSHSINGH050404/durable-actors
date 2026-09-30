@@ -24,8 +24,8 @@ async fn concurrent_claims_are_exclusive_and_closing_is_permanent() -> Result<()
         }
         let zones = vec!["us-west4-a".to_owned(); 3];
         let (first, second) = tokio::join!(
-            registry.claim("first/", &zones),
-            registry.claim("second/", &zones)
+            claim(&registry, "first/", &zones),
+            claim(&registry, "second/", &zones)
         );
         let first = first?;
         let second = second?;
@@ -53,10 +53,11 @@ async fn concurrent_claims_are_exclusive_and_closing_is_permanent() -> Result<()
                 .iter()
                 .all(|p| second.pods.iter().all(|q| p.name != q.name))
         );
-        registry.ready("first/").await?;
-        assert!(registry.close("first/").await?.ever_ready);
-        assert!(registry.ready("first/").await.is_err());
-        assert!(registry.claim("first/", &zones).await.is_err());
+        registry.lock("first/").await?.ready().await?;
+        registry.lock("first/").await?.close().await?;
+        assert!(registry.lookup("first/").await?.ever_ready);
+        assert!(registry.lock("first/").await?.ready().await.is_err());
+        assert!(claim(&registry, "first/", &zones).await.is_err());
         let restarted = Registry::new(PostgresDatabase::lazy(&db.url)?);
         assert_eq!(restarted.lookup("first/").await?.state, "closing");
         Ok(())
@@ -68,16 +69,114 @@ async fn concurrent_claims_are_exclusive_and_closing_is_permanent() -> Result<()
 async fn closing_before_claim_fences_delayed_creation() -> Result<()> {
     with_postgres(async |db| {
         let registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
-        let group = registry.close("late/").await?;
+        registry.lock("late/").await?.close().await?;
+        let group = registry.lookup("late/").await?;
         assert!(!group.ever_ready);
-        registry.archived("late/", None).await?;
+        registry.lock("late/").await?.archived(None).await?;
         assert!(
-            registry
-                .claim("late/", &["us-west4-a".into()])
+            claim(&registry, "late/", &["us-west4-a".into()])
                 .await
                 .is_err()
         );
         assert_eq!(registry.lookup("late/").await?.state, "archived");
+        Ok(())
+    })
+    .await
+}
+
+async fn claim(registry: &Registry, prefix: &str, zones: &[String]) -> Result<GroupRecord> {
+    let eligible = registry
+        .unassigned()
+        .await?
+        .into_iter()
+        .map(|pod| pod.name)
+        .collect::<Vec<_>>();
+    registry.lock(prefix).await?.claim(zones, &eligible).await?;
+    registry.lookup(prefix).await
+}
+
+#[tokio::test]
+async fn a_stuck_zone_cannot_consume_every_replica_start_slot() -> Result<()> {
+    with_postgres(async |db| {
+        let registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
+        let zones = vec![
+            "us-west4-a".into(),
+            "us-west4-b".into(),
+            "us-west4-c".into(),
+        ];
+        registry.reserve_spares(&zones, 9, 3).await?;
+        let first = registry.unassigned().await?;
+        assert_eq!(
+            first
+                .iter()
+                .map(|pod| &pod.zone)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+        for (i, mut pod) in first
+            .into_iter()
+            .enumerate()
+            .filter(|(_, pod)| pod.zone != "us-west4-a")
+        {
+            pod.uid = Some(format!("uid-{i}"));
+            pod.node = Some(format!("node-{i}"));
+            pod.placement = Some(ReplicaPlacement {
+                id: pod.name.clone(),
+                address: format!("http://replica-{i}:7200"),
+                zone: pod.zone.clone(),
+            });
+            registry.update_pod(&pod).await?;
+        }
+        registry.reserve_spares(&zones, 9, 3).await?;
+        let pods = registry.unassigned().await?;
+        assert_eq!(
+            pods.iter().filter(|pod| pod.zone == "us-west4-a").count(),
+            1
+        );
+        assert_eq!(pods.len(), 5);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn losing_a_controller_session_fences_its_checkpoint_writes() -> Result<()> {
+    with_postgres(async |db| {
+        let registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
+        let previous = registry.lock("actor/").await?;
+        previous.ensure().await?;
+        let pid: i32 = previous
+            .client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        db.pool
+            .get()
+            .await?
+            .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+            .await?;
+        let current =
+            tokio::time::timeout(std::time::Duration::from_secs(2), registry.lock("actor/"))
+                .await??;
+        let checkpoint = Checkpoint {
+            object: "actor/2.json".into(),
+            digest: "current".into(),
+        };
+        current.checkpoint(&checkpoint).await?;
+        assert!(
+            previous
+                .checkpoint(&Checkpoint {
+                    object: "actor/1.json".into(),
+                    digest: "stale".into()
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            registry.lookup("actor/").await?.checkpoint,
+            Some(checkpoint)
+        );
         Ok(())
     })
     .await
@@ -88,9 +187,10 @@ async fn unchanged_registration_avoids_a_write_without_accepting_replaced_or_ret
 -> Result<()> {
     with_postgres(async |db| {
         let registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
-        let group = registry
-            .claim("registration/", &["us-west4-a".into()])
+        registry
+            .reserve_spares(&["us-west4-a".into()], 1, 1)
             .await?;
+        let pending = registry.unassigned().await?.remove(0);
         let pod = PodRecord {
             uid: Some("original-uid".into()),
             node: Some("node".into()),
@@ -99,9 +199,10 @@ async fn unchanged_registration_avoids_a_write_without_accepting_replaced_or_ret
                 address: "http://replica:7200".into(),
                 zone: "us-west4-a".into(),
             }),
-            ..group.pods[0].clone()
+            ..pending
         };
         registry.update_pod(&pod).await?;
+        claim(&registry, "registration/", &["us-west4-a".into()]).await?;
         let client = db.pool.get().await?;
         let before: String = client
             .query_one(
@@ -184,7 +285,7 @@ async fn registration_racing_a_claim_preserves_the_binding_and_racing_retirement
 async fn ready_waiting_on_a_closing_group_cannot_return_a_ready_record() -> Result<()> {
     with_postgres(async |db| {
         let registry = Registry::new(PostgresDatabase::lazy(&db.url)?);
-        registry.claim("closing/", &["us-west4-a".into()]).await?;
+        claim(&registry, "closing/", &["us-west4-a".into()]).await?;
         let mut blocker = db.pool.get().await?;
         let pid: i32 = blocker
             .query_one("SELECT pg_backend_pid()", &[])
@@ -197,7 +298,7 @@ async fn ready_waiting_on_a_closing_group_cannot_return_a_ready_record() -> Resu
         )
         .await?;
         let work = registry.clone();
-        let ready = tokio::spawn(async move { work.ready("closing/").await });
+        let ready = tokio::spawn(async move { work.lock("closing/").await?.ready().await });
         wait_for_blocked_query(db, pid).await?;
         tx.commit().await?;
         assert!(ready.await?.is_err());
@@ -237,15 +338,15 @@ async fn claims_bind_all_slots_together_preserving_zone_order_and_skipping_locke
         let lock = blocker.transaction().await?;
         lock.query_one("SELECT name FROM durable_actors_replication_pods WHERE name='a3' FOR UPDATE", &[]).await?;
         let zones = vec!["a".into(), "b".into(), "a".into()];
-        let group = tokio::time::timeout(std::time::Duration::from_secs(2), registry.claim("batch/", &zones)).await??;
-        assert_eq!(group.pods.iter().map(|p| p.zone.clone()).collect::<Vec<_>>(), zones);
+        let group = tokio::time::timeout(std::time::Duration::from_secs(2), claim(&registry, "batch/", &zones)).await??;
+        assert_eq!(group.pods.iter().map(|p| p.zone.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
         assert_eq!(group.pods[0].name, "a1");
         assert_eq!(group.pods[1].name, "b1");
-        assert!(group.pods[2].placement.is_none());
+        assert_eq!(group.pods.len(), 2);
         assert_eq!(registry.lookup("batch/").await?.pods, group.pods);
         let statements: i64 = client.query_one("SELECT count(*) FROM claim_statements", &[]).await?.get(0);
         assert_eq!(statements, 1, "all slots must bind in one statement");
-        let repeated = registry.claim("batch/", &zones).await?;
+        let repeated = claim(&registry, "batch/", &zones).await?;
         assert_eq!(repeated.pods, group.pods);
         lock.rollback().await?;
         Ok(())

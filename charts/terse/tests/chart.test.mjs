@@ -34,8 +34,25 @@ for (const [durability, placements] of [
         assert.match(result.stdout, /port: 7200/)
     })
 }
+
+test("production defaults spread compute and storage across three zones", () => {
+    const result = render()
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /DURABLE_ACTORS_DURABILITY, value: "regional"/)
+    const placements = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_REPLICA_PLACEMENTS"))
+    const zones = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_GKE_ZONES"))
+    for (const zone of ["us-west4-a", "us-west4-b", "us-west4-c"]) {
+        assert.ok(placements.includes(zone))
+        assert.ok(zones.includes(zone))
+    }
+    assert.match(result.stdout, /replicas: 3/)
+    assert.match(result.stdout, /whenUnsatisfiable: DoNotSchedule/)
+    assert.match(result.stdout, /minDomains: 2/)
+})
 for (const [name, override] of [
-    ["regional copies in one zone", { storage: { durability: "regional" } }],
+    ["single regional control plane", { replicaCount: 1 }],
+    ["single regional compute zone", { zones: { "north-america-west": "us-west4-a" } }],
+    ["regional copies in one zone", { storage: { durability: "regional", replicas: { placements: ["us-west4-a", "us-west4-a"] } } }],
     ["multi-region copies in one region", { storage: { durability: "multi_region" } }],
     ["empty replica set", { storage: { replicas: { placements: [] } } }],
     ["unknown policy", { storage: { durability: "best_effort" } }],

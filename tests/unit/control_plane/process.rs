@@ -188,8 +188,30 @@ fn production_defaults_to_zonal_replicas_and_gke() -> Result<()> {
     ));
     assert_eq!(
         config.sandbox_provider.gke.zones["north-america-west"],
-        "us-west4-a"
+        vec!["us-west4-a"]
     );
+    Ok(())
+}
+
+#[test]
+fn compute_region_accepts_multiple_zones_and_rejects_empty_or_mismatched_sets() -> Result<()> {
+    let mut values = process_environment();
+    values.insert(
+        "DURABLE_ACTORS_GKE_ZONES",
+        r#"{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}"#,
+    );
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    parse(&values)?;
+    for zones in [
+        r#"{"north-america-west":[]}"#,
+        r#"{"north-america-west":["us-west4-a","us-east4-b"]}"#,
+        r#"{"north-america-west":["us-west4-a","us-west4-a"]}"#,
+    ] {
+        values.insert("DURABLE_ACTORS_GKE_ZONES", zones);
+        assert!(parse(&values).is_err(), "{zones}");
+    }
     Ok(())
 }
 

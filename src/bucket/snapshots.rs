@@ -35,6 +35,13 @@ pub enum Durability {
 }
 
 impl PersistenceConfig {
+    pub(crate) fn same_backend(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Local, Self::Local) | (Self::Replicated { .. }, Self::Replicated { .. })
+        )
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
         let Self::Replicated {

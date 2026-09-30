@@ -47,34 +47,18 @@ impl Registry {
         Self(database)
     }
 
-    pub async fn claim(&self, prefix: &str, zones: &[String]) -> Result<GroupRecord> {
-        let mut connection = self.0.connection().await?;
-        let tx = connection.transaction().await?;
-        let lock = tx
-            .prepare_cached("SELECT pg_advisory_xact_lock(hashtext('replica-group'), hashtext($1))")
+    pub async fn lock(&self, prefix: &str) -> Result<GroupUpdate> {
+        let client = deadpool_postgres::Object::take(self.0.connection().await?);
+        client
+            .query_one(
+                "SELECT pg_advisory_lock(hashtext('replica-transition'),hashtext($1))",
+                &[&prefix],
+            )
             .await?;
-        tx.query_one(&lock, &[&prefix]).await?;
-        let select = tx.prepare_cached("SELECT state,ever_ready,checkpoint FROM durable_actors_replication_groups WHERE prefix=$1 FOR UPDATE").await?;
-        let group = if let Some(row) = tx.query_opt(&select, &[&prefix]).await? {
-            ensure!(
-                matches!(row.get::<_, &str>(0), "creating" | "ready"),
-                "replica group is permanently closed"
-            );
-            let pods = tx.prepare_cached("SELECT config FROM durable_actors_replication_pods WHERE group_prefix=$1 ORDER BY slot").await?;
-            let pods = tx
-                .query(&pods, &[&prefix])
-                .await?
-                .iter()
-                .map(|row| serde_json::from_str(row.get(0)))
-                .collect::<Result<Vec<_>, _>>()?;
-            record(prefix, &row, pods)?
-        } else {
-            let insert = tx.prepare_cached("INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'creating') RETURNING state,ever_ready,checkpoint").await?;
-            let row = tx.query_one(&insert, &[&prefix]).await?;
-            record(prefix, &row, claim_pods(&tx, prefix, zones).await?)?
-        };
-        tx.commit().await?;
-        Ok(group)
+        Ok(GroupUpdate {
+            client,
+            prefix: prefix.into(),
+        })
     }
 
     pub async fn lookup(&self, prefix: &str) -> Result<GroupRecord> {
@@ -118,29 +102,6 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn ready(&self, prefix: &str) -> Result<()> {
-        ensure!(self.0.execute("UPDATE durable_actors_replication_groups SET state='ready',ever_ready=TRUE,updated_at=clock_timestamp() WHERE prefix=$1 AND state IN ('creating','ready')", &[&prefix]).await? == 1, "replica group was closed during initialization");
-        Ok(())
-    }
-
-    pub async fn close(&self, prefix: &str) -> Result<GroupRecord> {
-        self.0.execute("INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'closing') ON CONFLICT(prefix) DO UPDATE SET state=CASE WHEN durable_actors_replication_groups.state='archived' THEN 'archived' ELSE 'closing' END,updated_at=clock_timestamp()", &[&prefix]).await?;
-        self.lookup(prefix).await
-    }
-
-    pub async fn archived(&self, prefix: &str, checkpoint: Option<&Checkpoint>) -> Result<()> {
-        let serialized = checkpoint.map(serde_json::to_string).transpose()?;
-        let changed = self.0.execute("UPDATE durable_actors_replication_groups SET state='archived',checkpoint=$2,updated_at=clock_timestamp() WHERE prefix=$1 AND state='closing'", &[&prefix, &serialized]).await?;
-        if changed == 0 {
-            let previous = self.lookup(prefix).await?;
-            ensure!(
-                previous.state == "archived" && previous.checkpoint.as_ref() == checkpoint,
-                "conflicting final replica checkpoints"
-            );
-        }
-        Ok(())
-    }
-
     pub async fn groups(&self, prefix: &str) -> Result<Vec<String>> {
         Ok(self.0.connection().await?.query("SELECT prefix FROM durable_actors_replication_groups WHERE starts_with(prefix,$1) ORDER BY prefix", &[&prefix]).await?.iter().map(|row| row.get(0)).collect())
     }
@@ -173,7 +134,11 @@ impl Registry {
     }
 
     pub async fn unassigned(&self) -> Result<Vec<PodRecord>> {
-        self.0.connection().await?.query("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL ORDER BY name", &[]).await?.iter().map(|row| serde_json::from_str(row.get(0)).map_err(Into::into)).collect()
+        self.0.connection().await?.query("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state!='retiring' ORDER BY name", &[]).await?.iter().map(|row| serde_json::from_str(row.get(0)).map_err(Into::into)).collect()
+    }
+
+    pub async fn retiring(&self) -> Result<Vec<PodRecord>> {
+        self.0.connection().await?.query("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state='retiring'", &[]).await?.iter().map(|row| serde_json::from_str(row.get(0)).map_err(Into::into)).collect()
     }
 
     pub async fn reserve_spares(
@@ -192,25 +157,31 @@ impl Registry {
         let rows = tx.query("SELECT zone,state,count(*) FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state!='retiring' GROUP BY zone,state", &[]).await?;
         let mut counts = BTreeMap::<String, usize>::new();
         let mut starting = 0;
+        let mut starting_by_zone = BTreeMap::<String, usize>::new();
         for row in rows {
             let count = usize::try_from(row.get::<_, i64>(2))?;
             *counts.entry(row.get(0)).or_default() += count;
             if row.get::<_, &str>(1) == "starting" {
                 starting += count;
+                *starting_by_zone.entry(row.get(0)).or_default() += count;
             }
         }
         let mut desired = BTreeMap::<&str, usize>::new();
         for i in 0..target {
             *desired.entry(&zones[i % zones.len()]).or_default() += 1;
         }
+        let per_zone = max_starting.div_ceil(desired.len().max(1));
         for (zone, count) in desired {
             for _ in counts.get(zone).copied().unwrap_or_default()..count {
-                if starting >= max_starting {
+                if starting >= max_starting
+                    || starting_by_zone.get(zone).copied().unwrap_or_default() >= per_zone
+                {
                     break;
                 }
                 let pod = PodRecord::pending(zone);
                 tx.execute("INSERT INTO durable_actors_replication_pods(name,zone,state,config) VALUES($1,$2,'starting',$3)", &[&pod.name,&pod.zone,&serde_json::to_string(&pod)?]).await?;
                 starting += 1;
+                *starting_by_zone.entry(zone.into()).or_default() += 1;
             }
         }
         tx.commit().await?;
@@ -227,18 +198,97 @@ impl Registry {
     }
 }
 
+// All membership mutations use the lock-owning connection; losing it fences the transition.
+pub(super) struct GroupUpdate {
+    client: deadpool_postgres::ClientWrapper,
+    prefix: String,
+}
+
+impl GroupUpdate {
+    pub async fn ensure(&self) -> Result<()> {
+        self.client.execute("INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'bucket') ON CONFLICT DO NOTHING", &[&self.prefix]).await?;
+        Ok(())
+    }
+
+    pub async fn claim(&mut self, zones: &[String], eligible: &[String]) -> Result<()> {
+        let tx = self.client.transaction().await?;
+        let row = tx
+            .query_opt(
+                "SELECT state FROM durable_actors_replication_groups WHERE prefix=$1 FOR UPDATE",
+                &[&self.prefix],
+            )
+            .await?;
+        if let Some(row) = row {
+            match row.get::<_, &str>(0) {
+                "ready" | "creating" => return Ok(()),
+                "bucket" => {}
+                _ => anyhow::bail!("replica group is permanently closed or transitioning"),
+            }
+            tx.execute("UPDATE durable_actors_replication_groups SET state='creating',ever_ready=FALSE WHERE prefix=$1", &[&self.prefix]).await?;
+        } else {
+            tx.execute(
+                "INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'creating')",
+                &[&self.prefix],
+            )
+            .await?;
+        }
+        claim_pods(&tx, &self.prefix, zones, eligible).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn ready(&self) -> Result<()> {
+        ensure!(self.client.execute("UPDATE durable_actors_replication_groups SET state='ready',ever_ready=TRUE,updated_at=clock_timestamp() WHERE prefix=$1 AND state='creating'", &[&self.prefix]).await? == 1, "replica group was closed during initialization");
+        Ok(())
+    }
+
+    pub async fn switching(&self) -> Result<()> {
+        ensure!(self.client.execute("UPDATE durable_actors_replication_groups SET state='switching',updated_at=clock_timestamp() WHERE prefix=$1 AND state IN ('creating','ready','switching','bucket')", &[&self.prefix]).await? == 1, "replica group is closed");
+        Ok(())
+    }
+
+    pub async fn bucket(&mut self, checkpoint: Option<&Checkpoint>) -> Result<()> {
+        let serialized = checkpoint.map(serde_json::to_string).transpose()?;
+        let tx = self.client.transaction().await?;
+        ensure!(tx.execute("UPDATE durable_actors_replication_groups SET state='bucket',ever_ready=FALSE,checkpoint=$2,updated_at=clock_timestamp() WHERE prefix=$1 AND state IN ('creating','switching','bucket')", &[&self.prefix, &serialized]).await? == 1, "replica group is closed");
+        tx.execute("UPDATE durable_actors_replication_pods SET state='retiring',group_prefix=NULL,slot=NULL WHERE group_prefix=$1", &[&self.prefix]).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn checkpoint(&self, checkpoint: &Checkpoint) -> Result<()> {
+        ensure!(self.client.execute("UPDATE durable_actors_replication_groups SET checkpoint=$2,updated_at=clock_timestamp() WHERE prefix=$1 AND state='bucket'", &[&self.prefix, &serde_json::to_string(checkpoint)?]).await? == 1, "bucket writer was fenced");
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        self.client.execute("INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'closing') ON CONFLICT(prefix) DO UPDATE SET state=CASE WHEN durable_actors_replication_groups.state='archived' THEN 'archived' ELSE 'closing' END,updated_at=clock_timestamp()", &[&self.prefix]).await?;
+        Ok(())
+    }
+
+    pub async fn archived(&self, checkpoint: Option<&Checkpoint>) -> Result<()> {
+        let serialized = checkpoint.map(serde_json::to_string).transpose()?;
+        ensure!(self.client.execute("UPDATE durable_actors_replication_groups SET state='archived',checkpoint=$2,updated_at=clock_timestamp() WHERE prefix=$1 AND state='closing'", &[&self.prefix, &serialized]).await? == 1, "replica group is not closing");
+        Ok(())
+    }
+}
+
 async fn claim_pods(
     tx: &deadpool_postgres::Transaction<'_>,
     prefix: &str,
     zones: &[String],
+    eligible: &[String],
 ) -> Result<Vec<PodRecord>> {
-    let select = tx.prepare_cached("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state='ready' AND zone=$1 AND NOT ((config::jsonb->>'node') = ANY($2::text[])) ORDER BY name LIMIT 1 FOR UPDATE SKIP LOCKED").await?;
+    let select = tx.prepare_cached("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state='ready' AND zone=$1 AND name=ANY($3::text[]) AND NOT ((config::jsonb->>'node') = ANY($2::text[])) ORDER BY name LIMIT 1 FOR UPDATE SKIP LOCKED").await?;
     let mut used_nodes: Vec<String> = Vec::new();
     let mut pods = Vec::with_capacity(zones.len());
     for zone in zones {
-        let pod: PodRecord = match tx.query_opt(&select, &[zone, &used_nodes]).await? {
+        let pod: PodRecord = match tx
+            .query_opt(&select, &[zone, &used_nodes, &eligible])
+            .await?
+        {
             Some(row) => serde_json::from_str(row.get(0))?,
-            None => PodRecord::pending(zone),
+            None => continue,
         };
         if let Some(node) = &pod.node {
             used_nodes.push(node.clone());

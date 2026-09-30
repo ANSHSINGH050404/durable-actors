@@ -22,12 +22,13 @@ use crate::{
 };
 
 mod authority;
+mod failover;
 mod kubernetes;
 mod registry;
 use authority::Authority;
 pub(crate) use kubernetes::{KubernetesReplicas, ReplicaPodConfig};
 pub(crate) use registry::Checkpoint;
-use registry::{GroupRecord, PodRecord, Registry};
+use registry::{GroupRecord, GroupUpdate, PodRecord, Registry};
 
 pub(crate) struct ReplicaFleet {
     registry: Registry,
@@ -76,6 +77,7 @@ trait ReplicaPeers: Send + Sync {
         replica: &ReplicaPlacement,
         prefix: &str,
     ) -> Result<Option<(String, Bytes)>>;
+    async fn seed(&self, replica: &ReplicaPlacement, object: &str, bytes: Bytes) -> Result<()>;
     async fn flush(&self, replica: &ReplicaPlacement, prefix: &str) -> Result<()>;
 }
 
@@ -144,6 +146,12 @@ impl ReplicaFleet {
                     ..Default::default()
                 });
             }
+            DirectoryCommand::Write { object, .. } => {
+                let (prefix, _) = position(object)?;
+                self.authority
+                    .authorize_writer(&prefix, &principal.host_id, &principal.session_id)
+                    .await?;
+            }
             DirectoryCommand::Finish { prefix } => {
                 self.authority
                     .authorize_finish(prefix, &principal.host_id, &principal.session_id)
@@ -163,107 +171,36 @@ impl ReplicaFleet {
     async fn prepare_authorized(&self, prefix: &str, started: Instant) -> Result<Group> {
         let authorization_ms = elapsed_ms(started);
         let phase = Instant::now();
-        let group = self.registry.claim(prefix, &self.zones).await?;
-        let claim_ms = elapsed_ms(phase);
-        let phase = Instant::now();
-        ensure!(
-            group.state == "creating" || group.state == "ready",
-            "replica group is closed"
-        );
-        let excluded: Vec<_> = group
-            .pods
-            .iter()
-            .filter_map(|pod| pod.node.clone())
-            .collect();
-        let pods = futures_util::future::try_join_all(
-            group
-                .pods
-                .iter()
-                .map(|pod| self.prepare_pod(pod, prefix, &excluded)),
-        )
-        .await?;
-        ensure!(
-            pods.iter()
-                .filter_map(|pod| pod.node.as_ref())
-                .collect::<HashSet<_>>()
-                .len()
-                == self.zones.len(),
-            "replicas must occupy distinct nodes"
-        );
-        let pods_ready_ms = elapsed_ms(phase);
-        let assignment = Assignment {
-            prefix: prefix.into(),
-            replicas: placements(&pods)?,
-        };
-        let phase = Instant::now();
-        futures_util::future::try_join_all(
-            assignment
-                .replicas
-                .iter()
-                .map(|replica| self.peers.assign(replica, &assignment)),
-        )
-        .await?;
-        let assignment_ms = elapsed_ms(phase);
-        let phase = Instant::now();
-        self.authority.require_live(prefix).await?;
-        let ownership_recheck_ms = elapsed_ms(phase);
-        let phase = Instant::now();
-        self.registry.ready(prefix).await?;
+        let mut update = self.registry.lock(prefix).await?;
+        self.recruit(prefix, &mut update).await?;
+        let group = self.group(prefix).await?;
         tracing::info!(
             event = "replica_activation",
             prefix,
             authorization_ms,
-            claim_ms,
-            pods_ready_ms,
-            assignment_ms,
-            ownership_recheck_ms,
-            ready_ms = elapsed_ms(phase),
+            recruitment_ms = elapsed_ms(phase),
             duration_ms = elapsed_ms(started),
-            "replica group ready"
+            replicas = group.replicas.len(),
+            "replica storage prepared"
         );
-        Ok(Group {
-            prefix: group.prefix,
-            replicas: assignment.replicas,
-            archived: false,
-            checkpoint: group.checkpoint,
-        })
-    }
-
-    async fn prepare_pod(
-        &self,
-        expected: &PodRecord,
-        prefix: &str,
-        excluded: &[String],
-    ) -> Result<PodRecord> {
-        let started = Instant::now();
-        let pod = self.pods.ensure(expected, Some(prefix), excluded).await?;
-        let ensure_ms = elapsed_ms(started);
-        let phase = Instant::now();
-        if pod != *expected {
-            if let Err(error) = self.registry.update_pod(&pod).await {
-                if self.registry.lookup(prefix).await?.state == "archived" {
-                    self.pods.retire(&pod).await?;
-                }
-                return Err(error);
-            }
-        }
-        let registration_ms = elapsed_ms(phase);
-        let phase = Instant::now();
-        self.pods.protect(&pod, prefix).await?;
-        tracing::info!(event = "replica_activation_pod", prefix, pod = %pod.name, ensure_ms,
-            registration_ms, protection_ms = elapsed_ms(phase), duration_ms = elapsed_ms(started));
-        Ok(pod)
+        Ok(group)
     }
 
     async fn finish(&self, prefix: &str) -> Result<Group> {
-        let group = self.registry.close(prefix).await?;
+        let update = self.registry.lock(prefix).await?;
+        self.finish_locked(prefix, &update).await
+    }
+
+    async fn finish_locked(&self, prefix: &str, update: &GroupUpdate) -> Result<Group> {
+        update.close().await?;
+        let group = self.registry.lookup(prefix).await?;
         if group.state != "archived" {
             let checkpoint = if group.ever_ready {
                 self.archive_final(&group).await?
             } else {
-                None
+                group.checkpoint.clone()
             };
-            self.registry.archived(prefix, checkpoint.as_ref()).await?;
+            update.archived(checkpoint.as_ref()).await?;
         }
         self.group(prefix).await
     }
@@ -321,7 +258,12 @@ impl ReplicaFleet {
     }
 
     async fn group(&self, prefix: &str) -> Result<Group> {
-        Ok(directory_group(self.registry.lookup(prefix).await?))
+        let record = self.registry.lookup(prefix).await?;
+        ensure!(
+            matches!(record.state.as_str(), "ready" | "bucket" | "archived"),
+            "replica group is transitioning"
+        );
+        Ok(directory_group(record))
     }
 
     async fn reconcile(&self) -> Result<()> {
@@ -329,6 +271,11 @@ impl ReplicaFleet {
         self.registry
             .reserve_spares(&self.zones, self.idle, self.max_starting)
             .await?;
+        for pod in self.registry.retiring().await? {
+            if let Err(error) = self.delete(&pod).await {
+                tracing::warn!(%error, "retired replica cleanup deferred");
+            }
+        }
         let spares = self.registry.unassigned().await?;
         let work = stream::iter(
             spares
@@ -392,25 +339,30 @@ impl ReplicaFleet {
     }
 
     async fn reconcile_group(&self, prefix: &str, inventory: &PodInventory) -> Result<()> {
+        let mut update = self.registry.lock(prefix).await?;
         let mut group = self.registry.lookup(prefix).await?;
         if group.state != "archived" && group.state != "closing" {
-            let mut disrupted = false;
-            for pod in &group.pods {
-                if pod.uid.is_some() {
-                    let health = self.pods.health(&pod, inventory).await?;
+            if !self.authority.retire_if_inactive(prefix).await? {
+                let mut disrupted = group.state == "switching";
+                for pod in &group.pods {
+                    let health = self.pods.health(pod, inventory).await?;
                     disrupted |= !health.live || health.draining;
                 }
-            }
-            if !self.authority.retire_if_inactive(prefix, disrupted).await? {
+                if group.state == "ready" && group.pods.len() < self.zones.len() {
+                    disrupted |= self.available().await?.len() == self.zones.len();
+                }
+                if disrupted {
+                    self.to_bucket(&group, &mut update).await?;
+                }
                 return Ok(());
             }
         }
         if group.state != "archived" {
-            self.finish(prefix).await?;
+            self.finish_locked(prefix, &update).await?;
             group = self.registry.lookup(prefix).await?;
         }
         for pod in &group.pods {
-            self.delete(&pod).await?;
+            self.delete(pod).await?;
         }
         Ok(())
     }
@@ -450,6 +402,13 @@ impl ReplicaDirectory for ReplicaFleet {
         let mut reply = DirectoryReply::default();
         match command {
             DirectoryCommand::Prepare { prefix } => reply.groups.push(self.prepare(&prefix).await?),
+            DirectoryCommand::Write { object, data } => {
+                use base64::{Engine, engine::general_purpose::STANDARD};
+                reply.groups.push(
+                    self.write(&object, Bytes::from(STANDARD.decode(data)?))
+                        .await?,
+                );
+            }
             DirectoryCommand::Lookup { prefix } => reply.groups.push(self.group(&prefix).await?),
             DirectoryCommand::Finish { prefix } => reply.groups.push(self.finish(&prefix).await?),
             DirectoryCommand::ReadArchive { object } => {
@@ -547,6 +506,9 @@ impl ReplicaPeers for HttpPeers {
         let client = self.client(replica)?;
         client.seal(prefix).await?;
         client.latest(prefix).await
+    }
+    async fn seed(&self, replica: &ReplicaPlacement, object: &str, bytes: Bytes) -> Result<()> {
+        self.client(replica)?.put(object, bytes).await
     }
     async fn flush(&self, replica: &ReplicaPlacement, prefix: &str) -> Result<()> {
         self.client(replica)?

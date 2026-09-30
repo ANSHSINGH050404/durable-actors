@@ -1,19 +1,19 @@
 image:
   repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
   digest: ""
-replicaCount: 2
+replicaCount: 3
 publicUrl: https://actors.useterse.ai
 region: north-america-west
 sandboxNamespace: terse-sandboxes
 zones:
-  north-america-west: us-west4-a
+  north-america-west: [us-west4-a, us-west4-b, us-west4-c]
 storage:
   authorityBucket: ""
   artifactBucket: ""
-  durability: zonal
+  durability: regional
   archiveBucket: ""
   replicas:
-    placements: [us-west4-a, us-west4-a, us-west4-a]
+    placements: [us-west4-a, us-west4-b, us-west4-c]
     idle: 192
     maxStarting: 32
     credentialsSecret: terse-replica-credentials

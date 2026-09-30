@@ -8,6 +8,13 @@
 {{- if and .Values.gateway.enabled (eq (empty .Values.gateway.tlsSecret) (empty .Values.gateway.preSharedCert)) }}{{ fail "gateway requires exactly one of tlsSecret or preSharedCert" }}{{ end -}}
 {{- if eq .Values.sandboxNamespace .Release.Namespace }}{{ fail "sandboxNamespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if not (hasKey .Values.zones .Values.region) }}{{ fail "region must have a configured placement zone" }}{{ end -}}
+{{- if ne .Values.storage.durability "zonal" -}}
+{{- if lt (int .Values.replicaCount) 2 }}{{ fail "regional availability requires multiple control-plane replicas" }}{{ end -}}
+{{- range $region, $placements := .Values.zones -}}
+{{- if kindIs "string" $placements }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
+{{- if lt (len $placements) 2 }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
+{{- end -}}
+{{- end -}}
 {{- $zones := dict -}}{{- $regions := dict -}}
 {{- range .Values.storage.replicas.placements -}}
 {{- $_ := set $zones . true -}}{{- $_ := set $regions (regexReplaceAll "-[a-z]$" . "") true -}}

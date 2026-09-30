@@ -384,18 +384,7 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let zones: BTreeMap<String, String> =
-        serde_json::from_str(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
-    ensure!(
-        !zones.is_empty(),
-        "at least one GKE placement zone is required"
-    );
-    for (region, zone) in &zones {
-        ensure!(
-            super::regions::storage_region(zone)? == region,
-            "GKE zone does not match canonical region {region}"
-        );
-    }
+    let zones = compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
     let public_origin = validated_http_url(
         &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
         "DURABLE_ACTORS_PUBLIC_URL",
@@ -453,6 +442,53 @@ fn sandbox_provider_config(
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
     })
+}
+
+fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Placement {
+        Zone(String),
+        Zones(Vec<String>),
+    }
+    let configured: BTreeMap<String, Placement> = serde_json::from_str(value)?;
+    let zones: BTreeMap<String, Vec<String>> = configured
+        .into_iter()
+        .map(|(region, placement)| {
+            (
+                region,
+                match placement {
+                    Placement::Zone(zone) => vec![zone],
+                    Placement::Zones(zones) => zones,
+                },
+            )
+        })
+        .collect();
+    ensure!(
+        !zones.is_empty(),
+        "at least one GKE placement zone is required"
+    );
+    for (region, placements) in &zones {
+        ensure!(
+            !placements.is_empty(),
+            "compute region requires at least one zone"
+        );
+        ensure!(
+            placements
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == placements.len(),
+            "duplicate compute zones"
+        );
+        for zone in placements {
+            ensure!(
+                super::regions::storage_region(zone)? == region,
+                "GKE zone does not match canonical region {region}"
+            );
+        }
+    }
+    Ok(zones)
 }
 
 fn pool_number(

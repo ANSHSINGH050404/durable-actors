@@ -302,3 +302,7 @@ impl ReplicaServer {
 #[cfg(test)]
 #[path = "../../tests/unit/replicas/server.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/replicas/servers.rs"]
+pub(crate) mod testing;

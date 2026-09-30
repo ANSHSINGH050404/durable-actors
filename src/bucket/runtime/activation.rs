@@ -217,7 +217,7 @@ impl RuntimeStorage {
             return Ok(ActivationRecovery::default());
         };
         ensure!(
-            record.persistence == self.persistence,
+            record.persistence.same_backend(&self.persistence),
             "actor persistence configuration changed; an explicit state migration is required"
         );
         ensure!(

@@ -347,7 +347,10 @@ impl RuntimeStorageReader {
             .await?
             .map(|value| {
                 let record: Ownership = serde_json::from_slice(&value.bytes)?;
-                ensure!(record.persistence == self.persistence, "actor persistence configuration changed; an explicit state migration is required");
+                ensure!(
+                    record.persistence.same_backend(&self.persistence),
+                    "actor persistence backend changed; an explicit state migration is required"
+                );
                 Ok((value.generation, record))
             })
             .transpose()

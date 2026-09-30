@@ -1,4 +1,22 @@
 use super::*;
+
+#[test]
+fn replicas_on_unready_nodes_are_unavailable_even_if_the_pod_still_says_running() -> Result<()> {
+    let pod: Pod = serde_json::from_value(json!({
+        "metadata":{"name":"replica"},
+        "spec":{"containers":[{"name":"replica","image":"runtime"}]},
+        "status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}
+    }))?;
+    let mut node: Node = serde_json::from_value(json!({
+        "metadata":{"name":"node"},
+        "status":{"conditions":[{"type":"Ready","status":"Unknown"}]}
+    }))?;
+    assert!(!pod_health(&pod, Some(&node), "runtime").live);
+    node.status.as_mut().unwrap().conditions.as_mut().unwrap()[0].status = "True".into();
+    assert!(pod_health(&pod, Some(&node), "runtime").live);
+    assert!(!pod_health(&pod, None, "runtime").live);
+    Ok(())
+}
 use axum::{Json, Router, extract::State, routing::get};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -317,7 +317,15 @@ fn is_ready(pod: &Pod) -> bool {
 
 fn pod_health(pod: &Pod, node: Option<&Node>, image: &str) -> PodHealth {
     PodHealth {
-        live: !terminal(pod),
+        live: is_ready(pod)
+            && node
+                .and_then(|node| node.status.as_ref())
+                .and_then(|status| status.conditions.as_ref())
+                .is_some_and(|conditions| {
+                    conditions
+                        .iter()
+                        .any(|condition| condition.type_ == "Ready" && condition.status == "True")
+                }),
         draining: pod.metadata.deletion_timestamp.is_some()
             || node
                 .and_then(|n| n.spec.as_ref())

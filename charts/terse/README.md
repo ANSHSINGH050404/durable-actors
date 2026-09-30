@@ -2,13 +2,13 @@
 
 The chart runs the Rust control plane and HTTPS/WebSocket gateway in Kubernetes. Actor hosts and their dedicated Rust storage replicas run under Google-managed gVisor. The control plane prewarms pods, downloads immutable code artifacts from Standard GCS into actor pods, and tracks pod assignments in PostgreSQL. GCS conditional writes retain ownership and leases.
 
-Every actor activation receives its own replica group. The default is **one actor pod plus three replica pods on distinct nodes in one zone**. Replica processes never execute customer code or serve multiple actor activations. Every configured replica must commit each write to its disk-backed SQLite WAL with `synchronous=FULL` before the actor acknowledges it. Hot persistence goes directly from the actor to its replicas; it does not call PostgreSQL, the control plane, or GCS.
+Every actor activation receives its own replica group. The default is **one actor pod plus three replica pods across three zones**, with three control-plane instances spread across zones. Replica processes never execute customer code or serve multiple actor activations. Every member of the current group must commit each write to its disk-backed SQLite WAL with `synchronous=FULL` before the actor acknowledges it. Healthy writes go directly from the actor to its replicas. When replica capacity is unavailable, writes persist synchronously to GCS through the control plane until a replacement group is ready.
 
 ## Prerequisites
 
-- GKE Standard with Workload Identity Federation, enforced NetworkPolicy, and COS Sandbox node pools in the configured zones. Enable Gateway API for the supplied public gateway. Keep the control plane on ordinary nodes.
+- Regional GKE Standard with Workload Identity Federation, enforced NetworkPolicy, and both ordinary and COS Sandbox node pools across the configured zones. Enable Gateway API for the supplied public gateway. Keep the application control plane on ordinary nodes. A zonal GKE control plane remains a zone-level dependency even with nodes in other zones.
 - Standard GCS authority, artifact, and archive buckets with uniform access and public access prevention. Archive placement must cover the promised failure domain. Do not apply blanket expiry rules to actor state or referenced code.
-- PostgreSQL reachable by the control plane, preferably private Cloud SQL. The database user needs schema migration privileges. The chart does not run PostgreSQL in Kubernetes.
+- PostgreSQL reachable by the control plane, preferably private Cloud SQL with regional HA. Bucket fallback and replica replacement require this database. The database user needs schema migration privileges. The chart does not run PostgreSQL in Kubernetes.
 - A Google service account with `roles/storage.objectUser` on the three buckets and `storage.buckets.get` on the archive bucket. Grant `roles/cloudsql.client` when using the Cloud SQL proxy. Bind both Kubernetes identities, `<control-namespace>/<release>-terse` and `<sandbox-namespace>/replica`, with `roles/iam.workloadIdentityUser`.
 - An existing Secret in the control namespace containing `postgres-url`, `api-key`, `replica-key` (at least 32 random bytes), and `jwt-signing-key` (base64 Ed25519 PKCS#8). Create `storage.replicas.credentialsSecret` in the sandbox namespace containing the same `replica-key`; do not label it as a customer Secret. Customer pods cannot read Kubernetes Secrets or access the metadata server.
 - For HTTPS, a matching TLS Secret or a Google-managed Compute Engine SSL certificate. Configure exactly one of `gateway.tlsSecret` and `gateway.preSharedCert`.
@@ -24,15 +24,18 @@ Network policies allow customer pods to reach the control plane, authenticated r
 Copy `values.yaml`, then set the runtime image digest, bucket names, Google service account, namespaces, and zones. The chart creates application resources; cluster/node pools, Cloud SQL, Google IAM, buckets, and certificates are provisioned separately.
 
 ```yaml
+replicaCount: 3
+zones:
+  north-america-west: [us-west4-a, us-west4-b, us-west4-c]
 cloudSql:
   instanceConnectionName: project:us-west4:actors-db
 storage:
   authorityBucket: actor-ownership
   artifactBucket: actor-code
   archiveBucket: actor-archive
-  durability: zonal
+  durability: regional
   replicas:
-    placements: [us-west4-a, us-west4-a, us-west4-a]
+    placements: [us-west4-a, us-west4-b, us-west4-c]
     idle: 192
     maxStarting: 32
     credentialsSecret: terse-replica-credentials
@@ -54,9 +57,11 @@ For a global Google-managed certificate, set `gateway.preSharedCert`, clear `gat
 
 ## Assignment and writes
 
-The controller records ready spares by pod UID and disk identity. It atomically reserves the configured number on distinct nodes, persists membership, and binds each disk permanently to the actor's ownership epoch. Identical retries are idempotent; rebinding a disk or reviving a closed group is rejected. A resumed actor seeds its recovered baseline into the new group before activation returns.
+The controller records ready spares by pod UID and disk identity. It atomically reserves available members on distinct nodes, persists membership, and binds each disk permanently to the actor's ownership epoch. When configured for three regional copies, it can run with two copies in distinct surviving zones. If fewer than two failure domains are available, it retains bucket durability. Identical retries are idempotent; rebinding a disk or reviving a closed group is rejected. A resumed actor durably seeds its recovered baseline before activation returns.
 
-The actor caches direct replica endpoints and sends ordered compressed state records in parallel. Each replica checks its disk identity, assignment, epoch, version and content before committing. A failed or ambiguous write fences the activation; the system recovers into a fresh complete group. It never silently reduces the required acknowledgments or substitutes a blank disk for an old copy. An unsuccessful request may still have persisted, so retrying callers must allow an unknown outcome.
+The actor caches direct replica endpoints and sends ordered compressed state records in parallel. Each replica checks its disk identity, assignment, epoch, version and content before committing. After a failed or ambiguous write, the controller seals the old group and verifies its final archive before accepting the write through GCS. It seeds a fresh group from that verified checkpoint before publishing new endpoints. All members of each published group remain required; a failed member is never simply ignored. An unsuccessful request may still have persisted, so retrying callers must allow an unknown outcome.
+
+Bucket mode writes archive data synchronously and records its checkpoint in PostgreSQL before returning. Group transitions are serialized by PostgreSQL session locks and recheck GCS ownership. Lost controller sessions cannot publish membership or checkpoints. When all requested zones regain warm capacity, the controller seals a reduced group so subsequent writes can restore the full replica count. Storage failure alone does not expire a live actor's lease. Actors lost with their compute zone recover after ownership fencing; connection retries and a recovery delay remain possible.
 
 The placement list controls replica count. Zonal placement uses one zone; regional placement requires multiple zones in one region. Every requested zone needs schedulable Sandbox nodes in the Kubernetes cluster. GKE clusters do not span regions: this chart's dedicated-pod provisioner currently targets one cluster, so a cross-region deployment requires a multi-cluster provider and an archive strategy that preserves that failure guarantee. Do not configure remote regions in a single GKE cluster and expect them to be scheduled.
 
@@ -70,7 +75,7 @@ Recovery verifies that the old owner has released or expired, seals original sur
 
 The default actor idle timeout is 10 seconds, subject to active invocations and socket lifecycle. Replicas do not expire independently when writes become quiet. To retire a group, the controller persists a closing marker, seals it, flushes remaining records immediately, verifies the final GCS checkpoint, and persists the closed record before deleting pods by UID. Archive failures can keep replicas alive after the actor stops. Controller restarts retry this sequence from PostgreSQL.
 
-Assigned replicas have a zero-disruption PDB and are marked unsafe for blind autoscaler eviction. A node marked unschedulable triggers controlled group retirement. Forced node/pod failures still use recovery. Never remove these protections to force a scale-down. Used replicas are deleted rather than rebound; fresh spares replenish the pool.
+Assigned replicas have a zero-disruption PDB and are marked unsafe for blind autoscaler eviction. A node marked unschedulable triggers a controlled transition through bucket persistence. Forced node/pod failures use the same sealing and archival checks. Never remove these protections to force a scale-down. Used replicas are deleted rather than rebound; fresh spares replenish the pool. Replica startup slots are divided across zones so an unavailable zone cannot consume the entire default startup budget.
 
 GCS history remains after pod deletion. History is retained indefinitely; retention/compaction must preserve checkpoints referenced by dormant actors. The replica WAL is internal persistence machinery, separate from customer SQLite APIs.
 
@@ -86,6 +91,7 @@ WORKDIR /customer
 
 Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.25 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
 
-`pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted warm pools use the cold pod-creation path. Python switches the prewarmed Bun process to its Python executor on assignment.
+`pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted actor pools use the cold pod-creation path; exhausted replica pools use bucket persistence while spares start. Python switches the prewarmed Bun process to its Python executor on assignment.
 
-Before cutover, check real warm/cold/resume invocations, all-copy acknowledgment, replica loss, archival failure, ownership fencing, cleanup, Workload Identity, Cloud SQL and HTTPS routing.
+
+Size node capacity and autoscaling so the surviving zones can handle the workload after a zone loss.

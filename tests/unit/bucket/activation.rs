@@ -739,3 +739,68 @@ async fn replicated_resume_seeds_the_new_epoch_before_returning_an_activation() 
     assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_slice()));
     Ok(())
 }
+
+#[tokio::test]
+async fn replica_placement_changes_recover_the_old_epoch_before_starting_the_new_policy()
+-> Result<()> {
+    use crate::bucket::{BucketSnapshots, Durability, PersistenceConfig};
+    use crate::state_transport::SnapshotWriter;
+    let mut f = Fixture::new()?;
+    let snapshots = Arc::new(BucketSnapshots(f.bucket.clone()));
+    f.runtime = f.runtime.with_persistence(
+        PersistenceConfig::Replicated {
+            placements: vec!["us-west4-a".into(); 3],
+            durability: Durability::Zonal,
+        },
+        snapshots.clone(),
+    )?;
+    let active = f
+        .runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        serde_json::json!({"count":42}),
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes).await?;
+    f.runtime = f.runtime.with_persistence(
+        PersistenceConfig::Replicated {
+            placements: vec![
+                "us-west4-a".into(),
+                "us-west4-b".into(),
+                "us-west4-c".into(),
+            ],
+            durability: Durability::Regional,
+        },
+        snapshots.clone(),
+    )?;
+    assert!(f.runtime.get_owner(&f.actor.storage_key()).await?.is_some());
+    assert!(
+        f.runtime
+            .register_activation(&f.actor, &request("next"), "us-east", false, None)
+            .await
+            .is_err()
+    );
+    f.clock.0.store(11_000, Ordering::SeqCst);
+    let resumed = f
+        .runtime
+        .register_activation(&f.actor, &request("next"), "us-east", false, None)
+        .await?;
+    let state = crate::state_log::StateSnapshot::decode(resumed.state.as_ref().unwrap())?;
+    assert_eq!(state.owner_epoch, 2);
+    assert_eq!(state.state_version, 1);
+    assert_eq!(state.result, serde_json::json!(42));
+    f.runtime = f
+        .runtime
+        .with_persistence(PersistenceConfig::Local, snapshots)?;
+    assert!(f.runtime.get_owner(&f.actor.storage_key()).await.is_err());
+    Ok(())
+}

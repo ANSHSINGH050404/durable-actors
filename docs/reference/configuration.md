@@ -41,7 +41,7 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
-| `DURABLE_ACTORS_REPLICA_PLACEMENTS` | JSON array of Google Cloud zones; each entry requests a dedicated replica for every actor activation. All copies must confirm each write. |
+| `DURABLE_ACTORS_REPLICA_PLACEMENTS` | JSON array of desired replica zones per activation. All members of the current group must confirm each write. Replacement groups preserve at least two configured failure domains; insufficient capacity uses synchronous GCS persistence. |
 | `DURABLE_ACTORS_REPLICA_IDLE` | Ready unassigned replica target, default `192`. |
 | `DURABLE_ACTORS_REPLICA_MAX_STARTING` | Concurrent replica spare starts, default `32`. |
 | `DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET` | Secret containing `replica-key` in the sandbox namespace, default `terse-replica-credentials`. |
@@ -50,9 +50,9 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_REPLICA_SECRET` | Shared infrastructure credential, at least 32 bytes. Customer hosts receive actor-scoped capabilities. |
 | `DURABLE_ACTORS_REPLICA_ID` | Stable identity of this storage replica. |
 | `DURABLE_ACTORS_REPLICA_DATA` | SQLite file on a retained persistent volume. |
-| `DURABLE_ACTORS_DURABILITY` | `zonal` (default), `regional`, or `multi_region`. |
+| `DURABLE_ACTORS_DURABILITY` | `zonal` (runtime default), `regional` (chart default), or `multi_region`. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
-| `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a Google zone. |
+| `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a nonempty list of Google zones, for example `{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}`. A single zone string is also accepted. Actor placement spreads across the eligible zones. |
 | `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |

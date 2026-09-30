@@ -13,7 +13,15 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             memory_mib: 4096,
         },
     };
-    let pod = spare_pod(&request, "us-west4-a", "test-token")?;
+    let pod = spare_pod(
+        &request,
+        &[
+            "us-west4-a".into(),
+            "us-west4-b".into(),
+            "us-west4-c".into(),
+        ],
+        "test-token",
+    )?;
     assert_eq!(
         pod.metadata
             .annotations
@@ -27,10 +35,29 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
     let spec = pod.spec.unwrap();
     assert_eq!(spec.runtime_class_name.as_deref(), Some("gvisor"));
     assert_eq!(spec.automount_service_account_token, Some(false));
+    let affinity = spec
+        .affinity
+        .as_ref()
+        .unwrap()
+        .node_affinity
+        .as_ref()
+        .unwrap()
+        .required_during_scheduling_ignored_during_execution
+        .as_ref()
+        .unwrap();
     assert_eq!(
-        spec.node_selector.unwrap()["topology.kubernetes.io/zone"],
-        "us-west4-a"
+        affinity.node_selector_terms[0]
+            .match_expressions
+            .as_ref()
+            .unwrap()[0]
+            .values
+            .as_ref()
+            .unwrap(),
+        &["us-west4-a", "us-west4-b", "us-west4-c"]
     );
+    let spread = &spec.topology_spread_constraints.as_ref().unwrap()[0];
+    assert_eq!(spread.topology_key, "topology.kubernetes.io/zone");
+    assert_eq!(spread.when_unsatisfiable, "ScheduleAnyway");
     assert_eq!(
         spec.containers[0]
             .resources
