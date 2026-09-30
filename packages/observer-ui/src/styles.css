@@ -2383,7 +2383,6 @@
     background: transparent;
     text-align: left;
     color: var(--foreground);
-    cursor: pointer;
 }
 .request-waterfall-row:last-child {
     border-bottom: 0;
@@ -2392,7 +2391,6 @@
 .request-waterfall-row[data-state="selected"] {
     background: color-mix(in srgb, var(--request-method) 6%, var(--card));
 }
-.request-waterfall-row:focus-visible,
 .request-waterfall-scroll:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: -2px;
@@ -2444,9 +2442,19 @@
     max-width: 100%;
     border-radius: 4px;
     overflow: hidden;
+    padding: 0;
+    border: 0;
+    cursor: pointer;
     box-shadow:
         inset 0 1px 0 rgb(255 255 255 / 0.18),
         0 1px 3px rgb(0 0 0 / 0.08);
+}
+.request-waterfall-bar:hover,
+.request-waterfall-bar:focus-visible,
+.request-waterfall-bar[data-state="selected"] {
+    z-index: 1;
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
 }
 .request-waterfall-bar > .request-waterfall-queue {
     display: block;
@@ -2457,6 +2465,7 @@
     top: 50%;
     border-top: 1px dashed var(--muted-foreground);
     opacity: 0.45;
+    pointer-events: none;
 }
 .request-waterfall-caption {
     display: flex;

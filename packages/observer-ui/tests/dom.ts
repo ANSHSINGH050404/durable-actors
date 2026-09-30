@@ -2,7 +2,7 @@ import { JSDOM } from "jsdom"
 
 // Import this module first, then load React DOM, Radix, and cmdk with `await import()` so they
 // initialise against a browser-like global scope; a static import evaluates them too early.
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true })
 const { window } = dom
 
 class ResizeObserverStub {

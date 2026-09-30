@@ -232,7 +232,7 @@ test("instance requests filter both class and ID in live and saved history", asy
     assert.equal(queries[1]!.fromMs, undefined, "all retained history drops the time bound")
 })
 
-test("request inspection keeps table rows intact and opens a separate details sheet", async () => {
+test("request inspection keeps table rows intact and opens a separate details drawer", async () => {
     const view = render(
         <RequestObserver
             client={{

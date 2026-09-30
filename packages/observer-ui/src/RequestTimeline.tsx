@@ -25,10 +25,10 @@ export function RequestTimeline({ records, selected, onSelect }: RequestTimeline
                             </span>
                         ))}
                     </div>
-                    <span>Total / gap</span>
+                    <span>Calls / total</span>
                 </div>
                 {rows.map(row => (
-                    <TimelineRow key={row.record.eventId ?? row.record.sequence} row={row} scale={scale} selected={selected === row.record} onSelect={onSelect} />
+                    <TimelineRow key={row.key} row={row} scale={scale} selected={selected} onSelect={onSelect} />
                 ))}
             </div>
             <div className="request-waterfall-caption">
@@ -77,25 +77,22 @@ function TimelineHeading({ count, span }: { count: number; span: number }) {
 }
 
 function TimelineRow({
-    row: { record, offsetMs, gapMs },
+    row: { record, calls },
     scale,
     selected,
     onSelect
 }: {
     row: ReturnType<typeof requestTimeline>["rows"][number]
     scale: number
-    selected: boolean
+    selected: RequestTimelineProps["selected"]
     onSelect: RequestTimelineProps["onSelect"]
 }) {
     return (
-        <button
-            type="button"
+        <div
             className="request-waterfall-row"
-            data-state={selected ? "selected" : undefined}
-            aria-label={`Inspect ${record.operation} request on ${record.actorName} / ${record.actorId}, ${record.outcome}, ${duration(record.durationMs)}, starts +${duration(offsetMs)}, ${gapLabel(gapMs)}`}
-            aria-haspopup="dialog"
-            title={`${record.actorName} / ${record.actorId}\n${record.operation} · ${record.outcome}\nStart: ${new Date(record.startedAtMs).toLocaleString()} (+${duration(offsetMs)})\nTotal: ${duration(record.durationMs)}\nQueue wait: ${record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs)}\n${gapLabel(gapMs)}${gapMs === null ? "" : " relative to preceding calls on this instance"}`}
-            onClick={event => onSelect(record, event.currentTarget)}
+            role="group"
+            aria-label={`${record.operation} ${record.kind} calls on ${record.actorName} / ${record.actorId}`}
+            data-state={calls.some(call => call.record === selected) ? "selected" : undefined}
         >
             <span className="request-waterfall-label">
                 <strong>{record.operation}</strong>
@@ -103,22 +100,52 @@ function TimelineRow({
                     {record.actorName} / {record.actorId}
                 </span>
             </span>
-            <span className="request-waterfall-track" aria-hidden="true">
+            <span className="request-waterfall-track">
                 {ticks.map(tick => (
-                    <i className="request-waterfall-gridline" key={tick} style={{ left: `${tick * 100}%` }} />
+                    <i className="request-waterfall-gridline" aria-hidden="true" key={tick} style={{ left: `${tick * 100}%` }} />
                 ))}
-                {gapMs !== null && gapMs > 0 && <span className="request-waterfall-gap" style={{ left: `${((offsetMs - gapMs) / scale) * 100}%`, width: `${(gapMs / scale) * 100}%` }} />}
-                <span
-                    className={`request-waterfall-bar request-waterfall-${record.kind} request-waterfall-${record.outcome}`}
-                    style={{ left: `${(offsetMs / scale) * 100}%`, width: `${(record.durationMs / scale) * 100}%` }}
-                >
-                    {record.queueWaitMs !== null && record.queueWaitMs > 0 && <span className="request-waterfall-queue" style={{ width: `${(record.queueWaitMs / record.durationMs) * 100}%` }} />}
-                </span>
+                {calls.map(call => (
+                    <TimelineCall key={call.record.eventId ?? call.record.sequence} call={call} scale={scale} selected={selected === call.record} onSelect={onSelect} />
+                ))}
             </span>
             <span className="request-waterfall-timing">
-                <strong>{duration(record.durationMs)}</strong>
-                <span>{gapLabel(gapMs)}</span>
+                <strong>
+                    {calls.length.toLocaleString()} {calls.length === 1 ? "call" : "calls"}
+                </strong>
+                <span>{duration(calls.reduce((total, call) => total + call.record.durationMs, 0))} total</span>
             </span>
-        </button>
+        </div>
+    )
+}
+
+function TimelineCall({
+    call: { record, offsetMs, gapMs },
+    scale,
+    selected,
+    onSelect
+}: {
+    call: ReturnType<typeof requestTimeline>["calls"][number]
+    scale: number
+    selected: boolean
+    onSelect: RequestTimelineProps["onSelect"]
+}) {
+    return (
+        <>
+            {gapMs !== null && gapMs > 0 && (
+                <span className="request-waterfall-gap" aria-hidden="true" style={{ left: `${((offsetMs - gapMs) / scale) * 100}%`, width: `${(gapMs / scale) * 100}%` }} />
+            )}
+            <button
+                type="button"
+                className={`request-waterfall-bar request-waterfall-${record.kind} request-waterfall-${record.outcome}`}
+                style={{ left: `${(offsetMs / scale) * 100}%`, width: `${(record.durationMs / scale) * 100}%` }}
+                data-state={selected ? "selected" : undefined}
+                aria-label={`Inspect ${record.operation} request on ${record.actorName} / ${record.actorId}, ${record.outcome}, ${duration(record.durationMs)}, starts +${duration(offsetMs)}, ${gapLabel(gapMs)}`}
+                aria-haspopup="dialog"
+                title={`${record.actorName} / ${record.actorId}\n${record.operation} · ${record.outcome}\nStart: ${new Date(record.startedAtMs).toLocaleString()} (+${duration(offsetMs)})\nTotal: ${duration(record.durationMs)}\nQueue wait: ${record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs)}\n${gapLabel(gapMs)}${gapMs === null ? "" : " relative to preceding calls on this instance"}`}
+                onClick={event => onSelect(record, event.currentTarget)}
+            >
+                {record.queueWaitMs !== null && record.queueWaitMs > 0 && <span className="request-waterfall-queue" style={{ width: `${(record.queueWaitMs / record.durationMs) * 100}%` }} />}
+            </button>
+        </>
     )
 }

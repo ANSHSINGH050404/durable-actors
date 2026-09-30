@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 
-import { ChartNoAxesGantt, List, Pause, Play, RefreshCw } from "lucide-react"
+import { ChartNoAxesGantt, List, Pause, Play, RefreshCw, X } from "lucide-react"
 
 import { RequestTimeline } from "./RequestTimeline.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
@@ -8,9 +8,9 @@ import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js
 import type { RequestHistoryQuery as HistoryFilters } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "./components/ui/drawer.js"
 import { Input } from "./components/ui/input.js"
 import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
@@ -264,24 +264,36 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
             <p className="la-request-note">
                 Total includes queue wait, actor processing, and persistence. Queue wait includes the WebSocket message queue. Timings exclude the caller’s network round trip.
             </p>
-            <Sheet
+            <Drawer
+                direction="right"
+                autoFocus
                 open={!!selected}
                 onOpenChange={open => {
                     if (!open) setSelected(undefined)
                 }}
             >
-                <SheetContent
+                <DrawerContent
                     container={container.current}
+                    className="la:data-[vaul-drawer-direction=right]:w-full la:data-[vaul-drawer-direction=right]:sm:max-w-[480px]"
                     onCloseAutoFocus={event => {
                         event.preventDefault()
                         trigger.current?.focus()
                     }}
                 >
-                    <SheetTitle>Request details</SheetTitle>
-                    <SheetDescription>Full identifiers and timings for this request.</SheetDescription>
-                    {selected && <RequestDetails record={selected} timing={requestTimeline(records).rows.find(row => row.record === selected)} />}
-                </SheetContent>
-            </Sheet>
+                    <DrawerHeader className="la:relative la:shrink-0 la:gap-2 la:p-6 la:pr-16">
+                        <DrawerTitle>Request details</DrawerTitle>
+                        <DrawerDescription>Full identifiers and timings for this request.</DrawerDescription>
+                        <DrawerClose asChild>
+                            <Button className="la:absolute la:top-4 la:right-4" variant="ghost" size="icon" aria-label="Close">
+                                <X aria-hidden="true" />
+                            </Button>
+                        </DrawerClose>
+                    </DrawerHeader>
+                    <div className="la:min-h-0 la:flex-1 la:overflow-y-auto la:px-6 la:pb-6">
+                        {selected && <RequestDetails record={selected} timing={requestTimeline(records).calls.find(call => call.record === selected)} />}
+                    </div>
+                </DrawerContent>
+            </Drawer>
         </section>
     )
 }

@@ -5,7 +5,7 @@ export function requestTimeline(records: RequestTrace[]) {
     const start = ordered[0]?.startedAtMs ?? 0
     let end = start
     const finishes = new Map<string, number>()
-    const rows = ordered.map(record => {
+    const calls = ordered.map(record => {
         const key = JSON.stringify([record.projectId, record.actorName, record.actorId])
         const previousEnd = finishes.get(key)
         const finish = record.startedAtMs + record.durationMs
@@ -13,7 +13,22 @@ export function requestTimeline(records: RequestTrace[]) {
         end = Math.max(end, finish)
         return { record, offsetMs: record.startedAtMs - start, gapMs: previousEnd === undefined ? null : record.startedAtMs - previousEnd }
     })
-    return { start, span: end - start, rows }
+    return { start, span: end - start, calls, rows: methodRows(calls) }
+}
+
+function methodRows(calls: { record: RequestTrace; offsetMs: number; gapMs: number | null }[]) {
+    const rows = new Map<string, { key: string; record: RequestTrace; calls: typeof calls }>()
+    for (const call of calls) {
+        const { record } = call
+        const key = JSON.stringify([record.projectId, record.actorName, record.actorId, record.kind, record.operation])
+        let row = rows.get(key)
+        if (!row) {
+            row = { key, record, calls: [] }
+            rows.set(key, row)
+        }
+        row.calls.push(call)
+    }
+    return [...rows.values()]
 }
 
 export function duration(ms: number): string {
