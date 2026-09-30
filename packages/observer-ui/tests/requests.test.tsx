@@ -52,6 +52,7 @@ test("request history shows both timings, deduplicates replay, and can pause for
         }
     }
     const view = render(<RequestObserver client={client} />)
+    fireEvent.click(view.getByRole("button", { name: "Table" }))
     assert.ok(await view.findByText("25 ms"))
     assert.ok(view.getByText("10 ms"))
     await act(async () => publish(page))
@@ -83,6 +84,7 @@ test("persistence failures warn without hiding live requests", async () => {
         }
     }
     const view = render(<RequestObserver client={client} />)
+    fireEvent.click(view.getByRole("button", { name: "Table" }))
     assert.ok(await view.findByText("25 ms"))
     assert.match(view.getByRole("alert").textContent!, /could not be saved.*incomplete/u)
 })
@@ -215,6 +217,7 @@ test("instance requests filter both class and ID in live and saved history", asy
         }
     }
     const view = render(<RequestObserver client={client} actor={{ actorName: "Room", actorId: "lobby" }} />)
+    fireEvent.click(view.getByRole("button", { name: "Table" }))
     await view.findByText("post")
     assert.equal(view.queryByText("wrong class"), null)
     assert.equal(view.queryByText("wrong instance"), null)
@@ -241,6 +244,7 @@ test("request inspection keeps table rows intact and opens a separate details sh
         />
     )
     await view.findByText("post")
+    fireEvent.click(view.getByRole("button", { name: "Table" }))
     const table = view.getByRole("table", { name: "Recent requests" })
     fireEvent.click(view.getByRole("button", { name: "Inspect post request" }))
     assert.ok(await view.findByRole("dialog", { name: "Request details" }))

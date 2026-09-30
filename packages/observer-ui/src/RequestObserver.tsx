@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 
-import { Pause, Play, RefreshCw } from "lucide-react"
+import { ChartNoAxesGantt, List, Pause, Play, RefreshCw } from "lucide-react"
 
+import { RequestTimeline } from "./RequestTimeline.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
 import type { RequestHistoryQuery as HistoryFilters } from "./client.js"
@@ -13,6 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
+import { duration, gapLabel, requestTimeline } from "./request-timeline.js"
 import { defaultTimeRange, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
@@ -37,6 +39,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
     const [selected, setSelected] = useState<RequestTrace>()
+    const [view, setView] = useState<"waterfall" | "table">("waterfall")
     const container = useRef<HTMLElement>(null)
     const trigger = useRef<HTMLButtonElement | null>(null)
     const Heading = actor ? "h3" : "h1"
@@ -62,11 +65,21 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                 </p>
             )}
             <div className="la-observer-toolbar">
-                <div>
+                <div className={actor ? "la:sr-only" : undefined}>
                     <Heading>Requests</Heading>
                     <p>{actor ? "Method calls and WebSocket events for this instance." : "Method calls and WebSocket events, with time spent waiting and processing."}</p>
                 </div>
                 <div className="la-request-actions">
+                    <div className="request-view-toggle" role="group" aria-label="Request view">
+                        <Button variant={view === "waterfall" ? "secondary" : "ghost"} aria-pressed={view === "waterfall"} onClick={() => setView("waterfall")}>
+                            <ChartNoAxesGantt aria-hidden="true" />
+                            Waterfall
+                        </Button>
+                        <Button variant={view === "table" ? "secondary" : "ghost"} aria-pressed={view === "table"} onClick={() => setView("table")}>
+                            <List aria-hidden="true" />
+                            Table
+                        </Button>
+                    </div>
                     {client.listRequests && (
                         <>
                             <Button
@@ -135,65 +148,77 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                     Some older events are no longer retained. Showing available history.
                 </div>
             )}
-            <div className="la-observer-table-frame">
-                <Table aria-label={query ? "Saved requests" : "Recent requests"} className="la-request-table">
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead scope="col">Time</TableHead>
-                            <TableHead scope="col">Request</TableHead>
-                            <TableHead scope="col">Instance</TableHead>
-                            <TableHead scope="col">Transport</TableHead>
-                            <TableHead scope="col">Outcome</TableHead>
-                            <TableHead scope="col">Total</TableHead>
-                            <TableHead scope="col">Queue wait</TableHead>
-                            <TableHead scope="col">
-                                <span className="la:sr-only">Details</span>
-                            </TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {records.map(record => (
-                            <TableRow
-                                key={record.eventId ?? `${shown!.epoch}-${record.sequence}`}
-                                className="la-clickable-row"
-                                data-state={selected === record ? "selected" : undefined}
-                                onClick={event => {
-                                    trigger.current = event.currentTarget.querySelector("button")
-                                    setSelected(record)
-                                }}
-                            >
-                                <TableCell>
-                                    <time dateTime={new Date(record.startedAtMs).toISOString()} title={new Date(record.startedAtMs).toLocaleString()}>
-                                        {query ? new Date(record.startedAtMs).toLocaleString([], { hour12: false }) : new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
-                                    </time>
-                                </TableCell>
-                                <TableCell>
-                                    <span className="la-request-operation" title={record.operation}>
-                                        {record.operation}
-                                    </span>
-                                </TableCell>
-                                <TableCell>
-                                    <span className="la-request-actor" title={`${record.actorName} / ${record.actorId}`}>
-                                        {record.actorName} / {record.actorId}
-                                    </span>
-                                </TableCell>
-                                <TableCell>{record.kind === "method" ? "Method" : "WebSocket"}</TableCell>
-                                <TableCell>
-                                    <Badge variant="outline" className={`la-request-outcome-${record.outcome}`}>
-                                        {record.outcome[0]!.toUpperCase() + record.outcome.slice(1)}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell>{duration(record.durationMs)}</TableCell>
-                                <TableCell>{record.queueWaitMs === null ? <span title="Request did not begin processing">—</span> : duration(record.queueWaitMs)}</TableCell>
-                                <TableCell>
-                                    <Button variant="ghost" size="sm" aria-label={`Inspect ${record.operation} request`} aria-haspopup="dialog">
-                                        Details
-                                    </Button>
-                                </TableCell>
+            {view === "waterfall" && records.length > 0 && (
+                <RequestTimeline
+                    records={records}
+                    selected={selected}
+                    onSelect={(record, element) => {
+                        trigger.current = element
+                        setSelected(record)
+                    }}
+                />
+            )}
+            <div className={view === "table" || !records.length ? "la-observer-table-frame" : undefined}>
+                {view === "table" && (
+                    <Table aria-label={query ? "Saved requests" : "Recent requests"} className="la-request-table">
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead scope="col">Time</TableHead>
+                                <TableHead scope="col">Request</TableHead>
+                                <TableHead scope="col">Instance</TableHead>
+                                <TableHead scope="col">Transport</TableHead>
+                                <TableHead scope="col">Outcome</TableHead>
+                                <TableHead scope="col">Total</TableHead>
+                                <TableHead scope="col">Queue wait</TableHead>
+                                <TableHead scope="col">
+                                    <span className="la:sr-only">Details</span>
+                                </TableHead>
                             </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
+                        </TableHeader>
+                        <TableBody>
+                            {records.map(record => (
+                                <TableRow
+                                    key={record.eventId ?? `${shown!.epoch}-${record.sequence}`}
+                                    className="la-clickable-row"
+                                    data-state={selected === record ? "selected" : undefined}
+                                    onClick={event => {
+                                        trigger.current = event.currentTarget.querySelector("button")
+                                        setSelected(record)
+                                    }}
+                                >
+                                    <TableCell>
+                                        <time dateTime={new Date(record.startedAtMs).toISOString()} title={new Date(record.startedAtMs).toLocaleString()}>
+                                            {query ? new Date(record.startedAtMs).toLocaleString([], { hour12: false }) : new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
+                                        </time>
+                                    </TableCell>
+                                    <TableCell>
+                                        <span className="la-request-operation" title={record.operation}>
+                                            {record.operation}
+                                        </span>
+                                    </TableCell>
+                                    <TableCell>
+                                        <span className="la-request-actor" title={`${record.actorName} / ${record.actorId}`}>
+                                            {record.actorName} / {record.actorId}
+                                        </span>
+                                    </TableCell>
+                                    <TableCell>{record.kind === "method" ? "Method" : "WebSocket"}</TableCell>
+                                    <TableCell>
+                                        <Badge variant="outline" className={`la-request-outcome-${record.outcome}`}>
+                                            {record.outcome[0]!.toUpperCase() + record.outcome.slice(1)}
+                                        </Badge>
+                                    </TableCell>
+                                    <TableCell>{duration(record.durationMs)}</TableCell>
+                                    <TableCell>{record.queueWaitMs === null ? <span title="Request did not begin processing">—</span> : duration(record.queueWaitMs)}</TableCell>
+                                    <TableCell>
+                                        <Button variant="ghost" size="sm" aria-label={`Inspect ${record.operation} request`} aria-haspopup="dialog">
+                                            Details
+                                        </Button>
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                )}
                 {!records.length && (
                     <div className="la-request-empty" role="status">
                         <strong>
@@ -254,7 +279,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                 >
                     <SheetTitle>Request details</SheetTitle>
                     <SheetDescription>Full identifiers and timings for this request.</SheetDescription>
-                    {selected && <RequestDetails record={selected} />}
+                    {selected && <RequestDetails record={selected} timing={requestTimeline(records).rows.find(row => row.record === selected)} />}
                 </SheetContent>
             </Sheet>
         </section>
@@ -318,7 +343,7 @@ function HistoryFilters({
     )
 }
 
-function RequestDetails({ record }: { record: RequestTrace }) {
+function RequestDetails({ record, timing }: { record: RequestTrace; timing?: { offsetMs: number; gapMs: number | null } }) {
     const fields = {
         Operation: record.operation,
         "Actor class": record.actorName,
@@ -329,6 +354,7 @@ function RequestDetails({ record }: { record: RequestTrace }) {
         Outcome: record.outcome,
         Total: duration(record.durationMs),
         "Queue wait": record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs),
+        ...(timing ? { "Start offset in view": duration(timing.offsetMs), "Gap from preceding calls": gapLabel(timing.gapMs) } : {}),
         Host: record.hostId,
         ...(record.connectionId ? { Connection: record.connectionId } : {})
     }
@@ -342,10 +368,6 @@ function RequestDetails({ record }: { record: RequestTrace }) {
             ))}
         </dl>
     )
-}
-
-function duration(ms: number): string {
-    return ms >= 1000 ? `${(ms / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s` : `${ms.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms`
 }
 
 export { RequestObserver }

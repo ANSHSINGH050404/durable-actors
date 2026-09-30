@@ -80,6 +80,7 @@ test("opening an actor replaces the inventory with a dedicated page and returns 
     assert.match(view.getByText(/connections, not unique people/i).textContent!, /WebSocket/u)
 
     fireEvent.click(view.getByRole("button", { name: "general" }))
+    fireEvent.click(within(view.getByRole("group", { name: "Instance view" })).getByRole("button", { name: /^WebSockets/ }))
     assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
     assert.match(view.getByRole("row", { name: /socket-a/i }).textContent!, /"userId": "ada"/u)
     assert.match(view.getByRole("row", { name: /socket-c/i }).textContent!, /null/u)
@@ -206,11 +207,12 @@ test("actor search finds instance IDs and opens their requests and WebSockets di
     const result = view.getByRole("option", { name: /general.*Room.*Live.*3 connections/iu })
     fireEvent.click(result)
     assert.ok(view.getByRole("region", { name: "Room / general" }))
+    assert.ok(document.activeElement === view.getByRole("heading", { name: "general", level: 1 }), "the opened instance receives focus")
     assert.ok(view.getByRole("heading", { name: "Requests" }))
+    fireEvent.click(within(view.getByRole("group", { name: "Instance view" })).getByRole("button", { name: /^WebSockets/ }))
     assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
-    assert.ok(document.activeElement === view.getByRole("heading", { name: "general", level: 2 }), "the opened instance receives focus")
     fireEvent.click(view.getByRole("button", { name: "Back to instances" }))
-    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room instances" }))
+    assert.ok(document.activeElement === view.getByRole("heading", { name: "Room", level: 1 }))
 })
 
 test("instance search and residency filtering combine without changing inventory totals", async () => {
@@ -349,6 +351,7 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     await publish(`event: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
     fireEvent.click(view.getByRole("button", { name: "Room" }))
     fireEvent.click(view.getByRole("button", { name: "general" }))
+    fireEvent.click(within(view.getByRole("group", { name: "Instance view" })).getByRole("button", { name: /^WebSockets/ }))
     const detail = view.getByRole("region", { name: "Room / general" })
     for (let update = 0; update < 10; update++) {
         await publish(": heartbeat\n\n")
@@ -417,7 +420,7 @@ test("instance queues show operation bubbles and update while inspecting an inst
     assert.equal(view.getAllByText("sendMessage").length, 2)
     assert.ok(view.getByText("+1"))
     fireEvent.click(view.getByRole("button", { name: "general" }))
-    assert.ok(view.getByRole("heading", { name: "Waiting requests (4)" }))
+    assert.match(view.getByRole("region", { name: "Waiting requests" }).textContent!, /Waiting 4/u)
     assert.ok(view.getByText("close"))
     await act(async () => update({ actors: [{ ...current.actors[0]!, instances: [{ ...current.actors[0]!.instances[0]!, waiting: [] }] }] }))
     assert.ok(view.getByText("No requests waiting."))

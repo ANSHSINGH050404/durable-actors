@@ -40,9 +40,11 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
     const [selectedInstanceId, setSelectedInstanceId] = useState<string>()
     const [query, setQuery] = useState("")
     const heading = useRef<HTMLHeadingElement>(null)
-    const previousActor = useRef(initialActorName)
+    const selection = JSON.stringify([selectedActorName, selectedInstanceId])
+    const previousSelection = useRef(JSON.stringify([initialActorName, undefined]))
     const detailsId = useId()
     const selectedActor = inventory?.actors.find(actor => actor.actorName === selectedActorName)
+    const selectedInstance = selectedActor?.instances.find(instance => instance.actorId === selectedInstanceId)
     const waits = useQueueWaits(client, resolveRange(range, Date.now()), selectedActorName)
     const waitsByActor = waits.rows && queueWaitByActor(waits.rows)
     const waitsByInstance = waits.rows && selectedActorName !== undefined ? queueWaitByInstance(waits.rows, selectedActorName) : undefined
@@ -53,9 +55,9 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
         setQuery("")
     }, [client, initialActorName])
     useEffect(() => {
-        if (previousActor.current !== selectedActorName && selectedInstanceId === undefined) heading.current?.focus()
-        previousActor.current = selectedActorName
-    }, [selectedActorName, selectedInstanceId])
+        if (previousSelection.current !== selection) heading.current?.focus()
+        previousSelection.current = selection
+    }, [selection])
     const selectActor = (actorName?: string) => {
         setSelectedInstanceId(undefined)
         setSelectedActorName(actorName)
@@ -65,14 +67,20 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
         setSelectedActorName(actorName)
     }
     return (
-        <section className={`la-observer ${className}`} aria-label="Actor observer">
+        <section className={`la-observer ${selectedInstanceId !== undefined ? "la-observer-instance-page" : ""} ${className}`} aria-label="Actor observer">
             {selectedActorName !== undefined && (
                 <nav className="la-observer-breadcrumb" aria-label="Breadcrumb">
                     <Button variant="link" type="button" aria-label="Back to actors" onClick={() => selectActor(undefined)}>
                         Actors
                     </Button>
                     <span aria-hidden="true">/</span>
-                    <span aria-current={selectedInstanceId === undefined ? "page" : undefined}>{selectedActorName}</span>
+                    {selectedInstanceId === undefined ? (
+                        <span aria-current="page">{selectedActorName}</span>
+                    ) : (
+                        <Button variant="link" aria-label="Back to instances" onClick={() => setSelectedInstanceId(undefined)}>
+                            {selectedActorName}
+                        </Button>
+                    )}
                     {selectedInstanceId !== undefined && (
                         <>
                             <span aria-hidden="true">/</span>
@@ -85,10 +93,18 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                 <div>
                     <div className="la-observer-title">
                         <h1 ref={heading} tabIndex={-1}>
-                            {selectedActorName ?? "Actors"}
+                            {selectedInstanceId ?? selectedActorName ?? "Actors"}
                         </h1>
+                        {selectedInstance && (
+                            <Badge variant="outline" className={`la-observer-status-${selectedInstance.status}`}>
+                                <span className={`la-observer-dot la-observer-dot-${selectedInstance.status}`} />
+                                {labelStatus(selectedInstance.status)}
+                            </Badge>
+                        )}
                     </div>
-                    <p>{selectedActorName === undefined ? "Inspect instances, residency, and connections." : "Inspect this actor class’s instances, residency, and connections."}</p>
+                    {selectedInstanceId === undefined && (
+                        <p>{selectedActorName === undefined ? "Inspect instances, residency, and connections." : "Inspect this actor class’s instances, residency, and connections."}</p>
+                    )}
                 </div>
                 <div className="la-observer-actions">
                     {waits.supported && <TimeRangePicker value={range} onChange={setRange} />}
@@ -110,7 +126,14 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                     {selectedActorName !== undefined ? (
                         selectedActor ? (
                             <>
-                                <InventorySummary inventory={{ actors: [selectedActor] }} actorName={selectedActorName} queueWait={waits.supported ? (totalWait ?? null) : undefined} range={range} />
+                                {selectedInstanceId === undefined && (
+                                    <InventorySummary
+                                        inventory={{ actors: [selectedActor] }}
+                                        actorName={selectedActorName}
+                                        queueWait={waits.supported ? (totalWait ?? null) : undefined}
+                                        range={range}
+                                    />
+                                )}
                                 <ActorInstances
                                     client={client}
                                     key={selectedActorName}
@@ -356,64 +379,16 @@ function ActorInstances({
 }) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
-    const connectionDetailsId = `${id}-connections`
-    const [requestFocus, setRequestFocus] = useState<{ requestId?: string; connectionId?: string }>()
-    useEffect(() => setRequestFocus(undefined), [selectedInstanceId])
     const filtered = instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status))
     filtered.sort((a, b) => Number(b.status === "live") - Number(a.status === "live"))
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
-    const instanceHeading = useRef<HTMLHeadingElement>(null)
-    useEffect(() => {
-        instanceHeading.current?.focus()
-    }, [selectedInstanceId])
     if (selectedInstanceId !== undefined)
-        return (
-            <section className="la-observer-instance-detail" aria-label={`${actorName} / ${selectedInstanceId}`}>
-                <Button variant="link" aria-label="Back to instances" onClick={() => onSelectInstance(undefined)}>
-                    Back to instances
-                </Button>
-                <div className="la-observer-instance-heading">
-                    <h2 ref={instanceHeading} tabIndex={-1}>
-                        {selectedInstanceId}
-                    </h2>
-                    {selectedInstance && (
-                        <Badge variant="outline" className={`la-observer-status-${selectedInstance.status}`}>
-                            {labelStatus(selectedInstance.status)}
-                        </Badge>
-                    )}
-                </div>
-                {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
-                {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} range={range} />}
-                {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
-                {client.getState && client.listStateHistory && (
-                    <StateInspector
-                        key={`state-${selectedInstanceId}`}
-                        client={client}
-                        actorName={actorName}
-                        actorId={selectedInstanceId}
-                        onInspectRequest={focus => {
-                            setRequestFocus(focus)
-                            document.getElementById(`${id}-requests`)?.scrollIntoView({ block: "start", behavior: "smooth" })
-                        }}
-                    />
-                )}
-                <div id={`${id}-requests`} />
-                {client.watchRequests || client.listRequests ? (
-                    <RequestObserver key={`requests-${selectedInstanceId}`} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} focus={requestFocus} />
-                ) : (
-                    <section>
-                        <h3>Requests</h3>
-                        <p>Request timings are unavailable for this connection.</p>
-                    </section>
-                )}
-                {selectedInstance && <WebSocketConnections id={connectionDetailsId} actorId={selectedInstance.actorId} connections={selectedInstance.connections} />}
-            </section>
-        )
+        return <InstanceDetails key={selectedInstanceId} client={client} id={id} actorName={actorName} actorId={selectedInstanceId} instance={selectedInstance} waits={waits} range={range} />
     return (
         <section id={id} className="la-observer-instances" aria-labelledby={`${id}-heading`}>
             <div className="la-observer-instances-heading">
                 <div>
-                    <h2 ref={instanceHeading} tabIndex={-1} id={`${id}-heading`}>
+                    <h2 id={`${id}-heading`}>
                         {actorName} instances <Badge aria-hidden="true">{instances.length.toLocaleString()}</Badge>
                     </h2>
                     <p>Select an instance to inspect its persisted state, requests, and WebSocket connections.</p>
@@ -498,6 +473,78 @@ function ActorInstances({
     )
 }
 
+function InstanceDetails({
+    client,
+    id,
+    actorName,
+    actorId,
+    instance,
+    waits,
+    range
+}: {
+    client: ObserverClient
+    id: string
+    actorName: string
+    actorId: string
+    instance?: ActorInstance
+    waits?: Map<string, QueueWaitStats>
+    range: TimeRange
+}) {
+    const [view, setView] = useState("requests")
+    const [requestFocus, setRequestFocus] = useState<{ requestId?: string; connectionId?: string }>()
+    const requestButton = useRef<HTMLButtonElement>(null)
+    const hasState = !!client.getState && !!client.listStateHistory
+    return (
+        <section className="la-observer-instance-detail" aria-label={`${actorName} / ${actorId}`}>
+            {!instance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
+            <div className="la-observer-instance-metrics">
+                {waits && <InstanceQueueWait stats={waits.get(actorId)} range={range} />}
+                {instance && <WaitingRequests waiting={instance.waiting} />}
+            </div>
+            <div className="la-observer-instance-views" role="group" aria-label="Instance view">
+                <Button ref={requestButton} variant="ghost" aria-pressed={view === "requests"} onClick={() => setView("requests")}>
+                    Requests
+                </Button>
+                {hasState && (
+                    <Button variant="ghost" aria-pressed={view === "state"} onClick={() => setView("state")}>
+                        State
+                    </Button>
+                )}
+                {instance && (
+                    <Button variant="ghost" aria-pressed={view === "websockets"} onClick={() => setView("websockets")}>
+                        WebSockets <Badge>{instance.connections.length}</Badge>
+                    </Button>
+                )}
+            </div>
+            <div hidden={view !== "requests"}>
+                {client.watchRequests || client.listRequests ? (
+                    <RequestObserver client={client} actor={{ actorName, actorId }} timeRange={range} focus={requestFocus} />
+                ) : (
+                    <section>
+                        <h3>Requests</h3>
+                        <p>Request timings are unavailable for this connection.</p>
+                    </section>
+                )}
+            </div>
+            <div hidden={view !== "state"}>
+                {hasState && (
+                    <StateInspector
+                        client={client}
+                        actorName={actorName}
+                        actorId={actorId}
+                        onInspectRequest={focus => {
+                            setRequestFocus(focus)
+                            setView("requests")
+                            requestButton.current?.focus()
+                        }}
+                    />
+                )}
+            </div>
+            <div hidden={view !== "websockets"}>{instance && <WebSocketConnections id={`${id}-connections`} actorId={actorId} connections={instance.connections} />}</div>
+        </section>
+    )
+}
+
 function QueueWait({ stats }: { stats?: QueueWaitStats }) {
     if (!stats) return <span title="No admitted requests in the selected time range">—</span>
     return (
@@ -510,27 +557,24 @@ function QueueWait({ stats }: { stats?: QueueWaitStats }) {
 
 function InstanceQueueWait({ stats, range }: { stats?: QueueWaitStats; range: TimeRange }) {
     return (
-        <section className="la-observer-queue-wait-detail" aria-label="Queue wait">
-            <h3>Queue wait</h3>
-            <p>{stats ? `Time requests spent waiting to enter this actor ${rangePhrase(range)}.` : `No requests were admitted to this actor ${rangePhrase(range)}.`}</p>
-            {stats && (
-                <dl className="la-observer-summary la-observer-summary-compact">
+        <section className="la-observer-queue-wait-detail" aria-label="Queue wait" title={`Time waiting to enter this actor ${rangePhrase(range)}`}>
+            {stats ? (
+                <dl>
                     <div>
-                        <dt>Average</dt>
+                        <dt>Avg queue wait</dt>
                         <dd aria-label="Average queue wait">{formatWait(stats.averageMs)}</dd>
-                        <p>Per admitted request</p>
                     </div>
                     <div>
-                        <dt>Longest</dt>
+                        <dt>Max</dt>
                         <dd aria-label="Longest queue wait">{formatWait(stats.maxMs)}</dd>
-                        <p>Single request</p>
                     </div>
                     <div>
                         <dt>Admitted</dt>
                         <dd aria-label="Admitted requests">{stats.admitted.toLocaleString()}</dd>
-                        <p>Requests that entered the actor</p>
                     </div>
                 </dl>
+            ) : (
+                <p>No requests admitted {rangePhrase(range)}.</p>
             )}
         </section>
     )
@@ -539,9 +583,16 @@ function InstanceQueueWait({ stats, range }: { stats?: QueueWaitStats; range: Ti
 function WaitingRequests({ waiting }: { waiting: ActorInstance["waiting"] }) {
     return (
         <section className="la-observer-waiting" aria-label="Waiting requests">
-            <h3>Waiting requests{waiting != null && ` (${waiting.length})`}</h3>
-            <p>{waiting == null ? "This host has not reported its waiting line." : waiting.length ? "Next to run first. Operations leave this line when they start." : "No requests waiting."}</p>
-            {!!waiting?.length && <QueueBubbles waiting={waiting} />}
+            {waiting?.length ? (
+                <>
+                    <span className="la-observer-waiting-label">
+                        Waiting <strong>{waiting.length}</strong>
+                    </span>
+                    <QueueBubbles waiting={waiting} />
+                </>
+            ) : (
+                <p>{waiting == null ? "Queue reporting unavailable" : "No requests waiting."}</p>
+            )}
         </section>
     )
 }
