@@ -271,20 +271,16 @@ fn boundary(
         super::PersistenceConfig::Rapid {
             archive_bucket,
             buckets,
-            ..
         } => {
             let prefix = super::rapid::object_name(&prefix)?;
             rules.push(snapshot_rule(archive_bucket, &[&prefix], false)?);
-            let uploads = prefix.replacen("snapshots-", "uploads-", 1);
+            let logs = prefix.replacen("snapshots-", "logs-", 1);
             for placement in buckets {
-                rules.push(snapshot_rule(
-                    &placement.bucket,
-                    &[&prefix, &uploads],
-                    true,
-                )?);
+                rules.push(snapshot_rule(&placement.bucket, &[&logs], true)?);
             }
         }
     }
+
     if let Some(code) = code {
         ensure!(
             Some(code.bucket.as_str()) == artifact_bucket,

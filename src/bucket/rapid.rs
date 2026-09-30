@@ -1,242 +1,223 @@
-use super::{GcsBucket, PersistenceConfig, SnapshotStore, gcs::GcsClients};
+use super::{Bucket, SnapshotStore, replace};
+use crate::storage::StateStream;
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::{StreamExt, stream::FuturesUnordered};
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
-use tokio::sync::Semaphore;
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
+mod frame;
 mod gcs;
-use gcs::{GcsSnapshots, StorageClass};
+mod prepared;
+mod reader;
+mod segment;
+mod standard;
+mod writer;
+
+use frame::Record;
+use prepared::Prepared;
+use segment::Segment;
+use tokio_util::task::AbortOnDropHandle;
+use writer::Session;
+
+const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Replica {
+    bucket: String,
+    object: String,
+    generation: i64,
+}
+
+#[async_trait]
+trait LogWriter: Send {
+    async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64>;
+}
+
+#[async_trait]
+trait LogZone: Send + Sync {
+    fn bucket(&self) -> &str;
+    async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)>;
+    async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes>;
+    async fn delete(&self, replica: &Replica) -> Result<()>;
+}
 
 pub(crate) struct RapidSnapshots {
-    archive: Arc<dyn SnapshotStore>,
-    zones: Vec<Arc<dyn SnapshotStore>>,
-    ack_zones: usize,
-    uploads: Arc<Semaphore>,
+    storage: Arc<LogStorage>,
+    session: Arc<Mutex<Option<Session>>>,
+}
+
+struct LogStorage {
+    archive: Arc<dyn Bucket>,
+    snapshots: Arc<dyn SnapshotStore>,
+    zones: Vec<Arc<dyn LogZone>>,
+    prepared: std::sync::Mutex<Option<Prepared>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    format: u32,
+    id: String,
+    stream: StateStream,
+    first_version: u64,
+    replicas: Vec<Replica>,
 }
 
 impl RapidSnapshots {
-    pub(crate) fn gcs(config: &PersistenceConfig, clients: GcsClients) -> Result<Self> {
-        config.validate()?;
-        let PersistenceConfig::Rapid {
-            buckets,
-            archive_bucket,
-            ack_zones,
-        } = config
-        else {
-            anyhow::bail!("Rapid persistence configuration required");
-        };
-        let archive = Arc::new(GcsSnapshots::new(
-            archive_bucket,
-            clients.clone(),
-            StorageClass::Standard,
-        )?);
-        let zones = buckets
-            .iter()
-            .map(|placement| {
-                Ok(Arc::new(GcsSnapshots::new(
-                    &placement.bucket,
-                    clients.clone(),
-                    StorageClass::Rapid,
-                )?) as Arc<dyn SnapshotStore>)
-            })
-            .collect::<Result<_>>()?;
-        Self::new(archive, zones, *ack_zones)
-    }
-
-    pub(crate) async fn validate_gcs(
-        config: &PersistenceConfig,
-        clients: GcsClients,
-    ) -> Result<()> {
-        let PersistenceConfig::Rapid {
-            buckets,
-            archive_bucket,
-            ..
-        } = config
-        else {
-            anyhow::bail!("Rapid persistence configuration required");
-        };
-        GcsBucket::with_clients(archive_bucket, clients.clone())?
-            .require_standard()
-            .await?;
-        for placement in buckets {
-            let bucket = clients
-                .control
-                .get_bucket()
-                .set_name(format!("projects/_/buckets/{}", placement.bucket))
-                .send()
-                .await?;
-            ensure!(
-                bucket.storage_class == "RAPID",
-                "Rapid bucket has the wrong storage class"
-            );
-            let locations = bucket
-                .custom_placement_config
-                .context("Rapid bucket zone missing")?
-                .data_locations;
-            ensure!(
-                locations.len() == 1 && locations[0].eq_ignore_ascii_case(&placement.zone),
-                "Rapid bucket does not occupy its configured zone"
-            );
-        }
+    fn prepare(&self, actor: &crate::actor::ActorKey) -> Result<()> {
+        let prefix = object_name(&crate::storage_paths::snapshots(actor)?)?.replacen(
+            "snapshots-",
+            "logs-",
+            1,
+        );
+        *self.storage.prepared.lock().unwrap() =
+            Some(Prepared::new(prefix, self.storage.zones.clone()));
         Ok(())
     }
 
     fn new(
-        archive: Arc<dyn SnapshotStore>,
-        zones: Vec<Arc<dyn SnapshotStore>>,
-        ack_zones: usize,
+        archive: Arc<dyn Bucket>,
+        snapshots: Arc<dyn SnapshotStore>,
+        zones: Vec<Arc<dyn LogZone>>,
+        stop: CancellationToken,
     ) -> Result<Self> {
         ensure!(
-            ack_zones > 0 && ack_zones <= zones.len(),
-            "invalid Rapid acknowledgment count"
+            zones.len() == 2 && zones[0].bucket() != zones[1].bucket(),
+            "two independent log replicas required"
         );
-        Ok(Self {
+        let storage = Arc::new(LogStorage {
             archive,
+            snapshots,
             zones,
-            ack_zones,
-            uploads: Arc::new(Semaphore::new(8)),
-        })
-    }
-
-    fn archive(&self, object: String, bytes: Bytes) -> tokio::task::JoinHandle<Result<()>> {
-        let permit = self.uploads.clone().try_acquire_owned();
-        let archive = self.archive.clone();
-        tokio::spawn(async move {
-            let result = match permit {
-                Ok(_permit) => bounded(archive.put(&object, bytes)).await,
-                Err(error) => Err(error.into()),
-            };
-            if let Err(error) = &result {
-                tracing::warn!(event = "rapid_archive_deferred", %error, %object, "Standard archival deferred to managed transfer");
-            }
-            result
-        })
-    }
-
-    async fn persist_zones(&self, object: &str, bytes: Bytes) -> Result<usize> {
-        let mut pending: FuturesUnordered<_> = self
-            .zones
-            .iter()
-            .map(|store| bounded(store.put(object, bytes.clone())))
-            .collect();
-        let mut persisted = 0;
-        while let Some(result) = pending.next().await {
-            match result {
-                Ok(()) => persisted += 1,
-                Err(error) => tracing::warn!(%error, %object, "Rapid zone write failed"),
-            }
-            if persisted == self.ack_zones {
-                return Ok(persisted);
-            }
-            ensure!(
-                persisted + pending.len() >= self.ack_zones,
-                "insufficient Rapid zones persisted the snapshot"
-            );
-        }
-        anyhow::bail!("insufficient Rapid zones persisted the snapshot")
+            prepared: std::sync::Mutex::new(None),
+        });
+        let session = Arc::new(Mutex::new(None));
+        writer::start_checkpoints(storage.clone(), Arc::downgrade(&session), stop);
+        Ok(Self { storage, session })
     }
 }
 
 #[async_trait]
 impl SnapshotStore for RapidSnapshots {
-    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
-        let started = std::time::Instant::now();
-        let upload = self.archive(object.to_owned(), bytes.clone());
-        let archive = async { upload.await.context("Standard upload task failed")? };
-        let zones = self.persist_zones(object, bytes.clone());
-        tokio::pin!(archive, zones);
-        let (winner, ack_zones) = tokio::select! {
-            result = &mut archive => match result {
-                Ok(()) => ("standard", 0),
-                Err(_) => ("rapid", zones.await?),
-            },
-            result = &mut zones => match result {
-                Ok(count) => ("rapid", count),
-                Err(_) => {
-                    archive.await.context("neither Standard nor the Rapid quorum persisted the snapshot")?;
-                    ("standard", 0)
-                }
-            },
-        };
-        tracing::info!(event = "rapid_snapshot", %object, winner, ack_zones, bytes = bytes.len(), duration_ms = started.elapsed().as_secs_f64() * 1000.0);
-        Ok(())
-    }
-
     async fn get(&self, object: &str) -> Result<Option<Bytes>> {
-        let reads = self
-            .zones
-            .iter()
-            .chain(std::iter::once(&self.archive))
-            .map(|store| bounded(store.get(object)));
-        let mut selected = None;
-        let mut available = 0;
-        for result in futures_util::future::join_all(reads).await {
-            if let Ok(copy) = result {
-                available += 1;
-                if let Some(bytes) = copy {
-                    ensure!(
-                        selected.as_ref().is_none_or(|previous| previous == &bytes),
-                        "conflicting immutable snapshots"
-                    );
-                    selected = Some(bytes);
-                }
-            }
+        if let Some(bytes) = self.storage.snapshots.get(object).await? {
+            return Ok(Some(bytes));
         }
-        ensure!(
-            selected.is_some() || available == self.zones.len() + 1,
-            "snapshot unavailable"
-        );
-        Ok(selected)
+        let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
+        Ok(self
+            .storage
+            .records(&format!("{prefix}/"), false)
+            .await?
+            .remove(object))
     }
-
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        let (archive, zones) = tokio::join!(
-            bounded(self.archive.list(prefix)),
-            futures_util::future::join_all(
-                self.zones.iter().map(|store| bounded(store.list(prefix)))
-            )
-        );
-        let mut keys: BTreeSet<_> = archive?.into_iter().collect();
-        let mut available = 0;
-        for result in zones {
-            if let Ok(copy) = result {
-                available += 1;
-                keys.extend(copy);
-            }
-        }
-        ensure!(
-            available > self.zones.len() - self.ack_zones,
-            "insufficient Rapid zones to recover acknowledged writes"
-        );
-        Ok(keys.into_iter().collect())
-    }
-
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
-        let key = self
+        let mut keys: std::collections::BTreeSet<_> = self
+            .storage
+            .snapshots
             .list(prefix)
             .await?
             .into_iter()
-            .filter_map(|key| super::snapshots::version(&key).map(|v| (v, key)))
-            .max_by_key(|(version, _)| *version);
-        match key {
-            Some((_, key)) => {
-                let bytes = self
-                    .get(&key)
-                    .await?
-                    .context("latest snapshot disappeared before archival")?;
-                Ok(Some((key, bytes)))
-            }
-            None => Ok(None),
+            .filter(|key| super::snapshots::version(key).is_some())
+            .collect();
+        keys.extend(self.storage.records(prefix, false).await?.into_keys());
+        Ok(keys.into_iter().collect())
+    }
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+        self.storage.latest(prefix, false).await
+    }
+    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
+        let mut session = self.session.lock().await;
+        session
+            .as_mut()
+            .context("log stream is not activated")?
+            .put(&self.storage, object, bytes)
+            .await
+    }
+    async fn start(&self, stream: &StateStream) -> Result<()> {
+        let mut session = self.session.lock().await;
+        ensure!(session.is_none(), "log stream is already activated");
+        *session = Some(Session::open(self.storage.clone(), stream.clone())?);
+        Ok(())
+    }
+    async fn recover(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+        let latest = self.storage.latest(prefix, true).await?;
+        if let Some((object, bytes)) = &latest {
+            self.storage.snapshots.put(object, bytes.clone()).await?;
         }
+        Ok(latest)
+    }
+    async fn finish(&self, stream: &StateStream) -> Result<()> {
+        let mut session = self.session.lock().await;
+        let active = session.as_mut().context("log stream is not activated")?;
+        ensure!(active.stream == *stream, "cannot finish another log stream");
+        active.finish(&self.storage).await?;
+        *session = None;
+        Ok(())
     }
 }
 
-async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(Duration::from_secs(10), future)
+impl Manifest {
+    fn key(&self) -> Result<String> {
+        Ok(format!(
+            "{}log~{}.manifest",
+            super::rapid::object_name(&self.stream.prefix)?,
+            self.id
+        ))
+    }
+    fn archive_key(&self) -> Result<String> {
+        Ok(self.key()?.replace(".manifest", ".segment"))
+    }
+    fn object(&self) -> Result<String> {
+        let actor =
+            crate::storage_paths::actor_from_snapshot(&self.stream.object(self.first_version))?;
+        Ok(format!(
+            "{}{}.segment",
+            object_name(&crate::storage_paths::snapshots(&actor)?)?.replacen(
+                "snapshots-",
+                "logs-",
+                1
+            ),
+            self.id
+        ))
+    }
+    fn validate(&self, key: &str, prefix: &str, zones: &[Arc<dyn LogZone>]) -> Result<()> {
+        ensure!(
+            self.format == 1 && self.first_version > self.stream.base_version,
+            "invalid log manifest"
+        );
+        uuid::Uuid::parse_str(&self.id)?;
+        ensure!(
+            self.key()? == key && self.stream.prefix.starts_with(prefix),
+            "manifest escaped its stream"
+        );
+        let object = self.stream.object(self.first_version);
+        let actor = crate::storage_paths::actor_from_snapshot(&object)?;
+        crate::storage::validate_snapshot_object_name(&actor, self.first_version, &object)?;
+        ensure!(
+            object.rsplit('/').nth(1) == Some(format!("{:032x}", self.stream.owner_epoch).as_str()),
+            "manifest epoch mismatch"
+        );
+        ensure!(self.replicas.len() == zones.len(), "missing log replicas");
+        for (replica, zone) in self.replicas.iter().zip(zones) {
+            ensure!(
+                replica.bucket == zone.bucket()
+                    && replica.object == self.object()?
+                    && replica.generation > 0,
+                "invalid log replica descriptor"
+            );
+        }
+        Ok(())
+    }
+}
+
+async fn bounded<T>(operation: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(Duration::from_secs(10), operation)
         .await
-        .context("snapshot operation timed out")?
+        .context("log operation timed out")?
 }
 
 #[cfg(test)]

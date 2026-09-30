@@ -78,6 +78,9 @@ impl RuntimeStorage {
                 continue;
             }
             let ownership_cas_ms = write_started.elapsed().as_secs_f64() * 1_000.0;
+            let stream_started = Instant::now();
+            self.snapshots.start(&record.stream()?).await?;
+            let stream_open_ms = stream_started.elapsed().as_secs_f64() * 1_000.0;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -88,6 +91,7 @@ impl RuntimeStorage {
                 new_actor,
                 ownership_read_ms,
                 ownership_cas_ms,
+                stream_open_ms,
                 session_recovery_ms = recovery.session_ms,
                 snapshot_load_ms = recovery.snapshot_ms,
                 ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
@@ -207,13 +211,13 @@ impl RuntimeStorage {
             });
         }
         let started = Instant::now();
-        let snapshot = self.latest(record, None).await?;
-        if let Some(snapshot) = &snapshot {
-            // A recovered tail may belong to a write that never reached quorum.
-            self.snapshots
-                .put(&snapshot.reference.object, snapshot.bytes.clone())
-                .await?;
-        }
+        let recovered = self
+            .snapshots
+            .recover(&record.stream()?.prefix)
+            .await?
+            .map(|(key, bytes)| decode_snapshot(key, bytes.to_vec()))
+            .transpose()?;
+        let snapshot = self.load_latest(record, recovered).await?;
         Ok(ActivationRecovery {
             snapshot,
             session_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),

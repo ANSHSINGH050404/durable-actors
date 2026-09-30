@@ -41,9 +41,8 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
-| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Permanent Standard GCS bucket for immutable snapshots. Writes race the Rapid quorum; archival continues asynchronously when Rapid wins. |
-| `DURABLE_ACTORS_RAPID_BUCKETS` | JSON array of `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct Rapid zones. Required in production. |
-| `DURABLE_ACTORS_RAPID_ACK_ZONES` | Number of distinct Rapid zones required to acknowledge before Standard succeeds; default `2`. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Permanent Standard GCS bucket for manifests, checkpoints, and archived log segments. |
+| `DURABLE_ACTORS_RAPID_BUCKETS` | JSON array of exactly two `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct Rapid zones. Both durable flushes are required for acknowledgment. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
 | `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a nonempty list of Google zones, for example `{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}`. A single zone string is also accepted. Actor placement spreads across the eligible zones. |
 | `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |

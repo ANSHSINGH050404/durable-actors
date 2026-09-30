@@ -30,10 +30,9 @@ for (const [name, overrides, cpuMillis] of [
     })
 }
 
-test("renders two Rapid zones, an acknowledgment quorum, and the Standard archive", () => {
+test("renders two Rapid zones and the Standard archive", () => {
     const result = render()
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /DURABLE_ACTORS_RAPID_ACK_ZONES, value: "2"/)
     assert.match(result.stdout, /DURABLE_ACTORS_ARCHIVE_BUCKET, value: "test-archive"/)
     const buckets = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_RAPID_BUCKETS"))
     for (const value of ["test-rapid-a", "test-rapid-b", "us-west4-a", "us-west4-b"]) assert.ok(buckets.includes(value))
@@ -46,9 +45,8 @@ for (const [name, override] of [
     ["single control plane", { replicaCount: 1 }],
     ["single compute zone", { zones: { "north-america-west": "us-west4-a" } }],
     ["duplicate Rapid zones", { storage: { rapid: { buckets: [{ bucket: "rapid-one", zone: "us-west4-a" }, { bucket: "rapid-two", zone: "us-west4-a" }] } } }],
-    ["impossible quorum", { storage: { rapid: { ackZones: 3 } } }],
+    ["single Rapid zone", { storage: { rapid: { buckets: [{ bucket: "rapid-one", zone: "us-west4-a" }] } } }],
     ["empty Rapid set", { storage: { rapid: { buckets: [] } } }],
-    ["zero acknowledgments", { storage: { rapid: { ackZones: 0 } } }],
     ["mutable image", { image: { digest: "latest" } }],
     ["shared trust namespace", { sandboxNamespace: "terse-control" }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))

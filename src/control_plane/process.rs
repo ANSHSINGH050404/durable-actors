@@ -137,6 +137,8 @@ async fn control_plane_routes(
     let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
         &config.storage.persistence,
         authority.clients(),
+        stop.clone(),
+        None,
     )?);
     crate::bucket::RapidSnapshots::validate_gcs(&config.storage.persistence, authority.clients())
         .await?;
@@ -266,13 +268,11 @@ impl ControlPlaneProcessConfig {
         crate::storage::validate_bucket(&bucket)?;
         let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
         crate::storage::validate_bucket(&artifact_bucket)?;
+        let archive_bucket = required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?;
+        let buckets = serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?;
         let persistence = crate::bucket::PersistenceConfig::Rapid {
-            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
-            buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
-            ack_zones: get("DURABLE_ACTORS_RAPID_ACK_ZONES")
-                .map(|v| v.parse())
-                .transpose()?
-                .unwrap_or(2),
+            archive_bucket,
+            buckets,
         };
         persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");

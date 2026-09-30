@@ -1,143 +1,208 @@
 use super::*;
-use crate::bucket::{Bucket, gcs::GcsClients};
+use crate::bucket::{GcsBucket, PersistenceConfig, gcs::GcsClients};
+use google_cloud_storage::{
+    appendable_object_writer::AppendableObjectWriter, model_ext::ReadRange,
+};
 
-pub(super) struct GcsSnapshots {
+impl RapidSnapshots {
+    pub(crate) async fn validate_gcs(
+        config: &PersistenceConfig,
+        clients: GcsClients,
+    ) -> Result<()> {
+        let Some((buckets, archive_bucket)) = config.rapid_settings() else {
+            anyhow::bail!("Rapid persistence configuration required");
+        };
+        GcsBucket::with_clients(archive_bucket, clients.clone())?
+            .require_standard()
+            .await?;
+        for placement in buckets {
+            let bucket = clients
+                .control
+                .get_bucket()
+                .set_name(format!("projects/_/buckets/{}", placement.bucket))
+                .send()
+                .await?;
+            ensure!(
+                bucket.storage_class == "RAPID",
+                "Rapid bucket has the wrong storage class"
+            );
+            validate_retention(&bucket)?;
+            let locations = bucket
+                .custom_placement_config
+                .context("Rapid bucket zone missing")?
+                .data_locations;
+            ensure!(
+                locations.len() == 1 && locations[0].eq_ignore_ascii_case(&placement.zone),
+                "Rapid bucket does not occupy its configured zone"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn gcs(
+        config: &PersistenceConfig,
+        clients: GcsClients,
+        stop: CancellationToken,
+        actor: Option<&crate::actor::ActorKey>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let PersistenceConfig::Rapid {
+            buckets,
+            archive_bucket,
+        } = config
+        else {
+            anyhow::bail!("append-log persistence configuration required");
+        };
+        let archive = Arc::new(GcsBucket::with_clients(archive_bucket, clients.clone())?);
+        let snapshots = Arc::new(super::standard::GcsSnapshots::new(
+            archive_bucket,
+            clients.clone(),
+        )?);
+        let zones = buckets
+            .iter()
+            .map(|placement| {
+                Arc::new(GcsZone {
+                    bucket: format!("projects/_/buckets/{}", placement.bucket),
+                    clients: clients.clone(),
+                }) as Arc<dyn LogZone>
+            })
+            .collect();
+        let store = Self::new(archive, snapshots, zones, stop)?;
+        if let Some(actor) = actor {
+            store.prepare(actor)?;
+        }
+        Ok(store)
+    }
+}
+
+struct GcsZone {
     bucket: String,
-    read: GcsBucket,
     clients: GcsClients,
-    class: StorageClass,
 }
+struct GcsWriter(AppendableObjectWriter);
 
-pub(super) enum StorageClass {
-    Rapid,
-    Standard,
-}
+#[async_trait]
+impl LogZone for GcsZone {
+    fn bucket(&self) -> &str {
+        &self.bucket
+    }
 
-impl GcsSnapshots {
-    pub fn new(bucket: &str, clients: GcsClients, class: StorageClass) -> Result<Self> {
-        Ok(Self {
-            bucket: format!("projects/_/buckets/{bucket}"),
-            read: GcsBucket::with_clients(bucket, clients.clone())?,
-            clients,
-            class,
-        })
+    async fn open(&self, object: &str) -> Result<(Replica, Box<dyn LogWriter>)> {
+        let writer = self
+            .clients
+            .storage
+            .open_appendable_object(&self.bucket, object)
+            .set_if_generation_match(0)
+            .send()
+            .await?;
+        let replica = Replica {
+            bucket: self.bucket.clone(),
+            object: object.into(),
+            generation: writer.generation(),
+        };
+        Ok((replica, Box::new(GcsWriter(writer))))
+    }
+
+    async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
+        let mut writer = if fence {
+            Some(
+                self.clients
+                    .storage
+                    .reopen_appendable_object(&self.bucket, &replica.object, replica.generation)
+                    .send()
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let persisted = if let Some(writer) = &mut writer {
+            Some(writer.flush().await?)
+        } else {
+            None
+        };
+        if persisted == Some(0) {
+            return Ok(Bytes::new());
+        }
+        let descriptor = self
+            .clients
+            .storage
+            .open_object(&self.bucket, &replica.object)
+            .set_generation(replica.generation)
+            .send()
+            .await?;
+        let size = descriptor.object().size;
+        ensure!(
+            (0..=MAX_SEGMENT_BYTES as i64).contains(&size),
+            "log segment exceeds size limit"
+        );
+        if size == 0 {
+            return Ok(Bytes::new());
+        }
+        let mut reader = descriptor
+            .read_range(ReadRange::segment(0, size as u64))
+            .await;
+        let mut bytes = Vec::with_capacity(size as usize);
+        while let Some(chunk) = reader.next().await {
+            bytes.extend_from_slice(&chunk?);
+            ensure!(
+                bytes.len() <= size as usize,
+                "log read exceeded persisted size"
+            );
+        }
+        ensure!(
+            bytes.len() == size as usize
+                && persisted.is_none_or(|size| size as usize == bytes.len()),
+            "incomplete fenced log read"
+        );
+        drop(writer);
+        Ok(bytes.into())
+    }
+
+    async fn delete(&self, replica: &Replica) -> Result<()> {
+        self.clients
+            .control
+            .delete_object()
+            .set_bucket(&self.bucket)
+            .set_object(&replica.object)
+            .set_if_generation_match(replica.generation)
+            .send()
+            .await?;
+        Ok(())
     }
 }
 
 #[async_trait]
-impl SnapshotStore for GcsSnapshots {
-    async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
-        let object = super::object_name(object)?;
-        if matches!(self.class, StorageClass::Standard) {
-            ensure!(
-                crate::bucket::replace(&self.read, &object, None, bytes.to_vec()).await?,
-                "conflicting immutable archive"
-            );
-            return Ok(());
-        }
-        let staging = format!(
-            "{}-{}",
-            object.replacen("snapshots-", "uploads-", 1),
-            uuid::Uuid::new_v4()
-        );
-        let mut writer = self
-            .clients
-            .storage
-            .open_appendable_object(&self.bucket, &staging)
-            .set_if_generation_match(0)
-            .send()
-            .await?;
-        writer.append(bytes.clone()).await?;
-        let uploaded = writer.finalize().await?;
-        let published = self
-            .clients
-            .control
-            .move_object()
-            .set_bucket(&self.bucket)
-            .set_source_object(&staging)
-            .set_destination_object(&object)
-            .set_if_source_generation_match(uploaded.generation)
-            .set_if_generation_match(0)
-            .send()
-            .await;
-        match published {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                if self
-                    .read_snapshot(&object)
-                    .await?
-                    .is_some_and(|copy| copy == bytes)
-                {
-                    return Ok(());
-                }
-                Err(error.into())
-            }
-        }
-    }
-
-    async fn get(&self, object: &str) -> Result<Option<Bytes>> {
-        self.read_snapshot(&super::object_name(object)?).await
-    }
-
-    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        let physical = super::object_name(prefix)?;
-        self.read
-            .list(&physical)
-            .await?
-            .into_iter()
-            .map(|key| {
-                let suffix = key
-                    .strip_prefix(&physical)
-                    .context("snapshot list escaped its prefix")?;
-                Ok(format!("{prefix}{}", suffix.replace('~', "/")))
-            })
-            .collect()
-    }
-
-    async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
-        let key = self
-            .list(prefix)
-            .await?
-            .into_iter()
-            .filter_map(|key| super::super::snapshots::version(&key).map(|v| (v, key)))
-            .max_by_key(|(v, _)| *v);
-        match key {
-            Some((_, key)) => Ok(self.get(&key).await?.map(|bytes| (key, bytes))),
-            None => Ok(None),
-        }
+impl LogWriter for GcsWriter {
+    async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
+        self.0.append(bytes).await?;
+        Ok(self.0.flush().await?.try_into()?)
     }
 }
 
-impl GcsSnapshots {
-    async fn read_snapshot(&self, object: &str) -> Result<Option<Bytes>> {
-        if matches!(self.class, StorageClass::Standard) {
-            return Ok(self.read.get(object).await?.map(|copy| copy.bytes.into()));
-        }
-        let (_descriptor, mut reader) = match self
-            .clients
-            .storage
-            .open_object(&self.bucket, object)
-            .send_and_read(google_cloud_storage::model_ext::ReadRange::all())
-            .await
-        {
-            Ok(opened) => opened,
-            Err(error)
-                if error
-                    .status()
-                    .is_some_and(|status| status.code.name() == "NOT_FOUND") =>
+pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -> Result<()> {
+    const PREFIX: &str = "durable-actors-v3-logs-";
+    if let Some(lifecycle) = &bucket.lifecycle {
+        for rule in &lifecycle.rule {
+            if rule
+                .action
+                .as_ref()
+                .is_none_or(|action| action.r#type != "Delete")
             {
-                return Ok(None);
+                continue;
             }
-            Err(error) => return Err(error.into()),
-        };
-        let mut bytes = Vec::new();
-        while let Some(chunk) = reader.next().await {
-            bytes.extend_from_slice(&chunk?);
+            let prefixes = rule
+                .condition
+                .as_ref()
+                .map(|condition| condition.matches_prefix.as_slice())
+                .unwrap_or_default();
+            ensure!(
+                !prefixes.is_empty()
+                    && prefixes
+                        .iter()
+                        .all(|prefix| !PREFIX.starts_with(prefix) && !prefix.starts_with(PREFIX)),
+                "Rapid log objects must be excluded from automatic lifecycle deletion"
+            );
         }
-        Ok(Some(bytes.into()))
     }
+    Ok(())
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/bucket/rapid_gcs.rs"]
-mod tests;

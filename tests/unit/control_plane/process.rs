@@ -181,7 +181,7 @@ fn production_defaults_to_two_rapid_zones_and_gke() -> Result<()> {
     })?;
     assert!(matches!(
         config.storage.persistence,
-        crate::bucket::PersistenceConfig::Rapid { ack_zones: 2, .. }
+        crate::bucket::PersistenceConfig::Rapid { .. }
     ));
     assert_eq!(
         config.sandbox_provider.gke.zones["north-america-west"],

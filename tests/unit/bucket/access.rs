@@ -109,15 +109,15 @@ fn credentials_are_scoped_to_one_actor_and_its_deployed_code() -> Result<()> {
 }
 
 #[test]
-fn rapid_credentials_cover_only_the_actor_in_each_configured_bucket() -> Result<()> {
+fn log_credentials_cover_only_this_actors_logs_and_archive() -> Result<()> {
     let actor = crate::actor::ActorKey {
         project_id: "tenant".into(),
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let config: super::super::PersistenceConfig = serde_json::from_value(
-        json!({"type":"rapid", "archive_bucket":"archive-test", "buckets":[
-            {"bucket":"rapid-test-a", "zone":"us-west4-a"}, {"bucket":"rapid-test-b", "zone":"us-west4-b"}
+        json!({"type":"rapid","archive_bucket":"archive-test","buckets":[
+            {"bucket":"rapid-test-a","zone":"us-west4-a"},{"bucket":"rapid-test-b","zone":"us-west4-b"}
         ]}),
     )?;
     let value = boundary("authority", &config, None, &actor, None)?;
@@ -126,28 +126,18 @@ fn rapid_credentials_cover_only_the_actor_in_each_configured_bucket() -> Result<
         .unwrap();
     assert_eq!(rules.len(), 4);
     let prefix = super::super::rapid::object_name(&crate::storage_paths::snapshots(&actor)?)?;
-    for (rule, bucket) in rules[1..]
-        .iter()
-        .zip(["archive-test", "rapid-test-a", "rapid-test-b"])
-    {
-        assert_eq!(
-            rule["availableResource"],
-            format!("//storage.googleapis.com/projects/_/buckets/{bucket}")
-        );
-        assert!(
-            rule["availabilityCondition"]["expression"]
-                .as_str()
-                .unwrap()
-                .contains(&prefix)
-        );
-    }
+    assert!(
+        rules[1]["availabilityCondition"]["expression"]
+            .as_str()
+            .unwrap()
+            .contains(&prefix)
+    );
     for rule in &rules[2..] {
-        assert!(
-            rule["availabilityCondition"]["expression"]
-                .as_str()
-                .unwrap()
-                .contains(&prefix.replacen("snapshots-", "uploads-", 1))
-        );
+        let expression = rule["availabilityCondition"]["expression"]
+            .as_str()
+            .unwrap();
+        assert!(expression.contains(&prefix.replacen("snapshots-", "logs-", 1)));
+        assert!(!expression.contains(&prefix));
     }
     Ok(())
 }

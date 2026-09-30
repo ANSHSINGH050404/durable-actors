@@ -417,13 +417,10 @@ async fn prepare_actor_host(
             control_plane.clone(),
             stop,
             warm_storage,
+            config.actor.clone(),
         )
         .await?
-        .with_actor(
-            config.actor.clone(),
-            config.new_actor,
-            config.owner_hint.clone(),
-        ),
+        .with_activation(config.new_actor, config.owner_hint.clone()),
     );
     let started = timings.started_at;
     let storage_ready = async {

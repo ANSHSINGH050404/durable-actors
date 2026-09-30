@@ -19,6 +19,7 @@ impl RuntimeStorage {
             "actor ownership changed"
         );
         let checkpoint = self.upload_checkpoint(&record)?;
+        self.snapshots.finish(&record.stream()?).await?;
         self.release_with_checkpoint(actor, host, session, Some(checkpoint))
             .await
     }

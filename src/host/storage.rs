@@ -48,6 +48,7 @@ impl HostStorage {
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
         warm: Option<WarmGcs>,
+        actor: Option<ActorKey>,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let (authority, clients): (Arc<dyn Bucket>, _) = match config.bucket {
@@ -64,15 +65,15 @@ impl HostStorage {
             }
         };
         let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
-        if matches!(
-            config.persistence,
-            crate::bucket::PersistenceConfig::Rapid { .. }
-        ) {
-            let snapshots = crate::bucket::RapidSnapshots::gcs(
+        if config.persistence.rapid_settings().is_some() {
+            let clients = clients.clone().context("Rapid persistence requires GCS")?;
+            let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
                 &config.persistence,
-                clients.clone().context("Rapid persistence requires GCS")?,
-            )?;
-            runtime = runtime.with_persistence(config.persistence, Arc::new(snapshots))?;
+                clients,
+                stop.clone(),
+                actor.as_ref(),
+            )?);
+            runtime = runtime.with_persistence(config.persistence, snapshots)?;
         }
         Ok(Self {
             objects: clients.map(|clients| clients.storage),
@@ -82,7 +83,7 @@ impl HostStorage {
             host,
             session,
             region: config.region,
-            actor: None,
+            actor,
             new_actor: false,
             owner_hint: None,
             activation: Mutex::new(None),
@@ -105,13 +106,11 @@ impl HostStorage {
             .await
     }
 
-    pub(crate) fn with_actor(
+    pub(crate) fn with_activation(
         mut self,
-        actor: Option<ActorKey>,
         new_actor: bool,
         owner_hint: Option<crate::bucket::OwnershipHint>,
     ) -> Self {
-        self.actor = actor;
         self.new_actor = new_actor;
         self.owner_hint = owner_hint;
         self

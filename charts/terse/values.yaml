@@ -12,7 +12,6 @@ storage:
   artifactBucket: ""
   archiveBucket: ""
   rapid:
-    ackZones: 2
     buckets: []
 cloudSql:
   instanceConnectionName: ""

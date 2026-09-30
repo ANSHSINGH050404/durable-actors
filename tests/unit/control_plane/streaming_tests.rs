@@ -615,9 +615,10 @@ impl Stack {
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
                 None,
+                Some(actor.clone()),
             )
             .await?
-            .with_actor(Some(actor.clone()), true, None),
+            .with_activation(true, None),
         );
         storage
             .register(&HostLeaseRequest {

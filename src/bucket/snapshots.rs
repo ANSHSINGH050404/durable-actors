@@ -13,8 +13,6 @@ pub enum PersistenceConfig {
     Rapid {
         buckets: Vec<RapidBucket>,
         archive_bucket: String,
-        #[serde(default = "default_ack_zones")]
-        ack_zones: usize,
     },
 }
 
@@ -25,34 +23,30 @@ pub struct RapidBucket {
     pub zone: String,
 }
 
-fn default_ack_zones() -> usize {
-    2
-}
-
 impl PersistenceConfig {
+    pub(crate) fn rapid_settings(&self) -> Option<(&[RapidBucket], &str)> {
+        match self {
+            Self::Local => None,
+            Self::Rapid {
+                buckets,
+                archive_bucket,
+            } => Some((buckets, archive_bucket)),
+        }
+    }
     pub(crate) fn same_backend(&self, other: &Self) -> bool {
         self == other
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
-        let Self::Rapid {
-            buckets,
-            archive_bucket,
-            ack_zones,
-        } = self
-        else {
+        let Some((buckets, archive_bucket)) = self.rapid_settings() else {
             return Ok(());
         };
+        ensure!(
+            buckets.len() == 2,
+            "append logs require exactly two Rapid zones"
+        );
         crate::storage::validate_bucket(archive_bucket)?;
-        ensure!(
-            *ack_zones > 0 && *ack_zones <= buckets.len(),
-            "acknowledgments must require 1..=configured Rapid zones"
-        );
-        ensure!(
-            buckets.len() <= 7,
-            "at most seven Rapid buckets fit in the credential access boundary"
-        );
         let mut zones = HashSet::new();
         let mut names = HashSet::new();
         for placement in buckets {
@@ -72,7 +66,7 @@ impl PersistenceConfig {
                 "Rapid buckets must occupy distinct zones"
             );
             ensure!(
-                names.insert(&placement.bucket) && placement.bucket != *archive_bucket,
+                names.insert(&placement.bucket) && placement.bucket != archive_bucket,
                 "Rapid and Standard buckets must be distinct"
             );
         }
@@ -86,6 +80,19 @@ pub(crate) trait SnapshotStore: Send + Sync {
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>>;
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()>;
+    async fn start(&self, _stream: &crate::storage::StateStream) -> Result<()> {
+        Ok(())
+    }
+    async fn recover(&self, prefix: &str) -> Result<Option<(String, Bytes)>> {
+        let latest = self.latest(prefix).await?;
+        if let Some((object, bytes)) = &latest {
+            self.put(object, bytes.clone()).await?;
+        }
+        Ok(latest)
+    }
+    async fn finish(&self, _stream: &crate::storage::StateStream) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub(crate) struct BucketSnapshots(pub Arc<dyn Bucket>);

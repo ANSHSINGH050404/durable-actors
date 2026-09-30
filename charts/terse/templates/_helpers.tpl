@@ -14,10 +14,10 @@
 {{- if lt (len $placements) 2 }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
 {{- end -}}
 {{- $zones := dict -}}{{- $buckets := dict -}}
+{{- if ne (len .Values.storage.rapid.buckets) 2 }}{{ fail "append logs require exactly two Rapid zones" }}{{ end -}}
 {{- range .Values.storage.rapid.buckets -}}
 {{- if hasKey $zones .zone }}{{ fail "Rapid buckets require distinct zones" }}{{ end -}}
 {{- if or (hasKey $buckets .bucket) (eq .bucket $.Values.storage.archiveBucket) }}{{ fail "Rapid and Standard buckets must be distinct" }}{{ end -}}
 {{- $_ := set $zones .zone true -}}{{- $_ := set $buckets .bucket true -}}
 {{- end -}}
-{{- if gt (int .Values.storage.rapid.ackZones) (len $zones) }}{{ fail "ackZones exceeds configured Rapid zones" }}{{ end -}}
 {{- end -}}

@@ -51,3 +51,18 @@ Arguments are measured activation samples per case and warmups per case. Default
 Cold reads/writes use separate new actors; the generic gVisor process must already be ready. Resume uses the same actor and client after idle shutdown and verified GCS archival, requiring a different host and higher ownership epoch. Incorrect state, missing prewarmed-pod evidence, failed archival, or request errors fail the run. Pod/spare and archive checks happen outside the request timer.
 
 Use the default 10-second host idle timeout. The runner waits 13 seconds after the last initial invocation before checking all old hosts. It does not provision or delete infrastructure. Collect infrastructure placement evidence and remove the isolated resources after the run.
+
+## Regional client and fault checks
+
+`client.mjs` runs inside a client pod using the SDK packaged in the production image. Set `BENCH_SDK_CLIENT` to `/opt/durable-actors/sdk/dist/client/remoteClient.js`, `BENCH_INTERNAL_URL` to the control-plane Service origin, `BENCH_PROJECT_ID`, and `BENCH_API_KEY` through a Secret. `BENCH_MODE` labels the output. The client preserves the returned target's path while routing through that internal origin. It checks 100 hot writes and reads after five warmups, then a clean resume. This excludes laptop/tunnel latency and the separate application `/actors/access` authorization service.
+
+Using the same private settings as the lifecycle runner:
+
+```sh
+node tests/gke-lifecycle/crash.mjs
+node tests/gke-lifecycle/checkpoint.mjs
+```
+
+The crash test locates only its newly created actor's pod, sends SIGKILL to PID 1, verifies ownership remained unsealed, waits for lease expiration, and checks that a new host recovers all five acknowledged writes before accepting write six. Run it only against an isolated benchmark deployment. It writes `crash-result.json` and the old host's log.
+
+The checkpoint test keeps one actor active for over two minutes. It verifies that archival happened while the actor remained active, that writes opened a new segment, and that clean resume preserves all 131 writes. It writes `checkpoint-result.json`. Neither runner removes test objects or infrastructure; clean up their exact actor prefixes after collecting results.
