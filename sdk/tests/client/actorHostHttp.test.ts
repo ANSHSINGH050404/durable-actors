@@ -22,7 +22,7 @@ test("HTTP invocation sends its ticket, epoch, method and arguments in one POST"
         methods.push(init.method)
         assert.equal(init?.method, "POST")
         assert.equal(new Headers(init?.headers).get("authorization"), "Bearer ticket")
-        assert.equal(init?.redirect, "error")
+        assert.equal(init?.redirect, "manual")
         assert.deepEqual(JSON.parse(String(init?.body)), {
             requestId: "request-1",
             ownerEpoch: 3,

@@ -209,6 +209,7 @@ paths:
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
                 The SDK retries once across both paths only for explicit pre-execution rejection or a refused host connection.
+                When the gateway cannot connect to a cached host, it returns not_executed with reason upstream_not_reached; the SDK clears the target and retries once through control-plane resolution with the same requestId.
                 A control-plane outcome of unauthenticated means the host rejected its ticket before execution; HTTP 401 means the caller credential was rejected.
                 Actor failures and ambiguous errors are never automatically replayed. An outcome_unknown error means execution may have occurred.
                 requestId identifies an attempt; it does not deduplicate execution.

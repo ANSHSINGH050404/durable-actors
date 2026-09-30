@@ -91,7 +91,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
             `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/find-websocket`,
             {
                 method: "POST",
-                redirect: "error",
+                redirect: "manual",
                 headers: { ...authorizationHeaders(this.apiKey), "content-type": "application/json" },
                 body: JSON.stringify({ metadata, authorizationLifetimeMs, homeRegion }),
                 signal: AbortSignal.timeout(this.setupTimeoutMs)

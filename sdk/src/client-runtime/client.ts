@@ -121,7 +121,7 @@ export class HttpActorClient {
                 `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, invocation.actorName, invocation.actorId)}/invoke`,
                 {
                     method: "POST",
-                    redirect: "error",
+                    redirect: "manual",
                     headers: {
                         accept: "application/json",
                         ...authorizationHeaders(this.settings.credential),
@@ -201,7 +201,7 @@ export class HttpActorClient {
         try {
             response = await this.fetchRequest(targetUrl(this.settings, invocation.actorName, invocation.actorId), {
                 method: "POST",
-                redirect: "error",
+                redirect: "manual",
                 headers: {
                     accept: "application/json",
                     ...authorizationHeaders(this.settings.credential),

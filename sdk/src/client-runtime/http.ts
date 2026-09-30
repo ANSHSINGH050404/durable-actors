@@ -34,7 +34,7 @@ export class HttpActorHostTransport implements ActorHostTransport {
             `${validateOrigin(target.route)}${projectActorPath(actor.projectId, actor.actorName, actor.actorId)}/${endpoint}`,
             {
                 method: "POST",
-                redirect: "error",
+                redirect: "manual",
                 headers: {
                     authorization: `Bearer ${target.token}`,
                     "content-type": "application/json",
