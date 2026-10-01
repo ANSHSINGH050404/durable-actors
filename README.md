@@ -1,6 +1,6 @@
 # Durable Actors
 
-> Open source alternative Durable Objects
+> Open source alternative to Durable Objects
 
 If you've been burned by memory limits in Durable Objects, the lack of observability or want to avoid the lock in, Durable Actors is a self-hostable alternative that could work for you!
 
