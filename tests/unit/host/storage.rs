@@ -6,12 +6,20 @@ use std::collections::HashMap;
 struct MemoryBucket {
     objects: Mutex<HashMap<String, BucketObject>>,
     owner_reads: std::sync::atomic::AtomicUsize,
+    reject_snapshot_reads: std::sync::atomic::AtomicBool,
     reject_snapshots: std::sync::atomic::AtomicBool,
     delay_snapshot: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
 }
 #[async_trait]
 impl Bucket for MemoryBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        ensure!(
+            !key.contains("/snapshots/")
+                || !self
+                    .reject_snapshot_reads
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot read unavailable"
+        );
         if key.contains("/owners/") {
             self.owner_reads
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -53,6 +61,13 @@ impl Bucket for MemoryBucket {
         Ok(true)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        ensure!(
+            !prefix.contains("/snapshots/")
+                || !self
+                    .reject_snapshot_reads
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot read unavailable"
+        );
         Ok(self
             .objects
             .lock()
@@ -251,4 +266,65 @@ async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePl
     )?
     .encode()?;
     Ok((bucket, storage, plan, bytes))
+}
+
+#[tokio::test]
+async fn socket_authorization_checks_persisted_ownership_without_reading_snapshots() -> Result<()> {
+    let (bucket, storage, _, _) = pending_write().await?;
+    let actor = storage.actor.as_ref().unwrap();
+    let sockets = crate::host::sockets::HostSockets::new(storage.clone());
+    bucket
+        .reject_snapshot_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    sockets
+        .publish_authorized(actor, &storage.host, 1, vec![])
+        .await?;
+    assert!(
+        sockets
+            .publish_authorized(actor, &storage.host, 2, vec![])
+            .await
+            .is_err()
+    );
+    assert!(
+        sockets
+            .publish_authorized(actor, &HostId::new("other"), 1, vec![])
+            .await
+            .is_err()
+    );
+    let other_actor = ActorKey {
+        actor_id: "other".into(),
+        ..actor.clone()
+    };
+    assert!(
+        sockets
+            .publish_authorized(&other_actor, &storage.host, 1, vec![])
+            .await
+            .is_err()
+    );
+    {
+        let mut objects = bucket.objects.lock().unwrap();
+        let owner = objects
+            .iter_mut()
+            .find(|(key, _)| key.contains("/owners/"))
+            .unwrap()
+            .1;
+        let mut record: serde_json::Value = serde_json::from_slice(&owner.bytes)?;
+        record["lease"]["session_id"] = "replacement".into();
+        owner.bytes = serde_json::to_vec(&record)?;
+        owner.generation += 1;
+    }
+    assert!(
+        sockets
+            .publish_authorized(actor, &storage.host, 1, vec![])
+            .await
+            .is_err()
+    );
+    storage.stop.cancel();
+    assert!(
+        sockets
+            .publish_authorized(actor, &storage.host, 1, vec![])
+            .await
+            .is_err()
+    );
+    Ok(())
 }

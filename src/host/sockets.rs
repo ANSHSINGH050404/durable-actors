@@ -28,7 +28,9 @@ impl HostSockets {
         effects: Vec<ActorSocketEffect>,
     ) -> Result<()> {
         self.storage.ensure_authority()?;
-        self.storage.load_actor_state(actor, host, epoch).await?;
+        self.storage
+            .verify_actor_ownership(actor, host, epoch)
+            .await?;
         self.publish(actor, effects).await
     }
 
@@ -118,7 +120,7 @@ impl SocketDispatcher for HostSocketDispatcher {
         // Checking the persisted fence avoids queueing the upgrade behind a long actor handler.
         self.sockets
             .storage
-            .load_actor_state(&ticket.actor, self.host.id(), target.owner_epoch)
+            .verify_actor_ownership(&ticket.actor, self.host.id(), target.owner_epoch)
             .await?;
         Ok(())
     }

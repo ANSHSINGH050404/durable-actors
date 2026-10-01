@@ -11,6 +11,7 @@ pub(crate) struct SocketGrant {
     pub actor: ActorKey,
     pub region: String,
     pub target: Option<SocketTarget>,
+    pub home_region: Option<String>,
     pub metadata: Value,
     pub authorization_lifetime_ms: i64,
 }
@@ -19,6 +20,9 @@ impl SocketGrant {
     pub(crate) fn validate(&self) -> Result<()> {
         self.actor.validate()?;
         validate_region(&self.region)?;
+        if let Some(region) = &self.home_region {
+            validate_region(region)?;
+        }
         validate_socket_metadata(&self.metadata)?;
         ensure!(
             (1_000..=86_400_000).contains(&self.authorization_lifetime_ms),
@@ -38,8 +42,11 @@ pub(crate) struct SocketTicket {
     pub nbf: i64,
     pub exp: i64,
     pub actor: ActorKey,
+    // Until host binding, region is a hint and home_region is an explicit placement constraint.
     pub region: String,
     pub target: Option<SocketTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_region: Option<String>,
     pub metadata: Value,
     pub connect_by_ms: i64,
     pub authorized_until_ms: i64,
@@ -49,6 +56,9 @@ impl SocketTicket {
     pub(crate) fn validate(&self, now_ms: i64) -> Result<()> {
         self.actor.validate()?;
         validate_region(&self.region)?;
+        if let Some(region) = &self.home_region {
+            validate_region(region)?;
+        }
         validate_socket_metadata(&self.metadata)?;
         ensure!(self.scope == "actor:socket", "invalid socket ticket scope");
         ensure!(

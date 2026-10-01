@@ -228,17 +228,38 @@ impl RuntimeStorage {
         lease: &HostLease,
         epoch: u64,
     ) -> Result<LoadedActor> {
+        let record = self.owned_actor(actor, lease, epoch).await?;
+        self.load_actor(record).await
+    }
+
+    pub(crate) async fn verify_actor_ownership(
+        &self,
+        actor: &ActorKey,
+        lease: &HostLease,
+        epoch: u64,
+    ) -> Result<()> {
+        self.owned_actor(actor, lease, epoch).await?;
+        Ok(())
+    }
+
+    async fn owned_actor(
+        &self,
+        actor: &ActorKey,
+        lease: &HostLease,
+        epoch: u64,
+    ) -> Result<Ownership> {
         let (_, record) = self
             .load(&actor.storage_key())
             .await?
             .context("actor has no ownership")?;
         ensure!(
-            record.lease.id == lease.id
+            record.actor == *actor
+                && record.lease.id == lease.id
                 && record.lease.session_id == lease.session_id
                 && record.epoch == epoch,
             "actor ownership changed"
         );
-        self.load_actor(record).await
+        Ok(record)
     }
 
     pub async fn prepare_actor_write(

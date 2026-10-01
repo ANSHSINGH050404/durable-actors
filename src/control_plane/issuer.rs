@@ -166,6 +166,7 @@ impl ActorJwtIssuer {
             actor: grant.actor,
             region: grant.region,
             target: grant.target,
+            home_region: grant.home_region,
             metadata: grant.metadata,
             authorized_until_ms,
             connect_by_ms,
@@ -177,6 +178,22 @@ impl ActorJwtIssuer {
             connect_by_ms,
             authorized_until_ms,
         ))
+    }
+
+    pub(super) fn bind_socket(&self, ticket: SocketTicket) -> Result<String> {
+        self.bind_socket_at(ticket, unix_millis()?)
+    }
+
+    fn bind_socket_at(&self, mut ticket: SocketTicket, now_ms: i64) -> Result<String> {
+        ensure!(ticket.target.is_some(), "socket ticket has no host binding");
+        // The gateway already admitted this connection; startup must not extend authorization.
+        ticket.iat = now_ms / 1000;
+        ticket.nbf = ticket.iat;
+        ticket.connect_by_ms = ticket.authorized_until_ms.min(now_ms + 60_000);
+        ticket.exp = (ticket.connect_by_ms + 999) / 1000;
+        ticket.home_region = None;
+        ticket.validate(now_ms)?;
+        self.sign(&ticket)
     }
 
     #[cfg(test)]

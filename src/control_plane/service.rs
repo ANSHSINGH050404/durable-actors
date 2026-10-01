@@ -256,6 +256,24 @@ impl ControlPlaneService {
         Ok(())
     }
 
+    pub(super) async fn bind_socket(
+        &self,
+        mut ticket: super::socket_ticket::SocketTicket,
+    ) -> Result<(super::socket_ticket::SocketTarget, String)> {
+        let routed = self
+            .route_actor(
+                &ticket.actor,
+                &ticket.region,
+                ticket.home_region.as_deref(),
+                None,
+            )
+            .await?;
+        let target = routed.socket_target();
+        ticket.region = routed.placement.home_region;
+        ticket.target = Some(target.clone());
+        Ok((target, self.host_token_issuer.bind_socket(ticket)?))
+    }
+
     pub(super) async fn socket_destination(
         &self,
         actor: &ActorKey,
@@ -271,16 +289,8 @@ impl ControlPlaneService {
             .provisioner
             .socket_credentials(&routed.spec, &routed.placement.home_region, &routed.lease)
             .await?;
-        Ok((
-            routed.placement.home_region,
-            super::socket_ticket::SocketTarget {
-                route: routed.lease.route.clone(),
-                host_id: routed.lease.id,
-                session_id: routed.lease.session_id,
-                owner_epoch: routed.placement.owner_epoch,
-            },
-            credentials,
-        ))
+        let target = routed.socket_target();
+        Ok((routed.placement.home_region, target, credentials))
     }
 
     pub(super) fn deliver_socket_message_event(
@@ -1196,6 +1206,17 @@ struct RoutedActor {
     placement: ObjectPlacement,
     lease: HostLease,
     spec: HostLaunchSpec,
+}
+
+impl RoutedActor {
+    fn socket_target(&self) -> super::socket_ticket::SocketTarget {
+        super::socket_ticket::SocketTarget {
+            route: self.lease.route.clone(),
+            host_id: self.lease.id.clone(),
+            session_id: self.lease.session_id.clone(),
+            owner_epoch: self.placement.owner_epoch,
+        }
+    }
 }
 
 fn elapsed_ms(started_at: Instant) -> f64 {

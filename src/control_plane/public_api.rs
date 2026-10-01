@@ -30,7 +30,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
     let gateway = invocations
         .gateway
         .clone()
-        .map(|gateway| gateway.router())
+        .map(|gateway| gateway.router(invocations.clone()))
         .unwrap_or_default();
     let hosts = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -147,17 +147,26 @@ async fn find_websocket(
             .clone()
             .unwrap_or_else(|| state.invocations.default_region().into()),
         target: None,
+        home_region: request.home_region.clone(),
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
     grant.validate().map_err(ApiError::bad_request)?;
-    let (region, target, credentials) = state
-        .invocations
-        .socket_destination(&grant.actor, &grant.region, request.home_region.as_deref())
-        .await
-        .map_err(ApiError::routing)?;
-    grant.region = region;
-    grant.target = Some(target);
+    let credentials = if let Some(gateway) = &state.invocations.gateway {
+        crate::sandbox::SocketCredentials {
+            url: gateway.origin.clone(),
+        }
+    } else {
+        let (region, target, credentials) = state
+            .invocations
+            .socket_destination(&grant.actor, &grant.region, request.home_region.as_deref())
+            .await
+            .map_err(ApiError::routing)?;
+        grant.region = region;
+        grant.target = Some(target);
+        grant.home_region = None;
+        credentials
+    };
     let issued = state
         .admin
         .issue_direct_socket(grant, credentials)

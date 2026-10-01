@@ -31,6 +31,13 @@ pub(crate) trait ActorStorage: Send + Sync {
         _host: &super::HostId,
     ) -> Result<ActorActivation>;
 
+    async fn verify_actor_ownership(
+        &self,
+        actor: &crate::actor::ActorKey,
+        host: &super::HostId,
+        epoch: u64,
+    ) -> Result<()>;
+
     async fn load_actor_state(
         &self,
         _actor: &crate::actor::ActorKey,

@@ -16,7 +16,10 @@ use tokio_tungstenite::{
     tungstenite::{Message as UpstreamMessage, protocol::WebSocketConfig},
 };
 
-use super::{ActorJwtVerifier, issuer::ActorJwtIssuer, socket_ticket::SocketTicketVerifier};
+use super::{
+    ActorJwtVerifier, issuer::ActorJwtIssuer, service::ControlPlaneService,
+    socket_ticket::SocketTicketVerifier,
+};
 
 #[derive(Clone)]
 pub(super) struct Gateway {
@@ -51,10 +54,10 @@ impl Gateway {
         Ok(backend_origin(&capability.route)?.to_string())
     }
 
-    pub fn router(self) -> Router {
+    pub fn router(self, service: ControlPlaneService) -> Router {
         Router::new()
             .route("/v1/socket", get(connect))
-            .with_state(self)
+            .with_state((self, service))
     }
 }
 
@@ -79,7 +82,7 @@ struct SocketQuery {
 }
 
 async fn connect(
-    State(gateway): State<Gateway>,
+    State((gateway, service)): State<(Gateway, ControlPlaneService)>,
     Query(query): Query<SocketQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
@@ -87,13 +90,19 @@ async fn connect(
         .sockets
         .verify(&query.key)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let target = ticket.target.ok_or(StatusCode::UNAUTHORIZED)?;
+    let (target, key) = match ticket.target.clone() {
+        Some(target) => (target, query.key),
+        None => service
+            .bind_socket(ticket)
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?,
+    };
     let mut url = backend_origin(&target.route).map_err(|_| StatusCode::UNAUTHORIZED)?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     url.set_path("/v1/socket");
-    url.query_pairs_mut().append_pair("key", &query.key);
+    url.query_pairs_mut().append_pair("key", &key);
     let config = WebSocketConfig::default()
         .max_message_size(None)
         .max_frame_size(None);

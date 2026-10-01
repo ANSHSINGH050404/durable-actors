@@ -16,6 +16,7 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
         },
         region: "us-east".into(),
         target: None,
+        home_region: Some("us-east".into()),
         metadata: serde_json::json!({"userId":"alice"}),
         authorization_lifetime_ms: 900_000,
     };
@@ -27,6 +28,25 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
     assert_eq!(claims.metadata, grant().metadata);
     assert_eq!(claims.authorized_until_ms, now + 900_000);
     assert!(issuer.verify_socket_at(&token, now + 60_000).is_err());
+    let mut admitted = claims.clone();
+    admitted.target = Some(super::super::socket_ticket::SocketTarget {
+        route: "http://host".into(),
+        host_id: HostId::new("host"),
+        session_id: "session".into(),
+        owner_epoch: 7,
+    });
+    let bound = issuer.bind_socket_at(admitted.clone(), now + 70_000)?;
+    let bound = issuer.verify_socket_at(&bound, now + 70_001)?;
+    assert_eq!(bound.actor, claims.actor);
+    assert_eq!(bound.metadata, claims.metadata);
+    assert_eq!(bound.authorized_until_ms, authorized_until);
+    assert_eq!(bound.connect_by_ms, now + 130_000);
+    assert!(serde_json::to_value(&bound)?.get("homeRegion").is_none());
+    let near_expiry = issuer.bind_socket_at(admitted.clone(), authorized_until - 1)?;
+    let near_expiry = issuer.verify_socket_at(&near_expiry, authorized_until - 1)?;
+    assert_eq!(near_expiry.connect_by_ms, authorized_until);
+    assert!(issuer.bind_socket_at(admitted, authorized_until).is_err());
+
     assert!(issuer.verify_socket_at(&token, now - 1_000).is_err());
     assert!(socket_issuer()?.verify_socket_at(&token, now).is_err());
     let host = issuer.issue_host(

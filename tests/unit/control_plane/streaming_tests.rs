@@ -188,6 +188,7 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
                 actor: ticket.actor,
                 region: ticket.region,
                 target: ticket.target,
+                home_region: None,
                 metadata: serde_json::json!({}),
                 authorization_lifetime_ms: 3_000,
             })?;
