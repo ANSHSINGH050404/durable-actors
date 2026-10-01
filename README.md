@@ -82,7 +82,7 @@ export class ChatHistory extends Actor<Member, string, Chat> {
 ```
 
 
-### Connect your Backend
+## Connect your Backend
 
 We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
 
