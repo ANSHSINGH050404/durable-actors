@@ -27,7 +27,7 @@ gcloud storage buckets create gs://ACTOR_RAPID_B --project=PROJECT \
   --enable-hierarchical-namespace --uniform-bucket-level-access --public-access-prevention
 ```
 
-The application archives segments before deleting their Rapid copies. Do not configure lifecycle deletion for `durable-actors-v3-logs-`, or for permanent Standard state. Startup rejects Rapid deletion rules that could match the log prefix. A crashed host's retained logs must remain available until safely archived; see [retention and cleanup](../../docs/rapid-log-persistence.md#retention-and-cleanup).
+The application archives segments before deleting their Rapid copies. Do not configure lifecycle deletion for `durable-actors-v3-logs-`, or for permanent Standard state. Startup rejects Rapid deletion rules that could match the log prefix. A crashed host's retained logs must remain available until safely archived.
 
 ## Install
 
@@ -65,7 +65,7 @@ The first write waits for a durable manifest binding both object generations to 
 
 Segments rotate at 8 MiB, with a checkpoint worker checking every 60 seconds. Clean shutdown archives all records and records the final snapshot in ownership. Clean resume reads that snapshot directly. Crash recovery waits for lease expiry, fences available old streams, verifies records, and makes recovered state durable in Standard before claiming a new ownership epoch. One surviving Rapid zone can recover acknowledged records because every acknowledgment required both copies. An interrupted request can have an uncertain outcome.
 
-Actor-scoped credentials cover only the ownership object, the actor's log and archive prefixes, and its immutable deployment code. [The persistence protocol](../../docs/rapid-log-persistence.md) describes corruption checks, recovery, rotation, and retention limits.
+Actor-scoped credentials cover only the ownership object, the actor's log and archive prefixes, and its immutable deployment code.
 
 ## Capacity and deployment
 
