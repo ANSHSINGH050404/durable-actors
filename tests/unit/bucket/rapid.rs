@@ -9,7 +9,7 @@ use anyhow::ensure;
 use std::{
     collections::BTreeMap,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -41,15 +41,23 @@ async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_stat
 }
 
 fn state(version: u64, epoch: u64) -> Result<Bytes> {
-    Ok(StateSnapshot::new(
+    // LTX files contain timestamps; reuse captures for byte-for-byte recovery assertions.
+    static STATES: OnceLock<Mutex<BTreeMap<(u64, u64), Bytes>>> = OnceLock::new();
+    let mut states = STATES.get_or_init(Mutex::default).lock().unwrap();
+    if let Some(bytes) = states.get(&(version, epoch)) {
+        return Ok(bytes.clone());
+    }
+    let bytes: Bytes = StateSnapshot::new(
         version,
         epoch,
         format!("request-{version}"),
-        serde_json::json!({"count":version}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count": version}))?,
         serde_json::json!(version),
     )?
     .encode()?
-    .into())
+    .into();
+    states.insert((version, epoch), bytes.clone());
+    Ok(bytes)
 }
 
 #[tokio::test]
@@ -247,13 +255,8 @@ async fn segment_rotation_preserves_all_versions_and_reclaims_archived_replicas(
     let store = f.store()?;
     store.start(&f.stream).await?;
     for version in 1..=10 {
-        let snapshot = StateSnapshot::new(
-            version,
-            1,
-            format!("request-{version}"),
-            serde_json::json!({"data":"x".repeat(1_000_000)}),
-            serde_json::json!(version),
-        )?;
+        let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
+        snapshot.result = serde_json::json!({"data": "x".repeat(1_000_000)});
         store
             .put(&f.stream.object(version), snapshot.encode()?.into())
             .await?;
@@ -304,15 +307,10 @@ async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Re
     let store = f.store()?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
-    let bytes: Bytes = StateSnapshot::new(
-        2,
-        1,
-        "large".into(),
-        serde_json::json!({"data":"x".repeat(5*1024*1024)}),
-        serde_json::Value::Null,
-    )?
-    .encode()?
-    .into();
+    let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
+    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    let bytes: Bytes = snapshot.encode()?.into();
+    assert!(bytes.len() > frame::MAX_STATE);
     store.put(&f.stream.object(2), bytes.clone()).await?;
     store.finish(&f.stream).await?;
     assert_eq!(f.store()?.get(&f.stream.object(2)).await?, Some(bytes));
