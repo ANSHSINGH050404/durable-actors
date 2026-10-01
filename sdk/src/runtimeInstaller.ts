@@ -6,7 +6,8 @@ import { x } from "tar"
 
 import { actorEnvironment } from "./environment.js"
 
-const executables = ["durable-actors"]
+const executables = ["durable-actors", "litestream"]
+const bundleFiles = [...executables, "LICENSE.litestream"]
 const maximumBytes = 200 * 1024 * 1024
 
 export async function fetchRuntimeExecutablePath(): Promise<string> {
@@ -72,17 +73,18 @@ export class RuntimeInstaller {
             cwd: directory,
             strict: true,
             filter: (name, entry) =>
-                executables.includes(name) && "type" in entry && entry.type === "File" && entry.size <= maximumBytes
+                bundleFiles.includes(name) && "type" in entry && entry.type === "File" && entry.size <= maximumBytes
         })
         await rm(file)
-        if (!(await completeBundle(directory))) throw new Error("Runtime archive is missing the Rust executable.")
+        if (!(await completeBundle(directory)))
+            throw new Error("Runtime archive is missing a required runtime or Litestream file.")
         await Promise.all(executables.map(name => chmod(path.join(directory, name), 0o755)))
     }
 }
 
 async function completeBundle(directory: string): Promise<boolean> {
     return Promise.all(
-        executables.map(name =>
+        bundleFiles.map(name =>
             lstat(path.join(directory, name))
                 .then(stat => stat.isFile() && stat.size > 0)
                 .catch(() => false)

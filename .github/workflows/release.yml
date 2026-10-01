@@ -83,6 +83,10 @@ jobs:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
+            - name: Install pinned Litestream
+              run: |
+                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
               run: cargo fmt --all -- --check
 
@@ -139,6 +143,10 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
+            - name: Install pinned Litestream
+              run: |
+                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
               run: pnpm --dir sdk format:check
 

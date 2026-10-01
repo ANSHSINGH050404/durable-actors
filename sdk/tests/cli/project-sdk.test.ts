@@ -109,6 +109,8 @@ test("embedded dev and local startup resolve the SDK from the wrapper, preservin
 async function cacheRuntime(cache: string, version: string): Promise<string> {
     const runtime = path.join(cache, version, `${process.platform}-${process.arch}`)
     await mkdir(runtime, { recursive: true })
+    await writeFile(path.join(runtime, "litestream"), "litestream")
+    await writeFile(path.join(runtime, "LICENSE.litestream"), "license")
     const binary = path.join(runtime, "durable-actors")
     await writeFile(
         binary,

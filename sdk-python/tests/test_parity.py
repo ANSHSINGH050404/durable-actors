@@ -5,6 +5,7 @@ import sys
 
 import httpx
 import pytest
+from fixtures.sqlite import seed
 from test_authoring import Chat
 
 from durable_actors import ActorInvocationError, Client
@@ -216,7 +217,7 @@ async def test_socket_tag_contract_rejects_values_outside_the_declared_set():
         {
             "type": "websocket_event",
             "actor": {"project_id": "local", "actor_name": "Room", "actor_id": "one"},
-            "state": None,
+            "sqlite": seed(),
             "event": {
                 "type": "connect",
                 "connection": {"id": "socket", "metadata": "Ada", "tags": []},

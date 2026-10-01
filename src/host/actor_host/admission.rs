@@ -274,7 +274,7 @@ impl Mailbox {
 async fn execute(
     executor: &dyn ActorExecutor,
     operation: &ActorOperation,
-    state: Option<Arc<serde_json::Value>>,
+    state: Option<Arc<crate::actor::ActorState>>,
 ) -> Execution {
     match operation {
         ActorOperation::Method(invocation) => {

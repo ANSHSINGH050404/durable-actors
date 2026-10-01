@@ -69,6 +69,8 @@ function validateField(
     member: ParsedMember
 ): { field?: ActorFieldSchema; diagnostics: ts.Diagnostic[] } {
     const node = member.node as ts.PropertyDeclaration
+    if (fieldName(node.name) === "db")
+        return { diagnostics: [definitionDiagnostic(node.name, "actor field db is reserved for SQLite")] }
     if (member.diagnostics.length > 0) return { diagnostics: [] }
     const annotations = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Persistence)
     const emission = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Emission)

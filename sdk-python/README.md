@@ -15,7 +15,7 @@ pnpm install
 uv sync
 ```
 
-Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Wrap persisted fields with `emitted()` to broadcast saved changes.
+Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Persisted fields are stored in SQLite. Litestream is installed and managed automatically with the runtime; local development persists to the filesystem. Wrap persisted fields with `emitted()` to broadcast saved changes.
 
 ```python
 from durable_actors import Actor, emitted, persisted

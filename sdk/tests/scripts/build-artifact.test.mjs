@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { buildActor } from "../../dist/compiler/actor-build.js"
+import { fields, seed } from "../fixtures/litestream.ts"
 
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
@@ -130,37 +131,42 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     t.after(() => socket.destroy())
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
     const receive = async () => JSON.parse((await lines.next()).value)
-    assert.deepEqual(await receive(), { type: "attach", protocol: 18, actor_names: ["BuiltCounter"] })
+    assert.deepEqual(await receive(), { type: "attach", protocol: 21, actor_names: ["BuiltCounter"] })
     const send = message => socket.write(JSON.stringify(message) + "\n")
-    send({ type: "attached", protocol: 18 })
+    send({ type: "attached", protocol: 21 })
     const actor = { project_id: "default", actor_name: "BuiltCounter", actor_id: "counter" }
-    const invoke = (messageId, state) =>
+    let sqlite = await seed()
+    const invoke = messageId =>
         send({
             type: "command",
             message_id: messageId,
-            command: { type: "invoke", request_id: `request-${messageId}`, actor, method: "add", args: [2], state }
+            command: { type: "invoke", request_id: `request-${messageId}`, actor, method: "add", args: [2], sqlite }
         })
-    invoke(1, null)
-    assert.deepEqual(await receive(), {
+    invoke(1)
+    const first = await receive()
+    sqlite = { ...sqlite, ...first.reply.sqlite }
+    assert.deepEqual(first, {
         type: "reply",
         message_id: 1,
         reply: {
             type: "invoked",
             result: { count: 3, calls: 1 },
-            state: { count: 3 },
+            sqlite: first.reply.sqlite,
             effects: [{ type: "state_update", changes: { count: 3 }, removed: [] }]
         }
     })
     send({ type: "command", message_id: 2, command: { type: "evict", actor } })
     assert.equal((await receive()).reply.type, "evicted")
-    invoke(3, { count: 3 })
-    assert.deepEqual(await receive(), {
+    invoke(3)
+    const resumed = await receive()
+    sqlite = { ...sqlite, ...resumed.reply.sqlite }
+    assert.deepEqual(resumed, {
         type: "reply",
         message_id: 3,
         reply: {
             type: "invoked",
             result: { count: 6, calls: 1 },
-            state: { count: 6 },
+            sqlite: resumed.reply.sqlite,
             effects: [{ type: "state_update", changes: { count: 6 }, removed: [] }]
         }
     })
@@ -173,12 +179,12 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
             actor,
             method: "invalidState",
             args: [],
-            state: { count: 6 }
+            sqlite
         }
     })
     const unchecked = (await receive()).reply
     assert.equal(unchecked.type, "invoked")
-    assert.deepEqual(unchecked.state, { count: "invalid" })
+    assert.deepEqual(fields(sqlite), { count: "invalid" })
 })
 
 test("actor builds report invalid persistence annotations before deployment", async t => {

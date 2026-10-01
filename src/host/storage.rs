@@ -201,6 +201,26 @@ impl ActorStorage for HostStorage {
         ))
     }
 
+    async fn read_snapshot(
+        &self,
+        actor: &ActorKey,
+        snapshot: &crate::storage::SnapshotRef,
+    ) -> Result<bytes::Bytes> {
+        self.authorize(actor, &self.host)?;
+        ensure!(
+            snapshot
+                .object
+                .starts_with(&crate::storage_paths::snapshots(actor)?),
+            "SQLite dependency belongs to another actor"
+        );
+        crate::storage::SnapshotReader::read_snapshot(
+            self.runtime.as_ref(),
+            &self.region,
+            &snapshot.object,
+        )
+        .await
+    }
+
     async fn prepare_state_write(
         &self,
         actor: &ActorKey,

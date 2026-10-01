@@ -22,6 +22,12 @@ test("rejects invalid or dynamic sandbox overrides", () => {
         assert.ok(analyze(`import { Actor, Sandbox } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
 })
 
+test("db is reserved for the actor SQLite database", () => {
+    const result = analyze(`import { Actor, Persisted } from "./sdk.js"
+        export class Room extends Actor { @Persisted db = 1 }`)
+    assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
+})
+
 test("recognizes aliased reentrant async methods", () => {
     const result = analyze(`import { Actor, Reentrant as R } from "./sdk.js"
         export class Room extends Actor { @R async stream() {} async read() {} }`)

@@ -143,8 +143,12 @@ async fn control_plane_routes(
     crate::bucket::RapidSnapshots::validate_gcs(&config.storage.persistence, authority.clients())
         .await?;
     let storage = Arc::new(
-        RuntimeStorageReader::new(authority, Arc::new(crate::clock::SystemClock))?
-            .with_persistence(config.storage.persistence, snapshots)?,
+        RuntimeStorageReader::new(
+            authority,
+            Arc::new(crate::clock::SystemClock),
+            Arc::new(crate::litestream::RestoreCommand("litestream".into())),
+        )?
+        .with_persistence(config.storage.persistence, snapshots)?,
     );
     let runtime_access = Arc::new(
         crate::bucket::access::RuntimeAccess::new(

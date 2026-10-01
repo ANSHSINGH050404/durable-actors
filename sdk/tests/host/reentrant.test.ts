@@ -4,6 +4,7 @@ import { test } from "node:test"
 import { Actor, type ActorClass, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorRuntime } from "../../src/host/actor-runtime.js"
+import { seed } from "../fixtures/litestream.js"
 
 function deferred() {
     let resolve!: () => void
@@ -13,13 +14,14 @@ function deferred() {
     return { promise, resolve }
 }
 
-function setup(actorClass: ActorClass, reentrantMethods: string[], allowNextInvocation = () => {}) {
+async function setup(actorClass: ActorClass, reentrantMethods: string[], allowNextInvocation = () => {}) {
     const definition = registerActorClass(actorClass, {
         actorName: actorClass.name,
         fields: [{ name: "count", persistence: Persistence.Persisted }],
         ...{ reentrantMethods }
     })
     const runtime = new ActorRuntime(definition, allowNextInvocation)
+    const sqlite = await seed()
     const invoke = (method: string) =>
         runtime.handle({
             type: "invoke",
@@ -27,7 +29,7 @@ function setup(actorClass: ActorClass, reentrantMethods: string[], allowNextInvo
             actor: { project_id: "test", actor_name: actorClass.name, actor_id: "one" },
             method,
             args: [],
-            state: null
+            sqlite
         })
     return { runtime, invoke }
 }
@@ -44,7 +46,7 @@ test("only entering a reentrant invocation grants admission; nested calls inheri
             await this.reentrant()
         }
     }
-    const { invoke } = setup(AdmissionProbe, ["reentrant"], () => {
+    const { invoke } = await setup(AdmissionProbe, ["reentrant"], () => {
         admissions++
     })
     const ordinary = invoke("ordinary")
@@ -74,7 +76,7 @@ test("a failed reentrant invocation cannot erase an overlapping successful mutat
             return this.count
         }
     }
-    const { invoke } = setup(ReentrantFailure, ["hold"])
+    const { invoke } = await setup(ReentrantFailure, ["hold"])
     const holding = invoke("hold")
     await invoke("increment")
     gate.resolve()
@@ -99,7 +101,7 @@ test("undecorated invocations still serialize with each other on an opted-in act
         }
         async background() {}
     }
-    const { invoke } = setup(ReentrantSerial, ["background"])
+    const { invoke } = await setup(ReentrantSerial, ["background"])
     const holding = invoke("hold")
     const reading = invoke("read")
     await new Promise(resolve => setImmediate(resolve))
@@ -127,7 +129,7 @@ test("an ordinary invocation blocks newly arriving reentrant calls across awaits
             return ++this.count
         }
     }
-    const { invoke } = setup(ExclusiveAdmission, ["reentrant"])
+    const { invoke } = await setup(ExclusiveAdmission, ["reentrant"])
     const ordinary = invoke("ordinary")
     await entered.promise
     const reentrant = invoke("reentrant")
@@ -155,7 +157,7 @@ test("socket context survives another invocation finishing during a reentrant aw
             return this.count
         }
     }
-    const { invoke } = setup(ReentrantSockets, ["hold"])
+    const { invoke } = await setup(ReentrantSockets, ["hold"])
     const holding = invoke("hold")
     await invoke("read")
     gate.resolve()
@@ -188,7 +190,7 @@ test("reentrant continuations may resume during an undecorated await and nested 
             return this.count
         }
     }
-    const { invoke } = setup(NativeInterleaving, ["hold"])
+    const { invoke } = await setup(NativeInterleaving, ["hold"])
     const holding = invoke("hold")
     const updating = invoke("update")
     await entered.promise
@@ -217,7 +219,7 @@ test("an undecorated failure on an opted-in actor cannot roll back a reentrant s
             return this.count
         }
     }
-    const { invoke } = setup(OrdinaryFailure, ["background"])
+    const { invoke } = await setup(OrdinaryFailure, ["background"])
     const background = invoke("background")
     const failed = invoke("fail")
     await background
@@ -250,7 +252,7 @@ test("emittable changes compare consecutive completed snapshots, including a val
         request_id: "hold",
         actor: { project_id: "test", actor_name: "ReentrantEmission", actor_id: "one" },
         args: [],
-        state: null
+        sqlite: await seed()
     }
     const holding = runtime.handle({ ...command, method: "hold" })
     await runtime.handle({ ...command, method: "increment" })

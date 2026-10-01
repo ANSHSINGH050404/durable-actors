@@ -43,7 +43,7 @@ class Supervisor(Channel):
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 18})
+                await self.send({"type": "warm", "protocol": 21})
                 load = await self.read()
                 if load.get("type") != "load":
                     raise ValueError("expected actor code assignment")
@@ -53,9 +53,9 @@ class Supervisor(Channel):
             self.entrypoint = entrypoint
             self.worker = await self.create_worker(entrypoint)
             self.actor_names = self.worker.actor_names
-            await self.send({"type": "attach", "protocol": 18, "actor_names": self.actor_names})
+            await self.send({"type": "attach", "protocol": 21, "actor_names": self.actor_names})
             self.attached = await self.read()
-            if self.attached.get("type") != "attached" or self.attached.get("protocol") != 18:
+            if self.attached.get("type") != "attached" or self.attached.get("protocol") != 21:
                 raise ValueError("unsupported executor protocol")
             await self.start_pump()
             while True:
@@ -209,7 +209,7 @@ class Worker(Channel):
             worker = cls(reader, writer, process)
             async with asyncio.timeout(60):
                 attach = await worker.read()
-            if attach.get("type") != "attach" or attach.get("protocol") != 18:
+            if attach.get("type") != "attach" or attach.get("protocol") != 21:
                 raise ValueError("worker did not attach")
             worker.actor_names = attach["actor_names"]
             return worker

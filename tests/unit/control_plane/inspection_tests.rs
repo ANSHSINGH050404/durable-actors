@@ -818,7 +818,7 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
             .await?;
         let snapshot: StateSnapshot = serde_json::from_value(json!({
             "stateVersion": version, "ownerEpoch": 1, "requestId": format!("req-{version}"),
-            "state": {"count": version, "settings": {"enabled": true}}, "result": null,
+            "sqlite": crate::test_sqlite::snapshot(json!({"count": version, "settings": {"enabled": true}}))?, "result": null,
             "attribution": {"operation": "onMessage", "connectionId": "socket-a", "committedAtMs": 1234, "interleaved": false}
         }))?;
         fixture

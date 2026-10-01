@@ -118,7 +118,7 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
         async fn invoke(
             &self,
             _: crate::actor::ActorMethodInvocation,
-            _: Option<&serde_json::Value>,
+            _: Option<&crate::actor::ActorState>,
         ) -> Result<crate::actor::ActorMethodOutcome> {
             anyhow::bail!("unused")
         }

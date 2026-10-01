@@ -11,7 +11,7 @@ import { RuntimeBuilder } from "../../scripts/build-runtime.mjs"
 
 const execute = promisify(execFile)
 
-test("native builds package the Rust executable with a matching checksum", async t => {
+test("native builds package the runtime and Litestream with a matching checksum", async t => {
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
@@ -24,7 +24,11 @@ test("native builds package the Rust executable with a matching checksum", async
             return execute(command, args, options)
         }
     }
-    const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run).build()
+    const installLitestream = async directory => {
+        await writeFile(path.join(directory, "litestream"), "litestream", { mode: 0o755 })
+        await writeFile(path.join(directory, "LICENSE.litestream"), "license")
+    }
+    const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run, installLitestream).build()
     assert.equal(path.basename(archive), "durable-actors-linux-arm64.tar.gz")
     const checksum = createHash("sha256")
         .update(await readFile(archive))
@@ -35,6 +39,8 @@ test("native builds package the Rust executable with a matching checksum", async
     await execute("tar", ["-xzf", archive, "-C", extracted])
     assert.equal(await readFile(path.join(extracted, "durable-actors"), "utf8"), "runtime")
     await execute("test", ["-x", path.join(extracted, "durable-actors")])
+    assert.equal(await readFile(path.join(extracted, "litestream"), "utf8"), "litestream")
+    await execute("test", ["-x", path.join(extracted, "litestream")])
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

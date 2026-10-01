@@ -4,12 +4,15 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { installLitestream } from "./litestream.mjs"
+
 export class RuntimeBuilder {
-    constructor({ root, platform = process.platform, arch = process.arch }, run = runCommand) {
+    constructor({ root, platform = process.platform, arch = process.arch }, run = runCommand, installReplication = installLitestream) {
         this.root = root
         this.platform = platform
         this.arch = arch
         this.run = run
+        this.installReplication = installReplication
     }
 
     async build() {
@@ -18,6 +21,7 @@ export class RuntimeBuilder {
         const staging = await mkdtemp(path.join(output, ".build-"))
         try {
             await this.compile(staging)
+            await this.installReplication(staging, { platform: this.platform, arch: this.arch })
             return await this.package(staging, output)
         } finally {
             await rm(staging, { recursive: true, force: true })
@@ -32,7 +36,7 @@ export class RuntimeBuilder {
     async package(staging, output) {
         const name = `durable-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "LICENSE.litestream"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")

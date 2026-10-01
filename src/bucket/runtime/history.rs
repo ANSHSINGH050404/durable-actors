@@ -116,12 +116,52 @@ impl RuntimeStorageReader {
     }
 
     async fn read_stored_state(&self, key: &str) -> Result<Option<InspectedState>> {
+        let Some(snapshot) = self.read_commit(key).await? else {
+            return Ok(None);
+        };
+        let mut current = snapshot.clone();
+        let mut segments = Vec::new();
+        loop {
+            segments.push(current.sqlite.files.clone());
+            let Some(parent) = current.sqlite.parent.clone() else {
+                break;
+            };
+            let first = current.sqlite.files[0].first;
+            let bytes = self
+                .read_persisted(&parent.object)
+                .await?
+                .context("SQLite dependency missing")?;
+            parent.verify(&bytes)?;
+            current = StateSnapshot::decode(&bytes)?;
+            current.validate_object(&parent.object)?;
+            ensure!(
+                current.state_version == parent.state_version,
+                "SQLite dependency version mismatch"
+            );
+            ensure!(
+                current.sqlite.txid.checked_add(1) == Some(first),
+                "SQLite dependency transaction gap"
+            );
+        }
+        let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        let fields = crate::litestream::storage::restored_fields(
+            self.restore.as_ref(),
+            &files,
+            snapshot.sqlite.txid,
+        )
+        .await?;
+        Ok(Some(InspectedState {
+            record: record(snapshot),
+            state: serde_json::value::to_raw_value(&fields)?,
+        }))
+    }
+
+    async fn read_commit(&self, key: &str) -> Result<Option<StateSnapshot>> {
         self.read_persisted(key)
             .await?
             .map(|bytes| {
                 decode_snapshot(key.to_owned(), bytes.to_vec())
                     .and_then(|loaded| StateSnapshot::decode(&loaded.bytes))
-                    .map(inspected)
             })
             .transpose()
     }
@@ -131,14 +171,15 @@ impl RuntimeStorageReader {
         if let Some(cached) = self.authority.get(&key).await? {
             return Ok(Some(serde_json::from_slice(&cached.bytes)?));
         }
-        let Some(state) = self.read_stored_state(snapshot_key).await? else {
+        let Some(snapshot) = self.read_commit(snapshot_key).await? else {
             return Ok(None);
         };
+        let state = record(snapshot);
         // This index is rebuildable; snapshot storage remains the source of truth.
-        if let Err(error) = self.cache_history_record(&key, &state.record).await {
+        if let Err(error) = self.cache_history_record(&key, &state).await {
             tracing::warn!(%error, "state history metadata cache unavailable");
         }
-        Ok(Some(state.record))
+        Ok(Some(state))
     }
 
     async fn cache_history_record(&self, key: &str, record: &StateRecord) -> Result<()> {
@@ -175,14 +216,11 @@ impl ActorStateReader for RuntimeStorage {
     }
 }
 
-fn inspected(snapshot: StateSnapshot) -> InspectedState {
-    InspectedState {
-        record: StateRecord {
-            state_version: snapshot.state_version,
-            owner_epoch: snapshot.owner_epoch,
-            request_id: snapshot.request_id,
-            attribution: snapshot.attribution,
-        },
-        state: snapshot.state,
+fn record(snapshot: StateSnapshot) -> StateRecord {
+    StateRecord {
+        state_version: snapshot.state_version,
+        owner_epoch: snapshot.owner_epoch,
+        request_id: snapshot.request_id,
+        attribution: snapshot.attribution,
     }
 }

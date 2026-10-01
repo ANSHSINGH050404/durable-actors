@@ -32,7 +32,7 @@ class Session(Channel):
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 18})
+                await self.send({"type": "warm", "protocol": 21})
                 assignment = await self.read()
                 if (
                     assignment.get("type") != "load"
@@ -49,10 +49,10 @@ class Session(Channel):
             actors = load_artifact(path)
             self.runtimes = {actor.__name__: ActorRuntime(actor, self) for actor in actors}
             await self.send(
-                {"type": "attach", "protocol": 18, "actor_names": sorted(self.runtimes)}
+                {"type": "attach", "protocol": 21, "actor_names": sorted(self.runtimes)}
             )
             attached = await self.read()
-            if attached.get("type") != "attached" or attached.get("protocol") != 18:
+            if attached.get("type") != "attached" or attached.get("protocol") != 21:
                 raise ValueError("unsupported executor protocol")
             if attached.get("supports_residency"):
                 self.residency = asyncio.create_task(self.report_residency())

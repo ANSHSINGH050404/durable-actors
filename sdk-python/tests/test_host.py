@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from fixtures.sqlite import fields, seed
 
 from durable_actors.build import build_actor
 
@@ -26,7 +27,7 @@ class Counter(Actor):
     contract = build_actor(project, "actors.py", tmp_path / "build")
     assert contract["actors"][0]["actorName"] == "Counter"
     actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
-    state = None
+    state = seed()
     with tempfile.TemporaryDirectory(dir="/tmp") as short:
         for expected in (2, 4):
             done = asyncio.get_running_loop().create_future()
@@ -36,7 +37,7 @@ class Counter(Actor):
                     if generic:
                         assert json.loads(await reader.readline()) == {
                             "type": "warm",
-                            "protocol": 18,
+                            "protocol": 21,
                         }
                         writer.write(
                             (
@@ -53,10 +54,10 @@ class Counter(Actor):
                     attached = json.loads(await reader.readline())
                     assert attached == {
                         "type": "attach",
-                        "protocol": 18,
+                        "protocol": 21,
                         "actor_names": ["Counter"],
                     }
-                    writer.write(b'{"type":"attached","protocol":18}\n')
+                    writer.write(b'{"type":"attached","protocol":21}\n')
                     writer.write(
                         (
                             json.dumps(
@@ -67,7 +68,7 @@ class Counter(Actor):
                                         "type": "invoke",
                                         "request_id": "r1",
                                         "actor": actor,
-                                        "state": state,
+                                        "sqlite": state,
                                         "method": "increment",
                                         "args": [2],
                                     },
@@ -79,7 +80,8 @@ class Counter(Actor):
                     await writer.drain()
                     reply = json.loads(await reader.readline())
                     assert reply["reply"]["result"] == expected
-                    done.set_result(reply["reply"]["state"])
+                    assert fields(state) == {"count": expected}
+                    done.set_result({**state, **reply["reply"]["sqlite"]})
                 except BaseException as error:
                     done.set_exception(error)
                 finally:
@@ -160,13 +162,13 @@ class Counter(Actor):
                     writer.write((json.dumps(message) + "\n").encode())
 
                 assert (await receive())["type"] == "attach"
-                send({"type": "attached", "protocol": 18})
+                send({"type": "attached", "protocol": 21})
                 actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
                 invocation = {
                     "type": "invoke",
                     "request_id": "r1",
                     "actor": actor,
-                    "state": None,
+                    "sqlite": seed(),
                     "method": "hold",
                     "args": [],
                 }
@@ -215,7 +217,7 @@ class Counter(Actor):
                         "command": {
                             **invocation,
                             "method": "increment",
-                            "state": {"count": 10},
+                            "sqlite": seed({"count": 10}),
                         },
                     }
                 )

@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 18;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 21;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -141,7 +141,7 @@ pub enum ActorMethodOutcome {
     Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
-        state: Value,
+        state: ActorState,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -151,7 +151,7 @@ pub enum ActorMethodOutcome {
 pub enum ActorSocketOutcome {
     Interleaved(ActorInterleavedOutcome),
     Handled {
-        state: Value,
+        state: ActorState,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -161,8 +161,13 @@ pub enum ActorSocketOutcome {
 pub struct ActorInterleavedOutcome {
     pub sequence: u64,
     pub result: Value,
-    pub state: Value,
+    pub state: ActorState,
     pub effects: Vec<ActorSocketEffect>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ActorState {
+    pub sqlite: crate::litestream::storage::SqliteState,
 }
 
 #[async_trait]
@@ -173,7 +178,7 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
+    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
         Ok(())
     }
 
@@ -188,13 +193,13 @@ pub trait ActorExecutor: Send + Sync {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome>;
 
     async fn handle_socket(
         &self,
         _invocation: ActorSocketInvocation,
-        _state: Option<&Value>,
+        _state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
             code: "socket_not_supported".into(),
@@ -206,7 +211,7 @@ pub trait ActorExecutor: Send + Sync {
     async fn invoke_shared(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorMethodOutcome> {
         self.invoke(invocation, state.as_deref()).await
     }
@@ -214,7 +219,7 @@ pub trait ActorExecutor: Send + Sync {
     async fn handle_socket_shared(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorSocketOutcome> {
         self.handle_socket(invocation, state.as_deref()).await
     }
@@ -397,7 +402,7 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<Value>>) -> Result<()> {
+    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
         match self
             .exchange(
                 ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
@@ -432,7 +437,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.invoke_shared(invocation, state.cloned().map(Arc::new))
             .await
@@ -441,7 +446,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn handle_socket(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         self.handle_socket_shared(invocation, state.cloned().map(Arc::new))
             .await
@@ -450,7 +455,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn invoke_shared(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorMethodOutcome> {
         match self
             .exchange(ExecutorCommand::Invoke(invocation), state)
@@ -492,7 +497,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn handle_socket_shared(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorSocketOutcome> {
         match self
             .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
@@ -586,7 +591,7 @@ impl JsActorExecutor {
     async fn exchange(
         &self,
         command: ExecutorCommand,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ExecutorReply> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -830,13 +835,13 @@ impl ExecutorDriver {
         {
             None
         } else {
-            Some(pending.state.as_deref().unwrap_or(&Value::Null))
+            pending.state.as_deref()
         };
         let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
             message_id,
             command: ExecutorCommandEnvelope {
                 command: &pending.command,
-                state,
+                sqlite: state.map(|value| &value.sqlite),
                 resident_only: pending.resident_only,
             },
         });
@@ -854,8 +859,7 @@ impl ExecutorDriver {
                 self.pending.insert(message_id, pending);
             }
             Err(error) => {
-                let reply = Err(error);
-                let _ = pending.reply.send(reply);
+                let _ = pending.reply.send(Err(error));
             }
         }
         Ok(())
@@ -956,7 +960,7 @@ enum ExecutorRequest {
 
 struct PendingCommand {
     command: ExecutorCommand,
-    state: Option<Arc<Value>>,
+    state: Option<Arc<ActorState>>,
     resident_only: bool,
     admission_granted: bool,
     reply: oneshot::Sender<Result<ExecutorReply>>,
@@ -1059,7 +1063,7 @@ struct ExecutorCommandEnvelope<'a> {
     #[serde(flatten)]
     command: &'a ExecutorCommand,
     #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<&'a Value>,
+    sqlite: Option<&'a crate::litestream::storage::SqliteState>,
     resident_only: bool,
 }
 
@@ -1108,14 +1112,16 @@ enum ExecutorReply {
     StateRequired,
     Invoked {
         result: Value,
-        state: Value,
+        #[serde(flatten)]
+        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
-        state: Value,
+        #[serde(flatten)]
+        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         effects: Vec<ActorSocketEffect>,

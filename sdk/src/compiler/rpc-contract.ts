@@ -40,7 +40,7 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
             continue
         }
         if (["onConnect", "onMessage", "onDisconnect"].includes(name)) continue
-        if (["then", "connect", "broadcast"].includes(name))
+        if (["then", "connect", "broadcast", "db"].includes(name))
             throw new ActorDefinitionError(`${label}: reserved RPC method name`)
         validateActorComponent("actor method", name)
         if (symbol?.declarations?.filter(ts.isMethodDeclaration).length !== 1)

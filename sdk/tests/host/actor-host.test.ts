@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url"
 
 import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
+import type { ActorExecutorReply } from "../../src/host/protocol.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
+import { seed } from "../fixtures/litestream.js"
+import { assertReply } from "../fixtures/reply.js"
 
 before(
     async () => {
@@ -31,7 +34,7 @@ test("loads a prepared JavaScript artifact only inside the first execution Worke
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 18 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 21 })}\n`)
             socket.end()
         })
     })
@@ -110,10 +113,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 18,
+            protocol: 21,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 18 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 21 })}\n`)
         await startup
 
         customerSocket.write(
@@ -130,15 +133,11 @@ test("the actor session carries only owned execution commands", async t => {
                     },
                     method: "increment",
                     args: [4],
-                    state: null
+                    sqlite: await seed(null)
                 }
             })}\n`
         )
-        assert.deepEqual(await readMessage(iterator), {
-            type: "reply",
-            message_id: 1,
-            reply: { type: "invoked", result: 4, state: { count: 4 } }
-        })
+        assertSessionReply(await readMessage(iterator), 1, { type: "invoked", result: 4 })
 
         customerSocket.write(
             `${JSON.stringify({
@@ -150,7 +149,7 @@ test("the actor session carries only owned execution commands", async t => {
                     actor: { project_id: "default", actor_name: "SessionCounter", actor_id: "counter-1" },
                     method: "stream",
                     args: [],
-                    state: { count: 4 }
+                    sqlite: await seed({ count: 4 })
                 }
             })}\n`
         )
@@ -169,11 +168,7 @@ test("the actor session carries only owned execution commands", async t => {
             })
             customerSocket.write(`${JSON.stringify({ type: "socket_effects_published", message_id: 100 })}\n`)
         }
-        assert.deepEqual(await readMessage(iterator), {
-            type: "reply",
-            message_id: 100,
-            reply: { type: "invoked", result: 4, state: { count: 4 } }
-        })
+        assertSessionReply(await readMessage(iterator), 100, { type: "invoked", result: 4 })
 
         customerSocket.write(
             `${JSON.stringify({
@@ -185,15 +180,11 @@ test("the actor session carries only owned execution commands", async t => {
                     actor: actorIdentity(),
                     method: "increment",
                     args: [1],
-                    state: { count: 4 }
+                    sqlite: await seed({ count: 4 })
                 }
             })}\n`
         )
-        assert.deepEqual(await readMessage(iterator), {
-            type: "reply",
-            message_id: 3,
-            reply: { type: "invoked", result: 5, state: { count: 5 } }
-        })
+        assertSessionReply(await readMessage(iterator), 3, { type: "invoked", result: 5 })
 
         customerSocket.write(
             `${JSON.stringify({
@@ -256,6 +247,12 @@ function actorIdentity(): Record<string, string> {
     }
 }
 
+function assertSessionReply(message: unknown, id: number, expected: object): void {
+    const { reply, ...envelope } = message as { reply: ActorExecutorReply; type: string; message_id: number }
+    assert.deepEqual(envelope, { type: "reply", message_id: id })
+    assertReply(reply, expected)
+}
+
 async function readMessage(iterator: AsyncIterator<string>): Promise<unknown> {
     const next = await iterator.next()
     assert.equal(next.done, false)
@@ -280,7 +277,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 18, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 21, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()

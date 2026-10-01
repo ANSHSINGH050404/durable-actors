@@ -1,6 +1,78 @@
 use super::*;
 
 #[tokio::test]
+async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publication() -> Result<()> {
+    use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
+    use crate::state_log::{SqliteSnapshot, StateSnapshot};
+    use crate::state_transport::SnapshotWriter;
+
+    let mut f = Fixture::new()?;
+    let directory = tempfile::tempdir()?;
+    let snapshots = Arc::new(FileBucket::new(directory.path().join("snapshots"))?);
+    f.runtime = f.runtime.with_persistence(
+        crate::bucket::PersistenceConfig::Local,
+        Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
+    )?;
+    let active = f
+        .runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let first_plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 1)
+        .await?;
+    let next_plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &active.placement.lease, 1, 2)
+        .await?;
+    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let mut capture = SqliteCapture::new(replication.clone()).await?;
+    let initial = capture.state();
+    let first = StateSnapshot::new(
+        1,
+        1,
+        "sql".into(),
+        SqliteSnapshot {
+            txid: initial.txid,
+            parent: None,
+            files: capture.capture(&initial).await?,
+        },
+        serde_json::Value::Null,
+    )?;
+    let first_bytes = first.encode()?;
+    let database = rusqlite::Connection::open(capture.path())?;
+    database.execute("INSERT INTO __terse_fields VALUES ('count', '1')", [])?;
+    let mut changed = initial;
+    changed.txid = replication.sync(&capture.path()).await?;
+    let next = StateSnapshot::new(
+        2,
+        1,
+        "fields".into(),
+        SqliteSnapshot {
+            txid: changed.txid,
+            parent: Some(first_plan.stream.snapshot(&first_bytes)?),
+            files: capture.capture(&changed).await?,
+        },
+        serde_json::Value::Null,
+    )?;
+    assert!(
+        f.runtime
+            .write_snapshot(&next_plan, next.encode()?)
+            .await
+            .is_err()
+    );
+    assert!(snapshots.get(&next_plan.object_name).await?.is_none());
+    f.runtime.write_snapshot(&first_plan, first_bytes).await?;
+    f.runtime.write_snapshot(&next_plan, next.encode()?).await?;
+    assert!(f.bucket.get(&first_plan.object_name).await?.is_none());
+    assert_eq!(
+        snapshots.get(&next_plan.object_name).await?.unwrap().bytes,
+        next.encode()?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
     use crate::state_transport::SnapshotWriter;
     let mut f = Fixture::new()?;
@@ -22,7 +94,7 @@ async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
         1,
         1,
         "write".into(),
-        serde_json::json!({"count":42}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
         serde_json::json!(42),
     )?
     .encode()?;
@@ -221,7 +293,7 @@ async fn snapshot_writes_need_one_bucket_write_and_no_ownership_read() -> Result
             version,
             activation.owner_epoch,
             format!("write-{version}"),
-            serde_json::json!({"count": version}),
+            crate::test_sqlite::snapshot(serde_json::json!({"count": version}))?,
             serde_json::json!(version),
         )?
         .encode()?;
@@ -545,7 +617,7 @@ async fn expired_owner_hint_cannot_fence_a_renewed_session() -> Result<()> {
         1,
         1,
         "after-renewal".into(),
-        serde_json::json!({"count": 1}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count": 1}))?,
         serde_json::json!(1),
     )?
     .encode()?;
@@ -587,7 +659,7 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
             1,
             2,
             "second".into(),
-            serde_json::json!({"count": 42}),
+            crate::test_sqlite::snapshot(serde_json::json!({"count": 42}))?,
             serde_json::json!(42),
         )?
         .encode()?;
@@ -637,7 +709,7 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
             2,
             1,
             "committed".into(),
-            serde_json::json!({"count": 42}),
+            crate::test_sqlite::snapshot(serde_json::json!({"count": 42}))?,
             serde_json::json!(42),
         )?
         .encode()?;
@@ -651,7 +723,7 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                     version,
                     1,
                     "committed".into(),
-                    serde_json::json!({"count": 42}),
+                    StateSnapshot::decode(&bytes)?.sqlite,
                     serde_json::json!(42),
                 )?
                 .encode()?;
@@ -714,7 +786,7 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
         1,
         1,
         "write".into(),
-        serde_json::json!({"count":42}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
         serde_json::json!(42),
     )?
     .encode()?;
@@ -769,7 +841,7 @@ async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_
         1,
         1,
         "ambiguous".into(),
-        serde_json::json!({"count":42}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":42}))?,
         serde_json::json!(42),
     )?
     .encode()?;

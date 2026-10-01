@@ -14,7 +14,7 @@ cd my-actors
 pnpm install
 ```
 
-Define `src/actors.ts`. Fields marked `@Persisted` survive restarts.
+Define `src/actors.ts`. Fields marked `@Persisted` survive restarts. They share one SQLite database and transaction with `this.db` SQL. Litestream is installed and managed automatically with the runtime; local development persists to the filesystem.
 
 ```ts
 import { Actor, Persisted } from "durable-actors"

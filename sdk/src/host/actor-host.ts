@@ -115,7 +115,7 @@ class ActorSessionConnection {
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
         connection.send({
             type: "attach",
-            protocol: 18,
+            protocol: 21,
             actor_names: actorNames
         })
         await connection.waitUntilAttached(timeoutMs)

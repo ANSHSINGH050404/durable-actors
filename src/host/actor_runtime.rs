@@ -1,5 +1,10 @@
 use std::{sync::Arc, time::Instant};
 
+use crate::{
+    litestream::{Replicator, storage::SqliteCapture},
+    state_log::SqliteSnapshot,
+    storage::SnapshotRef,
+};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -9,7 +14,8 @@ use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
+        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, ActorState,
+        validate_socket_effects,
     },
     state_log::StateSnapshot,
     storage::WritePlan,
@@ -31,6 +37,11 @@ pub(crate) trait ActorStorage: Send + Sync {
         _host: &super::HostId,
         _epoch: u64,
     ) -> Result<(u64, bytes::Bytes)>;
+    async fn read_snapshot(
+        &self,
+        actor: &crate::actor::ActorKey,
+        snapshot: &SnapshotRef,
+    ) -> Result<bytes::Bytes>;
     fn ensure_authority(&self) -> Result<()>;
     async fn prepare_state_write(
         &self,
@@ -75,6 +86,7 @@ pub(super) struct ActorRuntime {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
+    replication: Arc<dyn Replicator>,
     cached_state: Option<CachedActorState>,
     activation: Option<ActorActivation>,
 }
@@ -86,6 +98,7 @@ impl ActorRuntime {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
+        replication: Arc<dyn Replicator>,
     ) -> Self {
         Self {
             endpoint,
@@ -93,6 +106,7 @@ impl ActorRuntime {
             storage,
             state,
             publisher,
+            replication,
             cached_state: None,
             activation: None,
         }
@@ -201,7 +215,11 @@ impl ActorRuntime {
             })
         };
         let version = cached.state_version;
-        self.cached_state = Some(cached);
+        self.cached_state = if publication.is_err() && cached.pending.is_none() {
+            None
+        } else {
+            Some(cached)
+        };
         publication?;
         timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
         self.complete_with_state(&invocation.actor, version, outcome.result, outcome.effects)
@@ -219,17 +237,22 @@ impl ActorRuntime {
         let mut activation = self.storage.acquire_actor(actor, &self.endpoint.id).await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
-                CachedActorState::new(activation.owner_epoch)
+                CachedActorState::new(
+                    activation.owner_epoch,
+                    SqliteCapture::new(self.replication.clone()).await?,
+                )
             } else {
                 let bytes = activation
                     .state
                     .take()
                     .context("activation has no recovered state")?;
-                CachedActorState::from_loaded(
+                self.load_cached(
+                    actor,
                     activation.owner_epoch,
                     activation.state_version,
                     &bytes,
-                )?
+                )
+                .await?
             };
             self.cached_state = Some(cached);
         }
@@ -303,15 +326,18 @@ impl ActorRuntime {
         }
         timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
         let origin = CommitOrigin::socket(&invocation.event);
-        let outcome = self.execute_socket_event(invocation, cached.state()).await;
+        let state = cached.state();
+        self.cached_state = Some(cached);
+        let outcome = self.execute_socket_event(invocation, state).await;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (next_state, effects) = match outcome {
             Ok(outcome) => outcome,
-            Err(result) => {
-                self.cached_state = Some(cached);
-                return Ok(result);
-            }
+            Err(result) => return Ok(result),
         };
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("actor socket event has no state")?;
         if cached.state.as_deref() == Some(&next_state) {
             let version = cached.state_version;
             self.cached_state = Some(cached);
@@ -334,7 +360,11 @@ impl ActorRuntime {
             self.evict(&persistence.actor).await;
         }
         let version = cached.state_version;
-        self.cached_state = Some(cached);
+        self.cached_state = if published.is_err() && cached.pending.is_none() {
+            None
+        } else {
+            Some(cached)
+        };
         match published {
             Ok(ActorExecutionResult::Completed { .. }) => {
                 self.complete_with_state(&persistence.actor, version, Value::Null, effects)
@@ -375,7 +405,10 @@ impl ActorRuntime {
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        executed: std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult>,
+        executed: std::result::Result<
+            (Value, ActorState, Vec<ActorSocketEffect>),
+            ActorExecutionResult,
+        >,
         origin: CommitOrigin,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
@@ -411,7 +444,11 @@ impl ActorRuntime {
             self.evict(&invocation.actor).await;
         }
         let version = cached.state_version;
-        self.cached_state = Some(cached);
+        self.cached_state = if published.is_err() && cached.pending.is_none() {
+            None
+        } else {
+            Some(cached)
+        };
         match published {
             Ok(ActorExecutionResult::Completed { result, .. }) => {
                 self.complete_with_state(&invocation.actor, version, result, effects)
@@ -482,19 +519,73 @@ impl ActorRuntime {
             .await?;
         if state_version == 0 {
             ensure!(loaded.is_empty(), "uninitialized actor has state");
-            return Ok(CachedActorState::new(owner_epoch));
+            return Ok(CachedActorState::new(
+                owner_epoch,
+                SqliteCapture::new(self.replication.clone()).await?,
+            ));
         }
         timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
-        let cached = CachedActorState::from_loaded(owner_epoch, state_version, &loaded)?;
+        let cached = self
+            .load_cached(actor, owner_epoch, state_version, &loaded)
+            .await?;
         timings.state_decoded_at_ms = Some(timings.elapsed_ms());
         Ok(cached)
     }
 
-    async fn execute_method(
+    async fn load_cached(
         &self,
+        actor: &crate::actor::ActorKey,
+        owner_epoch: u64,
+        state_version: u64,
+        loaded: &[u8],
+    ) -> Result<CachedActorState> {
+        let snapshot = StateSnapshot::decode(loaded)?;
+        ensure!(
+            snapshot.state_version == state_version,
+            "actor snapshot version does not match its state head"
+        );
+        ensure!(
+            snapshot.owner_epoch <= owner_epoch,
+            "actor snapshot belongs to a newer owner epoch"
+        );
+        let mut segments = Vec::new();
+        let mut current = snapshot.clone();
+        loop {
+            segments.push(current.sqlite.files.clone());
+            let Some(parent) = current.sqlite.parent.clone() else {
+                break;
+            };
+            let first = current.sqlite.files[0].first;
+            let bytes = self.storage.read_snapshot(actor, &parent).await?;
+            parent.verify(&bytes)?;
+            current = StateSnapshot::decode(&bytes)?;
+            current.validate_object(&parent.object)?;
+            ensure!(
+                current.state_version == parent.state_version,
+                "SQLite dependency version mismatch"
+            );
+            ensure!(
+                current.sqlite.txid.checked_add(1) == Some(first),
+                "SQLite dependency transaction gap"
+            );
+        }
+        let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        let capture =
+            SqliteCapture::restore(self.replication.clone(), &files, snapshot.sqlite.txid).await?;
+        let mut cached = CachedActorState::new(owner_epoch, capture);
+        cached.state_version = state_version;
+        cached.state = cached.state();
+        cached.last_request_id = Some(snapshot.request_id);
+        cached.last_result = Some(snapshot.result);
+        Ok(cached)
+    }
+
+    async fn execute_method(
+        &mut self,
         invocation: &ActorInvocation,
-        state: Option<Arc<Value>>,
-    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+        state: Option<Arc<ActorState>>,
+    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
+    {
         let outcome = self
             .executor
             .invoke_shared(
@@ -511,10 +602,11 @@ impl ActorRuntime {
     }
 
     async fn method_result(
-        &self,
+        &mut self,
         invocation: &ActorInvocation,
         outcome: Result<ActorMethodOutcome>,
-    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
+    {
         match outcome {
             Ok(ActorMethodOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
@@ -557,10 +649,10 @@ impl ActorRuntime {
     }
 
     async fn execute_socket_event(
-        &self,
+        &mut self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
-    ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+        state: Option<Arc<ActorState>>,
+    ) -> std::result::Result<(ActorState, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
         match self.executor.handle_socket_shared(invocation, state).await {
             Ok(ActorSocketOutcome::Interleaved(_)) => {
@@ -579,6 +671,9 @@ impl ActorRuntime {
                 }
             }
             Ok(ActorSocketOutcome::Failed(failure)) => {
+                if failure.code != "actor_socket_failed" {
+                    self.evict(&actor).await;
+                }
                 let code = match failure.code.as_str() {
                     "resource_exhausted" => "resource_exhausted",
                     _ => "actor_error",
@@ -598,7 +693,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         result: Value,
-        next_state: Value,
+        next_state: ActorState,
         origin: CommitOrigin,
     ) -> Result<ActorExecutionResult> {
         let mut timings = StateWriteTimings::new();
@@ -624,7 +719,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         result: Value,
-        next_state: Value,
+        mut next_state: ActorState,
         origin: CommitOrigin,
         timings: &mut StateWriteTimings,
     ) -> Result<ActorExecutionResult> {
@@ -663,7 +758,7 @@ impl ActorRuntime {
             next_version,
             owner_epoch,
             invocation.request_id.clone(),
-            &next_state,
+            cached.capture_sqlite(&mut next_state).await?,
             result.clone(),
         )?;
         snapshot.attribution = Some(crate::state_log::StateAttribution {
@@ -795,6 +890,11 @@ impl ActorRuntime {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
+        cached.sqlite_head = Some(SnapshotRef::new(
+            pending.ticket.object_name.clone(),
+            &pending.snapshot,
+            &pending.snapshot.encode()?,
+        ));
         cached.state_version = pending.snapshot.state_version;
         cached.state = Some(Arc::new(pending.state));
         cached.last_request_id = Some(pending.snapshot.request_id);
@@ -861,7 +961,7 @@ impl ActorRuntime {
         );
     }
 
-    pub(super) async fn evict(&self, actor: &crate::actor::ActorKey) {
+    pub(super) async fn evict(&mut self, actor: &crate::actor::ActorKey) {
         if let Err(error) = self
             .executor
             .evict(ActorMethodEviction {
@@ -871,6 +971,8 @@ impl ActorRuntime {
         {
             warn!(error = %format!("{error:#}"), "failed to evict actor after invocation failure");
         }
+        self.cached_state = None;
+        self.activation = None;
     }
 }
 
@@ -883,14 +985,16 @@ pub(super) fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'sta
 }
 
 pub(super) enum PreparedInvocation {
-    Execute(Option<Arc<Value>>),
+    Execute(Option<Arc<ActorState>>),
     Completed(ActorExecutionResult),
 }
 
 struct CachedActorState {
+    sqlite: SqliteCapture,
+    sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
     state_version: u64,
-    state: Option<Arc<Value>>,
+    state: Option<Arc<ActorState>>,
     last_request_id: Option<String>,
     last_result: Option<Value>,
     next_write: Option<WritePlan>,
@@ -899,14 +1003,16 @@ struct CachedActorState {
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
-    state: Value,
+    state: ActorState,
     ticket: WritePlan,
     durable: bool,
 }
 
 impl CachedActorState {
-    fn new(owner_epoch: u64) -> Self {
+    fn new(owner_epoch: u64, sqlite: SqliteCapture) -> Self {
         Self {
+            sqlite,
+            sqlite_head: None,
             owner_epoch,
             state_version: 0,
             state: None,
@@ -917,29 +1023,34 @@ impl CachedActorState {
         }
     }
 
-    fn from_loaded(owner_epoch: u64, state_version: u64, loaded: &[u8]) -> Result<Self> {
-        let snapshot = StateSnapshot::decode(loaded)?;
-        ensure!(
-            snapshot.state_version == state_version,
-            "actor snapshot version does not match its state head"
-        );
-        ensure!(
-            snapshot.owner_epoch <= owner_epoch,
-            "actor snapshot belongs to a newer owner epoch"
-        );
-        Ok(Self {
-            owner_epoch,
-            state_version,
-            state: Some(Arc::new(serde_json::from_str(snapshot.state.get())?)),
-            last_request_id: Some(snapshot.request_id),
-            last_result: Some(snapshot.result),
-            next_write: None,
-            pending: None,
+    async fn capture_sqlite(&mut self, state: &mut ActorState) -> Result<SqliteSnapshot> {
+        let files = self.sqlite.capture(&state.sqlite).await?;
+        let first = files
+            .first()
+            .context("actor commit has no replication files")?;
+        let parent = if first.first == 1 {
+            None
+        } else {
+            Some(
+                self.sqlite_head
+                    .clone()
+                    .context("SQLite state has no durable head")?,
+            )
+        };
+        state.sqlite = self.sqlite.state();
+        Ok(SqliteSnapshot {
+            txid: self.sqlite.txid(),
+            parent,
+            files,
         })
     }
 
-    fn state(&self) -> Option<Arc<Value>> {
-        self.state.clone()
+    fn state(&self) -> Option<Arc<ActorState>> {
+        Some(self.state.clone().unwrap_or_else(|| {
+            Arc::new(ActorState {
+                sqlite: self.sqlite.state(),
+            })
+        }))
     }
 
     fn replay(&self, request_id: &str) -> Option<Value> {

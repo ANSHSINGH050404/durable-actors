@@ -14,6 +14,8 @@
 !docs/reference
 !docs/reference/openapi.yaml
 !package.json
+!scripts
+!scripts/litestream.mjs
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !sdk

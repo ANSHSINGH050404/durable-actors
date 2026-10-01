@@ -46,6 +46,7 @@ test("codegen rejects malformed contracts and unsafe type overrides", async () =
             /duplicate RPC/
         ],
         ["reserved method", document => (document.actors[0].rpc.methods[0].name = "then"), /reserved RPC/],
+        ["reserved database", document => (document.actors[0].rpc.methods[0].name = "db"), /reserved RPC/],
         [
             "missing result type",
             document => (document.actors[0].rpc.methods[1].result.type.$ref = "#/definitions/Absent"),

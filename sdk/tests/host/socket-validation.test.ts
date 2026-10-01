@@ -8,6 +8,8 @@ import { Persistence } from "../../src/actor/schema.js"
 import type { SocketConnection } from "../../src/actor/socketProtocol.js"
 import { ActorRuntime } from "../../src/host/actor-runtime.js"
 import type { WebSocketEventCommand } from "../../src/host/protocol.js"
+import { seed } from "../fixtures/litestream.js"
+import { assertReply } from "../fixtures/reply.js"
 
 const metadata = z.object({ userId: z.string().min(1) })
 const incoming = z.object({ type: z.literal("post"), text: z.string().min(1) })
@@ -95,7 +97,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
         }
     })
     const runtime = new ActorRuntime(definition, () => {})
-    const request = event({
+    const request = await event({
         type: "message",
         connection_id: connection.id,
         message: { type: "text", data: '{"count":"wrong"}' }
@@ -103,7 +105,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
     const identity = { ...actor, actor_name: "ContractRoom" }
     const invalidConnection = { ...connection, metadata: { userId: 123 } }
     const metadataReply = await runtime.handle({
-        ...event({ type: "connect", connection: invalidConnection }, [invalidConnection]),
+        ...(await event({ type: "connect", connection: invalidConnection }, [invalidConnection])),
         actor: identity
     })
     assert.equal(metadataReply.type, "websocket_handled")
@@ -115,7 +117,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
             type: "invoke",
             request_id: "invalid",
             actor: identity,
-            state: null,
+            sqlite: await seed(null),
             method: method!,
             args: []
         })
@@ -138,24 +140,28 @@ test("connection metadata is validated before actor hooks run", async () => {
     calls.length = 0
     const runtime = new ActorRuntime(definition, () => {})
     const invalid = { ...connection, metadata: { userId: 123 } }
-    const reply = await runtime.handle(event({ type: "connect", connection: invalid }, [invalid]))
+    const reply = await runtime.handle(await event({ type: "connect", connection: invalid }, [invalid]))
     assert.equal(reply.type, "failed")
     assert.deepEqual(calls, [])
-    assert.equal((await runtime.handle(event({ type: "connect", connection }))).type, "websocket_handled")
+    assert.equal((await runtime.handle(await event({ type: "connect", connection }))).type, "websocket_handled")
     assert.deepEqual(calls, ["connect"])
 })
 
 test("incoming JSON is validated before onMessage and outgoing values are encoded automatically", async () => {
     calls.length = 0
     const runtime = new ActorRuntime(definition, () => {})
-    const message = (value: unknown) =>
-        event({ type: "message", connection_id: connection.id, message: { type: "text", data: JSON.stringify(value) } })
-    assert.equal((await runtime.handle(message({ type: "post", text: 123 }))).type, "failed")
+    const message = async (value: unknown) =>
+        await event({
+            type: "message",
+            connection_id: connection.id,
+            message: { type: "text", data: JSON.stringify(value) }
+        })
+    assert.equal((await runtime.handle(await message({ type: "post", text: 123 }))).type, "failed")
     assert.deepEqual(calls, [])
-    const reply = await runtime.handle(message({ type: "post", text: "hello" }))
-    assert.deepEqual(reply, {
+    const reply = await runtime.handle(await message({ type: "post", text: "hello" }))
+    assertReply(reply, {
         type: "websocket_handled",
-        state: {},
+
         effects: [
             {
                 type: "send",
@@ -184,7 +190,7 @@ test("invalid actor output, metadata, and tags cannot reach the gateway", async 
             actor,
             method,
             args: [],
-            state: null
+            sqlite: await seed(null)
         })
         assert.equal(reply.type, "failed")
     }
@@ -204,7 +210,7 @@ test("schema-validated tags persist and select broadcast recipients", async () =
         actor,
         method: "joinMembers",
         args: [],
-        state: null
+        sqlite: await seed(null)
     })
     assert.equal(reply.type, "invoked")
     if (reply.type !== "invoked") return
@@ -225,7 +231,7 @@ test("restored connection tags are validated before a hibernated actor resumes",
     const invalid = { ...connection, tags: ["admin"] }
     const runtime = new ActorRuntime(definition, () => {})
     const reply = await runtime.handle(
-        event(
+        await event(
             {
                 type: "message",
                 connection_id: invalid.id,
@@ -238,6 +244,9 @@ test("restored connection tags are validated before a hibernated actor resumes",
     assert.deepEqual(calls, [])
 })
 
-function event(value: WebSocketEventCommand["event"], connections = [connection]): WebSocketEventCommand {
-    return { type: "websocket_event", request_id: "event", actor, event: value, connections, state: null }
+async function event(
+    value: WebSocketEventCommand["event"],
+    connections = [connection]
+): Promise<WebSocketEventCommand> {
+    return { type: "websocket_event", request_id: "event", actor, event: value, connections, sqlite: await seed(null) }
 }

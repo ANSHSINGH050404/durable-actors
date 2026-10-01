@@ -1,3 +1,4 @@
+pub use crate::litestream::storage::SqliteState;
 mod executor_connection;
 mod protocol;
 mod socket;
@@ -7,6 +8,7 @@ pub use self::{
         ActorExecutor, ActorInterleavedOutcome, ActorMethodEviction, ActorMethodInvocation,
         ActorMethodOutcome, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent,
         ActorSocketInvocation, ActorSocketMessage, ActorSocketOutcome, ActorSocketTagMatch,
+        ActorState,
     },
     protocol::{ActorExecutionResult, ActorInvocation, ActorInvocationFailure, ActorKey},
 };

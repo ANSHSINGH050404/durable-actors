@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url"
 import type { SocketEffect } from "../../src/actor/socketProtocol.js"
 import type { ActorWorkerSupervisor as Supervisor } from "../../src/host/worker-supervisor.js"
 
+import { seed } from "./litestream.js"
+
 const [sdk, artifact] = process.argv.slice(2)
 const { ActorWorkerSupervisor } = await import(pathToFileURL(path.join(sdk!, "dist/host/worker-supervisor.js")).href)
 const supervisor: Supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(artifact!).href })
@@ -18,7 +20,7 @@ try {
             actor: { project_id: "local", actor_name: "Counter", actor_id: "counter-1" },
             method: "read",
             args: [],
-            state: null
+            sqlite: await seed(null)
         },
         () => {},
         async published => {

@@ -10,11 +10,19 @@ from typing import Any
 from .actor import Actor
 from .contract import Document, Method, decode, describe_actor, encode
 from .socket import Effects, SocketScope, scope_context
+from .sqlite import SqliteCaptureError, SqliteStorage, Storage
 
 
 class ActorRuntime:
-    def __init__(self, actor: type[Actor[Any, Any, Any, Any]], effects: Effects) -> None:
+    def __init__(
+        self,
+        actor: type[Actor[Any, Any, Any, Any]],
+        effects: Effects,
+        database: Storage | None = None,
+    ) -> None:
         self.effects = effects
+        self.database = database if database is not None else SqliteStorage()
+        self.completion = asyncio.Lock()
         self.fatal: Document | None = None
         self.definition = describe_actor(actor)
         self.instance: Actor[Any, Any, Any, Any] | None = None
@@ -53,6 +61,7 @@ class ActorRuntime:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.instance = None
         self.fatal = None
+        self.database.close()
         return {"type": "evicted"}
 
     async def run(self, command: Document) -> Document:
@@ -85,11 +94,11 @@ class ActorRuntime:
         if self.instance is None:
             if command.get("resident_only"):
                 return {"type": "state_required"}
-            if "state" not in command:
-                return failed("invalid_actor_state", "hydration requires explicit state")
             try:
-                self.restore(command["state"])
+                self.database.restore(command.get("sqlite"))
+                self.restore(self.database.fields())
             except Exception as error:
+                self.database.close()
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
@@ -132,24 +141,34 @@ class ActorRuntime:
             if task is not None and task.cancelling():
                 raise asyncio.CancelledError
             effects = await scope.finish()
-            state = self.snapshot()
-            previous = self.last_state if self.definition.reentrant_methods else before
-            effects.extend(self.state_updates(previous, state, command))
-            self.last_state = state
-            reply: Document = {
-                "type": "websocket_handled" if socket_event else "invoked",
-                "state": state,
-            }
-            if not socket_event:
-                reply["result"] = result
-            if socket_event or effects:
-                reply["effects"] = effects
-            if self.definition.reentrant_methods:
-                self.sequence += 1
-                reply["sequence"] = self.sequence
-            return reply
+            async with self.completion:
+                if self.fatal is not None:
+                    return self.fatal
+                state = self.snapshot()
+                previous = self.last_state if self.definition.reentrant_methods else before
+                effects.extend(self.state_updates(previous, state, command))
+                self.database.persist_fields(state)
+                try:
+                    sqlite = await self.database.snapshot()
+                except SqliteCaptureError as error:
+                    self.fatal = failed("actor_database_failed", str(error))
+                    return self.fatal
+                self.last_state = state
+                reply: Document = {
+                    "type": "websocket_handled" if socket_event else "invoked",
+                    "sqlite": sqlite,
+                }
+                if not socket_event:
+                    reply["result"] = result
+                if socket_event or effects:
+                    reply["effects"] = effects
+                if self.definition.reentrant_methods:
+                    self.sequence += 1
+                    reply["sequence"] = self.sequence
+                return reply
         except Exception as error:
             if not self.definition.reentrant_methods:
+                self.database.rollback()
                 self.restore(before)
             return failed(
                 "actor_socket_failed" if socket_event else "actor_method_failed", str(error)

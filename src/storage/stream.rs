@@ -28,6 +28,7 @@ impl StateStream {
 
     pub fn snapshot(&self, bytes: &[u8]) -> Result<SnapshotRef> {
         let snapshot = StateSnapshot::decode(bytes)?;
+        snapshot.validate_object(&self.object(snapshot.state_version))?;
         ensure!(
             snapshot.owner_epoch == self.owner_epoch && snapshot.state_version > self.base_version,
             "snapshot belongs to another stream"

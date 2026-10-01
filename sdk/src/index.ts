@@ -1,5 +1,6 @@
 /** @module durable-actors */
 export { Actor } from "./actor/actor.js"
+export type { ActorDatabase, SqliteValue } from "./actor/database.js"
 export { Sandbox } from "./actor/sandbox.js"
 export type { SandboxOptions, SandboxRegion } from "./actor/sandbox.js"
 export { Emittable, Ephemeral, Persisted, Reentrant } from "./actor/decorators.js"

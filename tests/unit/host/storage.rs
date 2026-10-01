@@ -94,7 +94,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
         1,
         1,
         "write".into(),
-        serde_json::json!({"count":1}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":1}))?,
         serde_json::json!(1),
     )?
     .encode()?;
@@ -173,7 +173,7 @@ async fn persistence_failure_fences_the_host_and_requests_replacement() -> Resul
         1,
         1,
         "write".into(),
-        serde_json::json!({"count":1}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":1}))?,
         serde_json::json!(1),
     )?
     .encode()?;
@@ -246,7 +246,7 @@ async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePl
         1,
         1,
         "write".into(),
-        serde_json::json!({"count":1}),
+        crate::test_sqlite::snapshot(serde_json::json!({"count":1}))?,
         serde_json::json!(1),
     )?
     .encode()?;

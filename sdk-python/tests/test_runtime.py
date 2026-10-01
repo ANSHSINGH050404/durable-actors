@@ -3,6 +3,7 @@ from threading import Event
 
 import pytest
 from fixtures.effects import Effects
+from fixtures.sqlite import seed
 from pydantic import BaseModel
 
 from durable_actors import Actor, ephemeral, persisted, reentrant
@@ -37,16 +38,16 @@ def command(method="increment", args=None, **extra):
         "actor": ACTOR,
         "method": method,
         "args": args or [],
-        "state": None,
+        "sqlite": seed(),
         **extra,
     }
 
 
 async def test_hydrates_validates_and_snapshots_typed_state():
     runtime = ActorRuntime(Counter, Effects())
-    reply = await runtime.handle(command(args=[2], state={"value": {"count": 3}}))
+    reply = await runtime.handle(command(args=[2], sqlite=seed({"value": {"count": 3}})))
     assert reply["result"] == {"count": 5}
-    assert reply["state"] == {"value": {"count": 5}}
+    assert runtime.database.fields() == {"value": {"count": 5}}
     assert (await runtime.handle(command()))["result"] == {"count": 6}
 
 
@@ -126,7 +127,7 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
             "type": "websocket_event",
             "request_id": "s1",
             "actor": {**ACTOR, "actor_name": "Room"},
-            "state": None,
+            "sqlite": seed(),
             "connections": [{"id": "s1", "metadata": {"count": 2}, "tags": []}],
             "event": {
                 "type": "message",
@@ -185,7 +186,9 @@ async def test_sync_handlers_keep_order_and_drain_before_eviction(evict):
         if evict:
             assert [reply["code"] for reply in results[:2]] == ["actor_evicted"] * 2
             assert results[2] == {"type": "evicted"}
-            assert (await runtime.handle(command(actor=actor, state={"count": 10})))["result"] == 11
+            assert (await runtime.handle(command(actor=actor, sqlite=seed({"count": 10}))))[
+                "result"
+            ] == 11
         else:
             assert [reply["result"] for reply in results] == [1, 2]
     finally:
@@ -305,7 +308,7 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
         assert [reply["code"] for reply in replies[:2]] == ["actor_evicted"] * 2
         assert replies[2] == {"type": "evicted"}
         assert effects.published == []
-        reply = await runtime.handle(command(actor=actor, state={"count": 10}))
+        reply = await runtime.handle(command(actor=actor, sqlite=seed({"count": 10})))
         assert reply["result"] == 11
         assert reply["sequence"] == 1
     finally:

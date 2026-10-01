@@ -67,6 +67,7 @@ impl ActorHost {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
+        replication: Arc<dyn crate::litestream::Replicator>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
         let (activity_tx, activity) = watch::channel(ActorActivity::default());
@@ -78,6 +79,7 @@ impl ActorHost {
             storage,
             state,
             publisher,
+            replication,
             (activity_tx, stopped_tx),
             queues.clone(),
         );
@@ -249,6 +251,7 @@ struct HostDispatcher {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
+    replication: Arc<dyn crate::litestream::Replicator>,
     mailbox: Option<ActorMailbox>,
     identity: Option<ActorStorageKey>,
     tasks: JoinSet<()>,
@@ -268,6 +271,7 @@ impl HostDispatcher {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
+        replication: Arc<dyn crate::litestream::Replicator>,
         status: (watch::Sender<ActorActivity>, watch::Sender<bool>),
         queues: ActorQueues,
     ) -> Self {
@@ -279,6 +283,7 @@ impl HostDispatcher {
             storage,
             state,
             publisher,
+            replication,
             mailbox: None,
             identity: None,
             tasks: JoinSet::new(),
@@ -393,6 +398,7 @@ impl HostDispatcher {
             self.storage.clone(),
             self.state.clone(),
             self.publisher.clone(),
+            self.replication.clone(),
         );
         let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
         let task = self.tasks.spawn(run_actor(

@@ -8,6 +8,8 @@ import type { ActorConnection, ActorSocket } from "../../src/actor/socket.js"
 import type { SocketEffect } from "../../src/actor/socketProtocol.js"
 import { ActorRuntime } from "../../src/host/actor-runtime.js"
 import { runWithActorClientForTests } from "../fixtures/actorClient.js"
+import { seed } from "../fixtures/litestream.js"
+import { assertReply } from "../fixtures/reply.js"
 
 export class Counter extends Actor {
     @Persisted private count = 0
@@ -123,7 +125,7 @@ test("invocation does not enforce deployment JSON schemas at runtime", async () 
         actor: actorIdentity,
         method: "increment",
         args: [1],
-        state: null
+        sqlite: await seed(null)
     })
     assert.equal(reply.type, "invoked")
 })
@@ -158,23 +160,21 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
         actor: { ...actorIdentity, actor_name: "CachingCounter" },
         method: "increment",
         args: [],
-        state: null
+        sqlite: await seed(null)
     }
-    assert.deepEqual(await runtime.handle(command), {
+    assertReply(await runtime.handle(command), {
         type: "invoked",
-        result: { count: 1, calls: 1 },
-        state: { count: 1 }
+        result: { count: 1, calls: 1 }
     })
-    assert.deepEqual(await runtime.handle(command), {
+    assertReply(await runtime.handle(command), {
         type: "invoked",
-        result: { count: 2, calls: 2 },
-        state: { count: 2 }
+        result: { count: 2, calls: 2 }
     })
     assert.equal((await runtime.handle({ ...command, method: "fail" })).type, "failed")
-    const restored = { ...command, state: { count: 2, cache: "stale" } }
-    const expected = { type: "invoked", result: { count: 3, calls: 1 }, state: { count: 3 } }
-    assert.deepEqual(await runtime.handle({ ...command, resident_only: true, state: undefined }), expected)
-    assert.deepEqual(await new ActorRuntime(definition, () => {}).handle(restored), expected)
+    const restored = { ...command, sqlite: await seed({ count: 2, cache: "stale" }) }
+    const expected = { type: "invoked", result: { count: 3, calls: 1 } }
+    assertReply(await runtime.handle({ ...command, resident_only: true, sqlite: undefined }), expected)
+    assertReply(await new ActorRuntime(definition, () => {}).handle(restored), expected)
 })
 
 test("failed state recovery reports a fatal error instead of keeping a damaged instance", async () => {
@@ -200,14 +200,14 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
         request_id: "failed-recovery",
         method: "fail",
         args: [],
-        state: null
+        sqlite: await seed(null)
     }
     assert.deepEqual(await runtime.handle(command), {
         type: "failed",
         code: "invalid_actor_state",
         message: "cannot restore"
     })
-    assert.deepEqual(await runtime.handle({ ...command, resident_only: true, state: undefined }), {
+    assert.deepEqual(await runtime.handle({ ...command, resident_only: true, sqlite: undefined }), {
         type: "state_required"
     })
 })
@@ -245,7 +245,7 @@ test("streams actor output before execution finishes without replaying it in the
             actor: { ...actorIdentity, actor_name: "StreamingActor" },
             method: "stream",
             args: [],
-            state: null
+            sqlite: await seed(null)
         })
         .then(reply => {
             completed = true
@@ -261,7 +261,7 @@ test("streams actor output before execution finishes without replaying it in the
     } finally {
         release()
     }
-    assert.deepEqual(await invocation, { type: "invoked", result: null, state: {} })
+    assertReply(await invocation, { type: "invoked", result: null })
     assert.deepEqual(
         effects.map(effect => effect.type === "broadcast" && effect.message),
         [
@@ -283,7 +283,7 @@ test("rejecting a connection never publishes live socket effects", async () => {
         type: "websocket_event",
         request_id: "connect-1",
         actor: { ...actorIdentity, actor_name: "RejectingRoom" },
-        state: null,
+        sqlite: await seed(null),
         connections: [],
         event: { type: "connect", connection: { id: "socket-1", metadata: {}, tags: [] } }
     })
@@ -304,7 +304,7 @@ test("batches pending stream output in order and surfaces publish failures", asy
         actor: { ...actorIdentity, actor_name: "BurstActor" },
         method: "stream",
         args: [],
-        state: null
+        sqlite: await seed(null)
     }
     const runtime = new ActorRuntime(
         definition,
@@ -339,16 +339,15 @@ test("a resident-only command requests hydration before constructing or executin
         actor: actorIdentity,
         method: "increment",
         args: [1],
-        state: null,
+        sqlite: await seed(null),
         resident_only: true
     }
     assert.deepEqual(await runtime.handle(command), { type: "state_required" })
-    assert.deepEqual(await runtime.handle({ ...command, resident_only: false, state: { count: 9 } }), {
+    assertReply(await runtime.handle({ ...command, resident_only: false, sqlite: await seed({ count: 9 }) }), {
         type: "invoked",
-        result: 10,
-        state: { count: 10 }
+        result: 10
     })
-    assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 11, state: { count: 11 } })
+    assertReply(await runtime.handle(command), { type: "invoked", result: 11 })
 })
 
 test("a resident actor rejects another type or ID without changing its state", async () => {
@@ -359,9 +358,9 @@ test("a resident actor rejects another type or ID without changing its state", a
         actor: actorIdentity,
         method: "increment",
         args: [1],
-        state: null
+        sqlite: await seed(null)
     }
-    assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 1, state: { count: 1 } })
+    assertReply(await runtime.handle(command), { type: "invoked", result: 1 })
     for (const actor of [
         { ...actorIdentity, actor_name: "OtherCounter" },
         { ...actorIdentity, actor_id: "other" }
@@ -374,55 +373,55 @@ test("a resident actor rejects another type or ID without changing its state", a
                 actor.actor_name === actorIdentity.actor_name ? "actor_identity_mismatch" : "actor_name_not_found"
             )
     }
-    assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 2, state: { count: 2 } })
+    assertReply(await runtime.handle(command), { type: "invoked", result: 2 })
 })
 
 test("keeps a successful actor instance resident and restores it after failure", async () => {
     const runtime = new ActorRuntime(counterDefinition, () => {})
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-1",
             actor: actorIdentity,
             method: "increment",
             args: [2],
-            state: null
+            sqlite: await seed(null)
         }),
-        { type: "invoked", result: 2, state: { count: 2 } }
+        { type: "invoked", result: 2 }
     )
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-2",
             actor: actorIdentity,
             method: "increment",
             args: [3],
-            state: { count: 2 }
+            sqlite: await seed({ count: 2 })
         }),
-        { type: "invoked", result: 5, state: { count: 5 } }
+        { type: "invoked", result: 5 }
     )
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-3",
             actor: actorIdentity,
             method: "getCount",
             args: [],
-            state: { count: 2 }
+            sqlite: await seed({ count: 2 })
         }),
-        { type: "invoked", result: 5, state: { count: 5 } }
+        { type: "invoked", result: 5 }
     )
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-4",
             actor: actorIdentity,
             method: "getIdentity",
             args: [],
-            state: { count: 2 }
+            sqlite: await seed({ count: 2 })
         }),
-        { type: "invoked", result: "counter-1", state: { count: 5 } }
+        { type: "invoked", result: "counter-1" }
     )
 
     assert.deepEqual(
@@ -432,11 +431,11 @@ test("keeps a successful actor instance resident and restores it after failure",
             actor: actorIdentity,
             method: "explode",
             args: [],
-            state: { count: 2 }
+            sqlite: await seed({ count: 2 })
         }),
         { type: "failed", code: "actor_method_failed", message: "boom" }
     )
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-6",
@@ -445,7 +444,7 @@ test("keeps a successful actor instance resident and restores it after failure",
             args: [],
             resident_only: true
         }),
-        { type: "invoked", result: 5, state: { count: 5 } }
+        { type: "invoked", result: 5 }
     )
 })
 
@@ -513,18 +512,18 @@ test("keeps persisted fields off the socket unless they are emittable", async ()
     const runtime = new ActorRuntime(counterDefinition, () => {})
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "websocket_event",
             request_id: "request-state",
             actor: actorIdentity,
             event: { type: "connect", connection },
             connections: [connection],
-            state: null
+            sqlite: await seed(null)
         }),
         {
             type: "websocket_handled",
-            state: { count: 0 },
+
             effects: []
         }
     )
@@ -535,18 +534,18 @@ test("does not expose actor properties to a rejected connection", async () => {
     const actor = { ...actorIdentity, actor_name: "RejectingRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "websocket_event",
             request_id: "request-reject",
             actor,
             event: { type: "connect", connection },
             connections: [connection],
-            state: null
+            sqlite: await seed(null)
         }),
         {
             type: "websocket_handled",
-            state: {},
+
             effects: [{ type: "reject", connection_id: "connection-1", code: 3000, reason: "closed" }]
         }
     )
@@ -557,18 +556,18 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
     const actor = { ...actorIdentity, actor_name: "ChatRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: { userId: "user-1", connectedAt: 1 }, tags: [] }
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "websocket_event",
             request_id: "request-1",
             actor,
             event: { type: "connect", connection },
             connections: [connection],
-            state: null
+            sqlite: await seed(null)
         }),
         {
             type: "websocket_handled",
-            state: { events: ["connect:user-1:1"] },
+
             effects: [
                 { type: "set_metadata", connection_id: "connection-1", metadata: { userId: "user-1", connectedAt: 2 } },
                 { type: "set_tags", connection_id: "connection-1", tags: ["member"] },
@@ -582,7 +581,7 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
     )
 
     const connected = { ...connection, metadata: { userId: "user-1", connectedAt: 2 }, tags: ["member"] }
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "websocket_event",
             request_id: "request-2",
@@ -593,11 +592,11 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
                 message: { type: "text", data: JSON.stringify({ text: "hello" }) }
             },
             connections: [connected],
-            state: { events: ["connect:user-1:1"] }
+            sqlite: await seed({ events: ["connect:user-1:1"] })
         }),
         {
             type: "websocket_handled",
-            state: { events: ["connect:user-1:1", "message:user-1:hello"] },
+
             effects: [
                 {
                     type: "broadcast",
@@ -609,19 +608,19 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
         }
     )
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "invoke",
             request_id: "request-announce",
             actor,
             method: "announce",
             args: ["announcement"],
-            state: { events: ["connect:user-1:1", "message:user-1:hello"] }
+            sqlite: await seed({ events: ["connect:user-1:1", "message:user-1:hello"] })
         }),
         {
             type: "invoked",
             result: null,
-            state: { events: ["connect:user-1:1", "message:user-1:hello"] },
+
             effects: [
                 {
                     type: "broadcast",
@@ -633,18 +632,18 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
         }
     )
 
-    assert.deepEqual(
+    assertReply(
         await runtime.handle({
             type: "websocket_event",
             request_id: "request-3",
             actor,
             event: { type: "disconnect", connection: connected, code: 1000, reason: "done", was_clean: true },
             connections: [],
-            state: { events: ["connect:user-1:1", "message:user-1:hello"] }
+            sqlite: await seed({ events: ["connect:user-1:1", "message:user-1:hello"] })
         }),
         {
             type: "websocket_handled",
-            state: { events: ["connect:user-1:1", "message:user-1:hello", "disconnect:user-1:1000:done:0"] },
+
             effects: []
         }
     )
@@ -667,7 +666,7 @@ test("the injected invoker remains available inside actor unit tests", async () 
                     actor: forwarderIdentity,
                     method: "incrementCounter",
                     args: [],
-                    state: null
+                    sqlite: await seed(null)
                 }),
                 {
                     type: "failed",

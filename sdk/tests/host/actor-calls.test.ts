@@ -6,6 +6,8 @@ import type { ActorConnection } from "../../src/actor/socket.js"
 import { runWithActorClient } from "../../src/client/client.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
 import { ActorRuntime } from "../../src/host/actor-runtime.js"
+import { seed } from "../fixtures/litestream.js"
+import { assertReply } from "../fixtures/reply.js"
 
 class Destination extends Actor {
     async increment(amount: number): Promise<number> {
@@ -69,16 +71,16 @@ test("actors invoke, broadcast, and open sockets through the remote client", asy
         }
     )
     const definition = registerActorClass(Relay, { actorName: "Relay", fields: [] })
-    const reply = await runWithActorClient(transport, () =>
+    const reply = await runWithActorClient(transport, async () =>
         new ActorRuntime(definition, () => {}).handle({
             type: "invoke",
             request_id: "parent",
             actor: { project_id: "test", actor_name: "Relay", actor_id: "one" },
             method: "forward",
             args: [],
-            state: null
+            sqlite: await seed(null)
         })
     )
-    assert.deepEqual(reply, { type: "invoked", result: 3, state: {} })
+    assertReply(reply, { type: "invoked", result: 3 })
     assert.deepEqual(events, ["invoke", "broadcast", "connect", "close"])
 })

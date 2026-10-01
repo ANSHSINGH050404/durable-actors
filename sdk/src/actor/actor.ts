@@ -2,6 +2,8 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
+import { actorDatabase } from "./database.js"
+import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 import type { ActorSchema } from "./schema.js"
 import { actorConnections, broadcastActor } from "./socket.js"
@@ -44,6 +46,11 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
 
     protected constructor() {}
 
+    /** Actor-local SQLite. Changes commit with persisted fields after a successful invocation. */
+    protected get db(): ActorDatabase {
+        return actorDatabase(this)
+    }
+
     /**
      * Returns a backend reference. The first call starts the actor if needed.
      * @param actorId - 1–128 ASCII letters, digits, dots, underscores, or hyphens.
@@ -78,6 +85,8 @@ function registerActorClass<Instance extends AnyActor>(
     state: ActorSchema
 ): ActorDefinition {
     const actorName = actorClassName(actorClass)
+    if (state.fields.some(field => field.name === "db"))
+        throw new ActorDefinitionError("actor field db is reserved for SQLite")
     const existing = actorDefinitions.get(actorName)
     if (existing !== undefined) {
         if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor name ${actorName}`)
@@ -186,7 +195,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast")
+        if (name === "connect" || name === "broadcast" || name === "db")
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)

@@ -13,6 +13,15 @@ class ChatRoom extends Actor {
     }
 }
 
+test("actor methods cannot replace the reserved database handle", () => {
+    class DatabaseMethod extends Actor {}
+    Object.defineProperty(DatabaseMethod.prototype, "db", { value: async () => [] })
+    assert.throws(
+        () => registerActorClass(DatabaseMethod, { actorName: "DatabaseMethod", fields: [] }),
+        /reserved method db/
+    )
+})
+
 test("creating and invoking a reference does not register an executable actor", async () => {
     class RemoteCounter extends Actor {
         count = 0

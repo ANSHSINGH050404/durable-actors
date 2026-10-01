@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 
+from fixtures.sqlite import seed
 from test_authoring import Chat
 
 from durable_actors.codegen import generate_client
@@ -176,7 +177,7 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
                             "actor_name": actor_name,
                             "actor_id": actor_id,
                         },
-                        "state": None,
+                        "sqlite": seed(),
                         "method": method,
                         "args": args,
                     }
@@ -256,7 +257,7 @@ def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypat
                             "actor_name": actor_name,
                             "actor_id": actor_id,
                         },
-                        "state": None,
+                        "sqlite": seed(),
                         "method": method,
                         "args": args,
                     }

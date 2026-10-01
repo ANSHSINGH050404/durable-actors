@@ -468,6 +468,7 @@ async fn prepare_actor_host(
             storage.clone(),
             super::persistence::ActorPersistence::new(storage.clone()),
             sockets.clone(),
+            Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
         )
         .with_traces(crate::request_traces::TraceSender::start(
             control_plane.clone(),

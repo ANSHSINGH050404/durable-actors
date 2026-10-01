@@ -1,3 +1,5 @@
+#[path = "fixtures/sqlite.rs"]
+mod sqlite;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -188,7 +190,7 @@ async fn same_named_actors_in_different_projects_recover_independent_state() -> 
             1,
             placement.owner_epoch,
             project.into(),
-            serde_json::json!({"count": count}),
+            sqlite::snapshot(serde_json::json!({"count": count}))?,
             serde_json::json!(count),
         )?
         .encode()?;

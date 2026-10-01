@@ -38,6 +38,7 @@ pub struct RuntimeStorage {
 }
 
 pub struct RuntimeStorageReader {
+    restore: Arc<dyn crate::litestream::DatabaseRestore>,
     clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
     snapshots: Arc<dyn super::SnapshotStore>,
@@ -115,7 +116,11 @@ impl Ownership {
 impl RuntimeStorage {
     pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
         Ok(Self {
-            reader: RuntimeStorageReader::new(authority, clock)?,
+            reader: RuntimeStorageReader::new(
+                authority,
+                clock,
+                Arc::new(crate::litestream::RestoreCommand("litestream".into())),
+            )?,
             owned: Mutex::new(HashMap::new()),
             uploaded: Mutex::new(HashMap::new()),
         })
@@ -139,8 +144,13 @@ impl std::ops::Deref for RuntimeStorage {
 }
 
 impl RuntimeStorageReader {
-    pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
+    pub(crate) fn new(
+        authority: Arc<dyn Bucket>,
+        clock: Arc<dyn crate::clock::Clock>,
+        restore: Arc<dyn crate::litestream::DatabaseRestore>,
+    ) -> Result<Self> {
         Ok(Self {
+            restore,
             clock,
             snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
             persistence: super::PersistenceConfig::Local,
@@ -444,6 +454,16 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             snapshot.object == plan.object_name && snapshot.state_version == plan.state_version,
             "write plan does not match snapshot"
         );
+        if let Some(parent) = crate::state_log::StateSnapshot::decode(&bytes)?
+            .sqlite
+            .parent
+        {
+            let bytes = self
+                .read_persisted(&parent.object)
+                .await?
+                .context("SQLite dependency missing")?;
+            parent.verify(&bytes)?;
+        }
         self.uploaded
             .lock()
             .unwrap()

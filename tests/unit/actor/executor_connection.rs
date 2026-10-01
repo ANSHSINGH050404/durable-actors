@@ -7,19 +7,19 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":18})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":21})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         assert_eq!(load["environment"]["CUSTOMER_KEY"], "value");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":18,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":21,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
         let hydrate = read_json_line(&mut socket).await?;
         assert_eq!(hydrate["command"]["type"], "hydrate");
-        assert_eq!(hydrate["command"]["state"]["count"], 41);
+        assert_eq!(hydrate["command"]["sqlite"]["txid"], 41);
         write_json_line(
             &mut socket,
             &json!({"type":"reply","message_id":hydrate["message_id"],"reply":{"type":"hydrated"}}),
@@ -43,7 +43,9 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
                 actor_name: "counter".into(),
                 actor_id: "one".into(),
             },
-            Some(Arc::new(json!({"count":41}))),
+            Some(Arc::new(ActorState {
+                sqlite: crate::actor::SqliteState::position(41),
+            })),
         )
         .await?;
     peer.await??;
@@ -65,7 +67,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":18, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":21, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -134,12 +136,12 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
         write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"project_id": "default", "actor_name":"forged","actor_id":"forged"}})).await?;
         let fast = read_json_line(&mut customer).await?;
         assert_eq!(fast["command"]["actor"]["actor_id"], "fast");
-        write_json_line(&mut customer, &json!({"type":"reply", "message_id":fast["message_id"], "reply":{"type":"invoked", "result":42, "state":{}}})).await?;
+        write_json_line(&mut customer, &json!({"type":"reply", "message_id":fast["message_id"], "reply":{"type":"invoked", "result":42, "sqlite":{"txid":1}}})).await?;
         let loaded = read_json_line(&mut customer).await?;
         assert_eq!(loaded["type"], "socket_connections");
         assert_eq!(loaded["message_id"], slow["message_id"]);
         assert_eq!(loaded["connections"][0]["id"], "slow");
-        write_json_line(&mut customer, &json!({"type":"reply", "message_id":slow["message_id"], "reply":{"type":"invoked", "result":1, "state":{}}})).await?;
+        write_json_line(&mut customer, &json!({"type":"reply", "message_id":slow["message_id"], "reply":{"type":"invoked", "result":1, "sqlite":{"txid":1}}})).await?;
         anyhow::Ok(())
     };
     let invoke = |id: &str| {
@@ -253,7 +255,7 @@ async fn multiplexes_out_of_order_replies_before_peer_disconnect() -> Result<()>
         for command in [second, first] {
             write_json_line(&mut customer, &json!({
                     "type": "reply", "message_id": command["message_id"],
-                    "reply": {"type": "invoked", "result": command["command"]["request_id"], "state": {}}
+                    "reply": {"type": "invoked", "result": command["command"]["request_id"], "sqlite": {"txid": 1}}
                 })).await?;
         }
         anyhow::Ok(())
@@ -299,7 +301,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":18, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":21, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -369,7 +371,9 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
         outcome,
         ActorMethodOutcome::Completed {
             result: json!(2),
-            state: json!({ "count": 2 }),
+            state: ActorState {
+                sqlite: crate::actor::SqliteState::position(2)
+            },
             effects: Vec::new(),
         }
     );
@@ -395,13 +399,17 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
                     tags: Vec::new(),
                 }],
             },
-            Some(&json!({ "count": 2 })),
+            Some(&ActorState {
+                sqlite: crate::actor::SqliteState::position(2),
+            }),
         )
         .await?;
     assert_eq!(
         socket_outcome,
         ActorSocketOutcome::Handled {
-            state: json!({ "count": 3 }),
+            state: ActorState {
+                sqlite: crate::actor::SqliteState::position(3)
+            },
             effects: vec![ActorSocketEffect::Send {
                 connection_id: "socket-1".into(),
                 message: ActorSocketMessage::Text {
@@ -425,10 +433,10 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
     let mut reader = BufReader::new(customer);
     let customer = async {
         let first = read_json_line(&mut reader).await?;
-        assert_eq!(first["command"]["state"], json!({"count": 9}));
-        write_json_line(&mut reader, &json!({"type":"reply", "message_id":first["message_id"], "reply":json!({"type":"invoked", "result":10,"state":{"count":10}})})).await?;
+        assert_eq!(first["command"]["sqlite"], json!({"txid": 9}));
+        write_json_line(&mut reader, &json!({"type":"reply", "message_id":first["message_id"], "reply":json!({"type":"invoked", "result":10,"sqlite": {"txid": 10}})})).await?;
         let warm = read_json_line(&mut reader).await?;
-        assert!(warm["command"].get("state").is_none());
+        assert!(warm["command"].get("sqlite").is_none());
         assert_eq!(warm["command"]["resident_only"], true);
         write_json_line(&mut reader, &json!({"type":"reply", "message_id":warm["message_id"], "reply":json!({"type":"state_required"})})).await?;
         let retry = read_json_line(&mut reader).await?;
@@ -436,9 +444,9 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
             retry["command"]["request_id"],
             warm["command"]["request_id"]
         );
-        assert_eq!(retry["command"]["state"], json!({"count": 10}));
+        assert_eq!(retry["command"]["sqlite"], json!({"txid": 10}));
         assert_eq!(retry["command"]["resident_only"], false);
-        write_json_line(&mut reader, &json!({"type":"reply", "message_id":retry["message_id"], "reply":json!({"type":"invoked", "result":11,"state":{"count":11}})})).await?;
+        write_json_line(&mut reader, &json!({"type":"reply", "message_id":retry["message_id"], "reply":json!({"type":"invoked", "result":11,"sqlite": {"txid": 11}})})).await?;
         anyhow::Ok(())
     };
     let invoke = async {
@@ -455,7 +463,9 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
                         method: "increment".into(),
                         args: vec![],
                     },
-                    Some(&json!({"count":count})),
+                    Some(&ActorState {
+                        sqlite: crate::actor::SqliteState::position(count),
+                    }),
                 )
                 .await?;
             assert!(
@@ -469,16 +479,80 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
     Ok(())
 }
 
+#[tokio::test]
+async fn executor_receives_the_shared_database_and_replication_socket() -> Result<()> {
+    let state = ActorState {
+        sqlite: crate::actor::SqliteState {
+            txid: 1,
+            path: Some("/tmp/actor.sqlite".into()),
+            socket: Some("/tmp/litestream.sock".into()),
+        },
+    };
+    let (host, customer) = UnixStream::pair()?;
+    let (reader, writer) = host.into_split();
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
+    let customer = async {
+        let mut reader = BufReader::new(customer);
+        let message = read_json_line(&mut reader).await?;
+        assert_eq!(
+            message["command"]["sqlite"],
+            serde_json::to_value(&state.sqlite)?
+        );
+        write_json_line(
+            &mut reader,
+            &json!({
+                "type": "reply", "message_id": message["message_id"],
+                "reply": {"type": "invoked", "result": 1, "sqlite": state.sqlite}
+            }),
+        )
+        .await
+    };
+    let invoke = async {
+        let outcome = executor
+            .invoke(
+                ActorMethodInvocation {
+                    request_id: "large".into(),
+                    actor: ActorKey {
+                        project_id: "default".into(),
+                        actor_name: "counter".into(),
+                        actor_id: "one".into(),
+                    },
+                    method: "read".into(),
+                    args: vec![],
+                },
+                Some(&state),
+            )
+            .await?;
+        assert_eq!(
+            outcome,
+            ActorMethodOutcome::Completed {
+                result: json!(1),
+                state: state.clone(),
+                effects: vec![],
+            }
+        );
+        anyhow::Ok(())
+    };
+    let result = timeout(Duration::from_secs(30), async {
+        tokio::try_join!(customer, invoke)
+    })
+    .await;
+    running.abort();
+    result??;
+    Ok(())
+}
+
 async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let stream = UnixStream::connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":18,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":21,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 18, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 21, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;
@@ -495,7 +569,7 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
             "reply": {
                 "type": "invoked",
                 "result": 2,
-                "state": { "count": 2 }
+                "sqlite": {"txid": 2}
             }
         }),
     )
@@ -514,7 +588,7 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
             "message_id": socket_event_id,
             "reply": {
                 "type": "websocket_handled",
-                "state": { "count": 3 },
+                "sqlite": {"txid": 3},
                 "effects": [{
                     "type": "send",
                     "connection_id": "socket-1",
