@@ -35,6 +35,9 @@ pool:
   idleTtlSeconds: 600
   cpuMillis: 500
   memoryMiB: 256
+capacityBuffer:
+  enabled: false
+  replicas: 32
 hostIdleTimeoutMs: 10000
 gateway:
   enabled: true

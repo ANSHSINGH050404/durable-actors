@@ -89,3 +89,52 @@ test("Cloud SQL connects through a private local proxy that starts before the co
     assert.match(deployment, /path: \/startup/)
     assert.match(deployment, /key: postgres-url/)
 })
+
+test("node capacity buffering is opt-in", () => {
+    const result = render()
+    assert.equal(result.status, 0, result.stderr)
+    assert.doesNotMatch(result.stdout, /kind: (CapacityBuffer|PodTemplate)/)
+})
+
+for (const [name, overrides, replicas, cpu, memory, namespace, zones] of [
+    ["default", {}, 32, "500m", "256Mi", "terse-sandboxes", ["us-west4-a", "us-west4-b", "us-west4-c"]],
+    ["configured", {
+        capacityBuffer: { replicas: 16 },
+        pool: { cpuMillis: 750, memoryMiB: 512 },
+        sandboxNamespace: "custom-sandboxes",
+        region: "north-america-east",
+        zones: { "north-america-east": ["us-east4-a", "us-east4-b"] }
+    }, 16, "750m", "512Mi", "custom-sandboxes", ["us-east4-a", "us-east4-b"]]
+]) test(`reserves ${name} capacity for sandbox-shaped pods in the configured region`, () => {
+    const result = render({ ...overrides, capacityBuffer: { enabled: true, ...overrides.capacityBuffer } })
+    assert.equal(result.status, 0, result.stderr)
+    const documents = result.stdout.split("---")
+    const buffer = documents.find(document => document.includes("kind: CapacityBuffer\n"))
+    const template = documents.find(document => document.includes("kind: PodTemplate\n"))
+    assert.ok(buffer, "capacity buffer is rendered")
+    assert.ok(template, "buffer pod template is rendered")
+    const templateName = template.match(/metadata:\n\s+name: (\S+)/)[1]
+    assert.match(buffer, /apiVersion: autoscaling\.x-k8s\.io\/v1beta1/)
+    assert.match(buffer, new RegExp(`podTemplateRef:\\n\\s+name: ${templateName}`))
+    assert.match(buffer, new RegExp(`replicas: ${replicas}\\b`))
+    assert.match(buffer, /provisioningStrategy: buffer\.x-k8s\.io\/active-capacity/)
+    for (const document of [buffer, template]) assert.match(document, new RegExp(`namespace: ${namespace}\\b`))
+    assert.match(template, /runtimeClassName: gvisor/)
+    assert.match(template, /nodeSelector:\n\s+sandbox\.gke\.io\/runtime: gvisor/)
+    assert.match(template, /key: sandbox\.gke\.io\/runtime\n\s+operator: Equal\n\s+value: gvisor\n\s+effect: NoSchedule/)
+    assert.match(template, /requiredDuringSchedulingIgnoredDuringExecution:/)
+    assert.match(template, /key: topology\.kubernetes\.io\/zone\n\s+operator: In/)
+    for (const zone of zones) assert.ok(template.includes(zone))
+    if (name === "configured") assert.doesNotMatch(template, /us-west4/)
+    assert.match(template, new RegExp(`requests:\\n\\s+cpu: "${cpu}"\\n\\s+memory: "${memory}"`))
+    assert.match(template, /terminationGracePeriodSeconds: 0/)
+    assert.match(template, /automountServiceAccountToken: false/)
+    assert.doesNotMatch(template, /secretKeyRef|DURABLE_ACTORS_|terse\.ai\/purpose: actor/)
+})
+
+for (const [name, capacityBuffer] of [
+    ["zero slots", { enabled: true, replicas: 0 }],
+    ["negative slots", { enabled: true, replicas: -1 }],
+    ["fractional slots", { enabled: true, replicas: 1.5 }],
+    ["non-boolean enable flag", { enabled: "true" }]
+]) test(`rejects capacity buffer with ${name}`, () => assert.notEqual(render({ capacityBuffer }).status, 0))

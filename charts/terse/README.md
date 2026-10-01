@@ -71,6 +71,28 @@ Actor-scoped credentials cover only the ownership object, the actor's log and ar
 
 The default pool keeps 64 ready pods per image and region, with 0.5 CPU and 256 MiB per pod. `pool.fleetMaximum` bounds idle spares, not active actors. An exhausted pool creates new pods. State records above 4 MiB use Standard; large state increases memory and transfer costs.
 
+To keep node capacity available for new hosts and spare replenishment, enable an active [GKE CapacityBuffer](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-capacity-buffer) in your production values:
+
+```yaml
+capacityBuffer:
+  enabled: true
+  replicas: 32
+```
+
+This opt-in feature requires GKE's Preview CapacityBuffer API (`autoscaling.x-k8s.io/v1beta1`, active buffers on GKE 1.35.2-gke.1842000 or later) and autoscaling on the gVisor node pools. Node auto-provisioning is optional when eligible pools already exist. Leave it disabled on clusters without this API.
+
+Each buffer slot uses `pool.cpuMillis` and `pool.memoryMiB` and targets gVisor nodes in `zones[region]`. With the defaults, 32 slots reserve 16 CPUs and 8 GiB in addition to active hosts and the ready spare pool. This is one buffer per chart release for the selected region, independent of the number of runtime images. Hosts with larger per-actor resource overrides might need more capacity than a slot provides.
+
+GKE maintains running-node headroom and replenishes it as pods consume capacity. Extra nodes incur normal compute charges and remain subject to autoscaling limits and quotas. The buffer does not initialize actor processes or preload runtime images; `pool.idle` still controls ready sandboxes. Changes can take up to five minutes to affect provisioning, so establish the reserve before a benchmark or expected burst. Inspect the buffer, scheduling events, and node readiness with:
+
+```sh
+kubectl get capacitybuffers.autoscaling.x-k8s.io -n terse-sandboxes
+kubectl describe capacitybuffer actors-terse-capacity-buffer -n terse-sandboxes
+kubectl get nodes -l sandbox.gke.io/runtime=gvisor
+```
+
+These names assume release `actors` and the default sandbox namespace. Set `capacityBuffer.enabled: false` and upgrade the release to remove the buffer; GKE can then scale down surplus nodes.
+
 This is a breaking development storage format. Provision fresh ownership records or import state explicitly, then replace controllers and actor images together. Existing SQL migrations retain their checksums.
 
 Source builds use the pinned Google Rust SDK's opt-in append API. Repository and Docker builds set `--cfg google_cloud_unstable_storage_bidi` in `.cargo/config.toml`. Builds outside this repository, including `cargo install`, must supply `RUSTFLAGS="--cfg google_cloud_unstable_storage_bidi"`.

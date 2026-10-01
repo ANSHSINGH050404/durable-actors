@@ -124,6 +124,24 @@
         "googleServiceAccount"
       ]
     },
+    "capacityBuffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "enabled",
+        "replicas"
+      ]
+    },
     "networkPolicy": {
       "type": "object",
       "properties": {
