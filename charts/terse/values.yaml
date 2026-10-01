@@ -1,7 +1,7 @@
 image:
   repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
   digest: ""
-replicaCount: 3
+replicaCount: 2
 publicUrl: https://actors.useterse.ai
 region: north-america-west
 sandboxNamespace: terse-sandboxes
@@ -36,7 +36,7 @@ pool:
   cpuMillis: 500
   memoryMiB: 256
 capacityBuffer:
-  enabled: false
+  enabled: true
   replicas: 32
 hostIdleTimeoutMs: 10000
 gateway:

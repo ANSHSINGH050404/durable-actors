@@ -34,7 +34,7 @@ The application archives segments before deleting their Rapid copies. Do not con
 Copy `values.yaml` and supply the image digest, Google service account, bucket names, namespaces, and zones:
 
 ```yaml
-replicaCount: 3
+replicaCount: 2
 zones:
   north-america-west: [us-west4-a, us-west4-b, us-west4-c]
 cloudSql:
@@ -69,9 +69,9 @@ Actor-scoped credentials cover only the ownership object, the actor's log and ar
 
 ## Capacity and deployment
 
-The default pool keeps 64 ready pods per image and region, with 0.5 CPU and 256 MiB per pod. `pool.fleetMaximum` bounds idle spares, not active actors. An exhausted pool creates new pods. State records above 4 MiB use Standard; large state increases memory and transfer costs.
+The chart defaults to two control-plane replicas. The default pool keeps 64 ready pods per image and region, shared across those replicas, with 0.5 CPU and 256 MiB per pod. `pool.fleetMaximum` bounds idle spares, not active actors. An exhausted pool creates new pods. State records above 4 MiB use Standard; large state increases memory and transfer costs.
 
-To keep node capacity available for new hosts and spare replenishment, enable an active [GKE CapacityBuffer](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-capacity-buffer) in your production values:
+To keep node capacity available for new hosts and spare replenishment, the chart enables an active [GKE CapacityBuffer](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-capacity-buffer) with these defaults:
 
 ```yaml
 capacityBuffer:
@@ -79,7 +79,7 @@ capacityBuffer:
   replicas: 32
 ```
 
-This opt-in feature requires GKE's Preview CapacityBuffer API (`autoscaling.x-k8s.io/v1beta1`, active buffers on GKE 1.35.2-gke.1842000 or later) and autoscaling on the gVisor node pools. Node auto-provisioning is optional when eligible pools already exist. Leave it disabled on clusters without this API.
+The default buffer requires GKE's Preview CapacityBuffer API (`autoscaling.x-k8s.io/v1beta1`, active buffers on GKE 1.35.2-gke.1842000 or later) and autoscaling on the gVisor node pools. Node auto-provisioning is optional when eligible pools already exist. Set `capacityBuffer.enabled: false` on clusters without this API.
 
 Each buffer slot uses `pool.cpuMillis` and `pool.memoryMiB` and targets gVisor nodes in `zones[region]`. With the defaults, 32 slots reserve 16 CPUs and 8 GiB in addition to active hosts and the ready spare pool. This is one buffer per chart release for the selected region, independent of the number of runtime images. Hosts with larger per-actor resource overrides might need more capacity than a slot provides.
 

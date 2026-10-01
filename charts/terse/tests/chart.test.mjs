@@ -36,7 +36,8 @@ test("renders two Rapid zones and the Standard archive", () => {
     assert.match(result.stdout, /DURABLE_ACTORS_ARCHIVE_BUCKET, value: "test-archive"/)
     const buckets = result.stdout.split("\n").find(line => line.includes("DURABLE_ACTORS_RAPID_BUCKETS"))
     for (const value of ["test-rapid-a", "test-rapid-b", "us-west4-a", "us-west4-b"]) assert.ok(buckets.includes(value))
-    assert.match(result.stdout, /replicas: 3/)
+    const deployment = result.stdout.split("---").find(document => document.includes("kind: Deployment\n"))
+    assert.match(deployment, /replicas: 2\b/)
     assert.match(result.stdout, /kind: Gateway/)
     assert.match(result.stdout, /whenUnsatisfiable: DoNotSchedule/)
 })
@@ -90,8 +91,8 @@ test("Cloud SQL connects through a private local proxy that starts before the co
     assert.match(deployment, /key: postgres-url/)
 })
 
-test("node capacity buffering is opt-in", () => {
-    const result = render()
+test("node capacity buffering can be disabled", () => {
+    const result = render({ capacityBuffer: { enabled: false } })
     assert.equal(result.status, 0, result.stderr)
     assert.doesNotMatch(result.stdout, /kind: (CapacityBuffer|PodTemplate)/)
 })
@@ -106,7 +107,7 @@ for (const [name, overrides, replicas, cpu, memory, namespace, zones] of [
         zones: { "north-america-east": ["us-east4-a", "us-east4-b"] }
     }, 16, "750m", "512Mi", "custom-sandboxes", ["us-east4-a", "us-east4-b"]]
 ]) test(`reserves ${name} capacity for sandbox-shaped pods in the configured region`, () => {
-    const result = render({ ...overrides, capacityBuffer: { enabled: true, ...overrides.capacityBuffer } })
+    const result = render(overrides)
     assert.equal(result.status, 0, result.stderr)
     const documents = result.stdout.split("---")
     const buffer = documents.find(document => document.includes("kind: CapacityBuffer\n"))
