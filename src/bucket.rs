@@ -4,8 +4,8 @@ mod gcs;
 mod rapid;
 pub(crate) use rapid::RapidSnapshots;
 mod snapshots;
+pub use snapshots::{ArchiveBatchConfig, PersistenceConfig, RapidBucket};
 pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
-pub use snapshots::{PersistenceConfig, RapidBucket};
 mod runtime;
 
 use anyhow::Result;

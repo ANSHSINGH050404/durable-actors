@@ -271,6 +271,7 @@ fn boundary(
         super::PersistenceConfig::Rapid {
             archive_bucket,
             buckets,
+            ..
         } => {
             let prefix = super::rapid::object_name(&prefix)?;
             rules.push(snapshot_rule(archive_bucket, &[&prefix], false)?);

@@ -14,6 +14,9 @@ use std::{
     },
 };
 
+#[path = "rapid/batch.rs"]
+mod batch;
+
 #[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
     let f = Fixture::new()?;
@@ -92,7 +95,7 @@ async fn actor_assignment_opens_both_connections_before_activation_and_reuses_th
 }
 
 #[tokio::test]
-async fn prepared_connections_cannot_be_reassigned_to_another_actor() -> Result<()> {
+async fn foreign_prepared_connections_are_rejected() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     let mut actor = crate::storage_paths::actor_from_snapshot(&f.stream.object(1))?;
@@ -100,13 +103,18 @@ async fn prepared_connections_cannot_be_reassigned_to_another_actor() -> Result<
     store.prepare(&actor)?;
     store.start(&f.stream).await?;
     assert!(store.put(&f.stream.object(1), state(1, 1)?).await.is_err());
-    assert!(store.finish(&f.stream).await.is_err());
-    assert!(f.archive.list("").await?.is_empty());
+    assert!(f.zones.iter().all(|z| {
+        z.objects
+            .lock()
+            .unwrap()
+            .values()
+            .all(|o| o.bytes.is_empty())
+    }));
     Ok(())
 }
 
 #[tokio::test]
-async fn failed_manifest_publication_prevents_log_writes() -> Result<()> {
+async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() -> Result<()> {
     struct UnavailableArchive;
     #[async_trait]
     impl Bucket for UnavailableArchive {
@@ -133,11 +141,11 @@ async fn failed_manifest_publication_prevents_log_writes() -> Result<()> {
             .iter()
             .map(|zone| zone.clone() as Arc<dyn LogZone>)
             .collect(),
+        crate::bucket::ArchiveBatchConfig::default(),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
     assert!(store.put(&f.stream.object(1), state(1, 1)?).await.is_err());
-    assert!(store.finish(&f.stream).await.is_err());
     assert!(f.zones.iter().all(|zone| {
         zone.objects
             .lock()
@@ -166,6 +174,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
     let f = Fixture::new()?;
     let clock = Arc::new(TestClock(AtomicU64::new(1)));
     let config = PersistenceConfig::Rapid {
+        archive_batch: Default::default(),
         archive_bucket: "archive".into(),
         buckets: vec![
             RapidBucket {
@@ -250,23 +259,47 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
 }
 
 #[tokio::test]
-async fn segment_rotation_preserves_all_versions_and_reclaims_archived_replicas() -> Result<()> {
+async fn large_segments_reuse_streams_and_preserve_batched_history() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
-    for version in 1..=10 {
-        let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
-        snapshot.result = serde_json::json!({"data": "x".repeat(1_000_000)});
-        store
-            .put(&f.stream.object(version), snapshot.encode()?.into())
-            .await?;
+    let snapshots = large_snapshots()?;
+    for (version, bytes) in &snapshots {
+        store.put(&f.stream.object(*version), bytes.clone()).await?;
     }
-    assert_eq!(f.zones[0].opens.load(Ordering::SeqCst), 2);
-    assert_eq!(f.zones[0].objects.lock().unwrap().len(), 1);
-    assert_eq!(f.store()?.list(&f.stream.prefix).await?.len(), 10);
+    for zone in &f.zones {
+        assert_eq!(zone.opens.load(Ordering::SeqCst), 1);
+        let objects = zone.objects.lock().unwrap();
+        assert_eq!(objects.len(), 1);
+        assert!(objects.values().next().unwrap().bytes.len() > 8 * 1024 * 1024);
+    }
+    assert_eq!(
+        f.store()?.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(10), snapshots[&10].clone()))
+    );
     store.finish(&f.stream).await?;
-    assert_eq!(f.store()?.list(&f.stream.prefix).await?.len(), 10);
+    f.cleaned().await?;
+    assert!(
+        f.zones
+            .iter()
+            .all(|zone| zone.objects.lock().unwrap().is_empty())
+    );
+    let reader = f.store()?;
+    assert_eq!(reader.list(&f.stream.prefix).await?.len(), snapshots.len());
+    for (version, bytes) in snapshots {
+        assert_eq!(reader.get(&f.stream.object(version)).await?, Some(bytes));
+    }
     Ok(())
+}
+
+fn large_snapshots() -> Result<BTreeMap<u64, Bytes>> {
+    (1..=10)
+        .map(|version| {
+            let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
+            snapshot.result = serde_json::json!({"data": "x".repeat(1_000_000)});
+            Ok((version, snapshot.encode()?.into()))
+        })
+        .collect()
 }
 
 #[test]
@@ -322,10 +355,10 @@ async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Re
 }
 
 #[tokio::test]
-async fn failed_archival_never_deletes_a_durable_rapid_copy() -> Result<()> {
-    struct RejectArchive(Arc<FileBucket>);
+async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Result<()> {
+    struct RejectCoverage(Arc<FileBucket>);
     #[async_trait]
-    impl Bucket for RejectArchive {
+    impl Bucket for RejectCoverage {
         async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
             self.0.get(key).await
         }
@@ -338,19 +371,23 @@ async fn failed_archival_never_deletes_a_durable_rapid_copy() -> Result<()> {
             generation: Option<i64>,
             bytes: Vec<u8>,
         ) -> Result<bool> {
-            ensure!(!key.ends_with(".segment"), "archive unavailable");
+            ensure!(
+                !key.ends_with(".replicated"),
+                "coverage publication unavailable"
+            );
             self.0.compare_and_swap(key, generation, bytes).await
         }
     }
     let f = Fixture::new()?;
     let store = RapidSnapshots::new(
-        Arc::new(RejectArchive(f.archive.clone())),
+        Arc::new(RejectCoverage(f.archive.clone())),
         Arc::new(BucketSnapshots(f.archive.clone())),
         f.zones
             .iter()
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
-        tokio_util::sync::CancellationToken::new(),
+        crate::bucket::ArchiveBatchConfig::default(),
+        CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
@@ -368,25 +405,29 @@ async fn failed_archival_never_deletes_a_durable_rapid_copy() -> Result<()> {
 }
 
 #[tokio::test]
-async fn takeover_with_one_zone_unavailable_fences_old_streams_and_checkpoints_state() -> Result<()>
-{
+async fn recovery_with_one_zone_unavailable_copies_missing_commits_to_standard() -> Result<()> {
     let f = Fixture::new()?;
     let old = f.store()?;
     old.start(&f.stream).await?;
-    old.put(&f.stream.object(1), state(1, 1)?).await?;
+    let snapshots = large_snapshots()?;
+    for (version, bytes) in &snapshots {
+        old.put(&f.stream.object(*version), bytes.clone()).await?;
+    }
     f.zones[1].offline.store(true, Ordering::SeqCst);
     let restored = f.store()?.recover(&f.stream.prefix).await?;
-    assert_eq!(restored, Some((f.stream.object(1), state(1, 1)?)));
-    assert!(old.put(&f.stream.object(2), state(2, 1)?).await.is_err());
     assert_eq!(
-        f.archive.get(&f.stream.object(1)).await?.unwrap().bytes,
-        state(1, 1)?
+        restored,
+        Some((f.stream.object(10), snapshots[&10].clone()))
+    );
+    assert_eq!(
+        f.archive.get(&f.stream.object(10)).await?.unwrap().bytes,
+        snapshots[&10]
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn shutdown_archives_history_before_deleting_rapid_replicas() -> Result<()> {
+async fn shutdown_replicates_history_before_deleting_rapid_replicas() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
@@ -394,6 +435,7 @@ async fn shutdown_archives_history_before_deleting_rapid_replicas() -> Result<()
         store.put(&f.stream.object(v), state(v, 1)?).await?;
     }
     store.finish(&f.stream).await?;
+    f.cleaned().await?;
     assert!(f.zones.iter().all(|z| z.objects.lock().unwrap().is_empty()));
     for zone in &f.zones {
         zone.offline.store(true, Ordering::SeqCst);
@@ -405,25 +447,6 @@ async fn shutdown_archives_history_before_deleting_rapid_replicas() -> Result<()
     );
     assert_eq!(reader.list(&f.stream.prefix).await?.len(), 3);
     assert_eq!(reader.get(&f.stream.object(1)).await?, Some(state(1, 1)?));
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_failed_flush_poisons_the_session_and_prevents_clean_shutdown() -> Result<()> {
-    let f = Fixture::new()?;
-    let store = f.store()?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    f.zones[1].offline.store(true, Ordering::SeqCst);
-    assert!(store.put(&f.stream.object(2), state(2, 1)?).await.is_err());
-    f.zones[1].offline.store(false, Ordering::SeqCst);
-    assert!(store.put(&f.stream.object(3), state(3, 1)?).await.is_err());
-    assert!(store.finish(&f.stream).await.is_err());
-    assert!(
-        f.zones
-            .iter()
-            .all(|z| !z.objects.lock().unwrap().is_empty())
-    );
     Ok(())
 }
 
@@ -499,92 +522,6 @@ struct Fixture {
 }
 
 #[tokio::test]
-async fn activation_does_not_wait_for_the_manifest_but_writes_require_it() -> Result<()> {
-    struct GatedManifest {
-        inner: Arc<FileBucket>,
-        release: tokio::sync::Semaphore,
-    }
-    #[async_trait]
-    impl Bucket for GatedManifest {
-        async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
-            self.inner.get(key).await
-        }
-        async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-            self.inner.list(prefix).await
-        }
-        async fn compare_and_swap(
-            &self,
-            key: &str,
-            generation: Option<i64>,
-            bytes: Vec<u8>,
-        ) -> Result<bool> {
-            if key.ends_with(".manifest") {
-                self.release.acquire().await?.forget();
-            }
-            self.inner.compare_and_swap(key, generation, bytes).await
-        }
-    }
-    let f = Fixture::new()?;
-    let archive = Arc::new(GatedManifest {
-        inner: f.archive.clone(),
-        release: tokio::sync::Semaphore::new(0),
-    });
-    let store = Arc::new(RapidSnapshots::new(
-        archive.clone(),
-        Arc::new(BucketSnapshots(f.archive.clone())),
-        f.zones
-            .iter()
-            .map(|z| z.clone() as Arc<dyn LogZone>)
-            .collect(),
-        tokio_util::sync::CancellationToken::new(),
-    )?);
-    tokio::time::timeout(Duration::from_millis(30), store.start(&f.stream)).await??;
-    let writer = store.clone();
-    let object = f.stream.object(1);
-    let pending = tokio::spawn(async move { writer.put(&object, state(1, 1)?).await });
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    assert!(!pending.is_finished());
-    assert!(f.zones.iter().all(|z| {
-        z.objects
-            .lock()
-            .unwrap()
-            .values()
-            .all(|object| object.bytes.is_empty())
-    }));
-    archive.release.add_permits(1);
-    pending.await??;
-    assert_eq!(
-        f.store()?.latest(&f.stream.prefix).await?,
-        Some((f.stream.object(1), state(1, 1)?))
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn cancellation_during_flush_fences_subsequent_writes_and_preserves_an_uncertain_tail()
--> Result<()> {
-    let f = Fixture::new()?;
-    let store = f.store()?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    f.zones[1].stalled.store(true, Ordering::SeqCst);
-    let object = f.stream.object(2);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(10), store.put(&object, state(2, 1)?))
-            .await
-            .is_err()
-    );
-    f.zones[1].stalled.store(false, Ordering::SeqCst);
-    assert!(store.put(&object, state(2, 1)?).await.is_err());
-    assert!(store.finish(&f.stream).await.is_err());
-    assert_eq!(
-        f.store()?.recover(&f.stream.prefix).await?,
-        Some((object, state(2, 1)?))
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()> {
     let f = Fixture::new()?;
     let first = f.store()?;
@@ -628,6 +565,19 @@ async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()
     Ok(())
 }
 impl Fixture {
+    async fn cleaned(&self) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while self
+                .zones
+                .iter()
+                .any(|z| !z.objects.lock().unwrap().is_empty())
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
     fn new() -> Result<Self> {
         let directory = tempfile::tempdir()?;
         let archive = Arc::new(FileBucket::new(directory.path().into())?);
@@ -660,7 +610,8 @@ impl Fixture {
                 .iter()
                 .map(|z| z.clone() as Arc<dyn LogZone>)
                 .collect(),
-            tokio_util::sync::CancellationToken::new(),
+            crate::bucket::ArchiveBatchConfig::default(),
+            CancellationToken::new(),
         )
     }
 }
@@ -725,6 +676,12 @@ impl LogZone for MemoryZone {
         }
         Ok(Bytes::copy_from_slice(&object.bytes))
     }
+    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+        let bytes = self.read(replica, false).await?;
+        let end = start.checked_add(length).context("range overflow")? as usize;
+        ensure!(end <= bytes.len(), "incomplete range");
+        Ok(bytes.slice(start as usize..end))
+    }
     async fn delete(&self, replica: &Replica) -> Result<()> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
         self.objects.lock().unwrap().remove(&replica.object);
@@ -742,8 +699,8 @@ struct MemoryWriter {
 impl LogWriter for MemoryWriter {
     async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
-        if self.stalled.load(Ordering::SeqCst) {
-            std::future::pending::<()>().await;
+        while self.stalled.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         let mut objects = self.objects.lock().unwrap();
         let object = objects

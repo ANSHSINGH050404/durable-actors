@@ -49,6 +49,7 @@ impl RapidSnapshots {
         let PersistenceConfig::Rapid {
             buckets,
             archive_bucket,
+            archive_batch,
         } = config
         else {
             anyhow::bail!("append-log persistence configuration required");
@@ -67,7 +68,7 @@ impl RapidSnapshots {
                 }) as Arc<dyn LogZone>
             })
             .collect();
-        let store = Self::new(archive, snapshots, zones, stop)?;
+        let store = Self::new(archive, snapshots, zones, *archive_batch, stop)?;
         if let Some(actor) = actor {
             store.prepare(actor)?;
         }
@@ -131,10 +132,7 @@ impl LogZone for GcsZone {
             .send()
             .await?;
         let size = descriptor.object().size;
-        ensure!(
-            (0..=MAX_SEGMENT_BYTES as i64).contains(&size),
-            "log segment exceeds size limit"
-        );
+        ensure!(size >= 0, "invalid log segment size");
         if size == 0 {
             return Ok(Bytes::new());
         }
@@ -158,16 +156,47 @@ impl LogZone for GcsZone {
         Ok(bytes.into())
     }
 
+    async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+        let mut reader = self
+            .clients
+            .storage
+            .read_object(&self.bucket, &replica.object)
+            .set_generation(replica.generation)
+            .set_read_range(ReadRange::segment(start, length))
+            .send()
+            .await?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = reader.next().await {
+            bytes.extend_from_slice(&chunk?);
+            ensure!(
+                bytes.len() as u64 <= length,
+                "Rapid range exceeded requested length"
+            );
+        }
+        ensure!(bytes.len() as u64 == length, "incomplete Rapid range");
+        Ok(bytes.into())
+    }
+
     async fn delete(&self, replica: &Replica) -> Result<()> {
-        self.clients
+        match self
+            .clients
             .control
             .delete_object()
             .set_bucket(&self.bucket)
             .set_object(&replica.object)
             .set_if_generation_match(replica.generation)
             .send()
-            .await?;
-        Ok(())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error)
+                if error.http_status_code() == Some(404)
+                    || error.status().is_some_and(|s| s.code.name() == "NOT_FOUND") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 

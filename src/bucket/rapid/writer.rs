@@ -1,38 +1,63 @@
+use super::archive::Archiver;
 use super::*;
-use std::{sync::Weak, time::Instant};
+use futures_util::FutureExt;
+use std::sync::Weak;
+use tokio::time::Instant;
+
+type Preparing = AbortOnDropHandle<Result<Option<Segment>>>;
 
 pub(super) struct Session {
     pub stream: StateStream,
     segment: Option<Segment>,
-    preparing: Option<AbortOnDropHandle<Result<Option<Segment>>>>,
+    preparing: Option<Preparing>,
+    next: Option<Preparing>,
+    archive: Option<Archiver>,
+    retired: Option<Archiver>,
+    retirement_error: Option<String>,
     latest: Option<(String, Bytes)>,
     version: u64,
     standard: bool,
     healthy: bool,
-    checkpointed: Instant,
+    rotated: Instant,
 }
 
 impl Session {
     pub fn open(storage: Arc<LogStorage>, stream: StateStream) -> Result<Self> {
         let version = stream.base_version;
-        let first_version = version.checked_add(1).context("state version overflow")?;
-        let preparing_stream = stream.clone();
-        let preparing = AbortOnDropHandle::new(tokio::spawn(async move {
-            Segment::open(&storage, preparing_stream, first_version).await
-        }));
+        let preparing = prepare(
+            storage,
+            stream.clone(),
+            version.checked_add(1).context("state version overflow")?,
+        );
         Ok(Self {
             stream,
             preparing: Some(preparing),
             segment: None,
-            standard: false,
+            next: None,
+            archive: None,
+            retired: None,
+            retirement_error: None,
             latest: None,
             version,
+            standard: false,
             healthy: true,
-            checkpointed: Instant::now(),
+            rotated: Instant::now(),
         })
     }
 
-    pub async fn put(&mut self, storage: &LogStorage, object: &str, bytes: Bytes) -> Result<()> {
+    pub fn cached(&self, object: &str) -> Option<Bytes> {
+        self.latest
+            .as_ref()
+            .filter(|(key, _)| key == object)
+            .map(|(_, bytes)| bytes.clone())
+    }
+
+    pub async fn put(
+        &mut self,
+        storage: Arc<LogStorage>,
+        object: &str,
+        bytes: Bytes,
+    ) -> Result<()> {
         let started = Instant::now();
         ensure!(self.healthy, "uncertain write requires activation recovery");
         let reference = self.stream.snapshot(&bytes)?;
@@ -40,128 +65,156 @@ impl Session {
             reference.object == object,
             "snapshot belongs to another stream"
         );
-        if self
-            .latest
-            .as_ref()
-            .is_some_and(|(key, old)| key == object && *old == bytes)
-        {
+        if self.cached(object).as_ref() == Some(&bytes) {
             return Ok(());
         }
         ensure!(
             self.version.checked_add(1) == Some(reference.state_version),
             "nonconsecutive state version"
         );
+        self.rotate(storage.clone()).await;
         self.healthy = false;
-        self.prepared().await?;
+        if let Some(preparing) = self.preparing.take() {
+            self.install(
+                storage.clone(),
+                preparing.await.context("Rapid preparation failed")??,
+            );
+        }
+        if bytes.len() > frame::MAX_STATE {
+            self.standard = true;
+        }
         if self.standard {
-            storage.snapshots.put(object, bytes.clone()).await?;
+            bounded(storage.snapshots.put(object, bytes.clone())).await?;
         } else {
-            self.append(storage, reference.state_version, bytes.clone())
+            let frame = self
+                .segment
+                .as_mut()
+                .context("Rapid stream missing")?
+                .append(reference.state_version, bytes.clone())
                 .await?;
+            self.archive
+                .as_ref()
+                .context("archive worker missing")?
+                .append(frame, reference.state_version);
         }
         self.version = reference.state_version;
+        self.latest = Some((object.into(), bytes));
+        self.healthy = true;
         tracing::info!(
             event = "rapid_log_snapshot",
             state_version = self.version,
             owner_epoch = self.stream.owner_epoch,
-            bytes = bytes.len(),
             ack_zones = if self.standard { 0 } else { 2 },
+            bytes = self.latest.as_ref().unwrap().1.len(),
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
-        self.latest = Some((object.into(), bytes));
-        self.healthy = true;
         Ok(())
     }
 
-    pub async fn finish(&mut self, storage: &LogStorage) -> Result<()> {
+    fn install(&mut self, storage: Arc<LogStorage>, segment: Option<Segment>) {
+        self.standard = segment.is_none();
+        self.archive = segment
+            .as_ref()
+            .map(|s| Archiver::new(storage, s.manifest.clone(), self.version));
+        self.segment = segment;
+    }
+
+    pub async fn rotate(&mut self, storage: Arc<LogStorage>) {
+        if self.retired.as_ref().is_some_and(Archiver::is_finished) {
+            if let Err(error) = self.retired.take().unwrap().finish().await {
+                self.retirement_error = Some(format!("{error:#}"));
+                tracing::warn!(%error, "Rapid retirement deferred");
+            }
+        }
+        if !self.healthy
+            || self.standard
+            || self.retired.is_some()
+            || self.rotated.elapsed() < ROTATION_INTERVAL
+            || self.latest.is_none()
+        {
+            return;
+        }
+        let Some(first_version) = self.version.checked_add(1) else {
+            return;
+        };
+        let next = self
+            .next
+            .get_or_insert_with(|| prepare(storage.clone(), self.stream.clone(), first_version));
+        let Some(result) = next.now_or_never() else {
+            return;
+        };
+        self.next = None;
+        match result {
+            Ok(Ok(Some(segment))) => {
+                if let Some(archive) = self.archive.take() {
+                    archive.close();
+                    self.retired = Some(archive);
+                }
+                self.install(storage, Some(segment));
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "Rapid rotation preparation deferred"),
+            Err(error) => tracing::warn!(%error, "Rapid rotation preparation failed"),
+        }
+        self.rotated = Instant::now();
+    }
+
+    pub async fn finish(&mut self, storage: Arc<LogStorage>) -> Result<()> {
         ensure!(self.healthy, "uncertain write cannot be sealed");
         self.healthy = false;
-        self.prepared().await?;
-        self.checkpoint(storage).await?;
-        self.healthy = true;
-        Ok(())
-    }
-
-    async fn prepared(&mut self) -> Result<()> {
         if let Some(preparing) = self.preparing.take() {
-            self.segment = preparing.await.context("log preparation task failed")??;
-            self.standard = self.segment.is_none();
+            self.install(
+                storage.clone(),
+                preparing.await.context("Rapid preparation failed")??,
+            );
         }
-        Ok(())
-    }
-
-    async fn append(&mut self, storage: &LogStorage, version: u64, bytes: Bytes) -> Result<()> {
-        if bytes.len() > frame::MAX_STATE {
-            self.checkpoint(storage).await?;
-            self.standard = true;
-            return storage
-                .snapshots
-                .put(&self.stream.object(version), bytes)
-                .await;
+        // Prepared replacement streams already have a manifest and must also be retired.
+        if let Some(next) = self.next.take() {
+            if let Some(segment) = next.await.context("Rapid preparation failed")?? {
+                Archiver::new(storage.clone(), segment.manifest.clone(), self.version)
+                    .finish()
+                    .await?;
+            }
         }
-        let frame_size = Record {
-            version,
-            state: bytes.clone(),
+        if let Some(archive) = self.archive.take() {
+            archive.finish().await?;
         }
-        .encode()?
-        .len();
-        if self
-            .segment
-            .as_ref()
-            .is_some_and(|segment| segment.bytes.len() + frame_size > MAX_SEGMENT_BYTES as usize)
-        {
-            self.checkpoint(storage).await?;
+        if let Some(retired) = self.retired.take() {
+            retired.finish().await?;
         }
-        if self.segment.is_none() {
-            self.segment = Segment::open(storage, self.stream.clone(), version).await?;
-        }
-        if let Some(segment) = &mut self.segment {
-            segment.append(version, bytes).await
-        } else {
-            self.standard = true;
-            storage
-                .snapshots
-                .put(&self.stream.object(version), bytes)
-                .await
-        }
-    }
-
-    async fn checkpoint(&mut self, storage: &LogStorage) -> Result<()> {
-        if let Some(segment) = self.segment.take() {
-            segment.archive(storage).await?;
-        }
+        ensure!(
+            self.retirement_error.is_none(),
+            "previous archive retirement failed: {:?}",
+            self.retirement_error
+        );
         if let Some((object, bytes)) = &self.latest {
-            storage.snapshots.put(object, bytes.clone()).await?;
+            bounded(storage.snapshots.put(object, bytes.clone())).await?;
         }
-        self.checkpointed = Instant::now();
+        self.segment = None;
+        self.healthy = true;
         Ok(())
     }
 }
 
-pub(super) fn start_checkpoints(
+fn prepare(storage: Arc<LogStorage>, stream: StateStream, first: u64) -> Preparing {
+    AbortOnDropHandle::new(tokio::spawn(async move {
+        Segment::open(&storage, stream, first).await
+    }))
+}
+
+pub(super) fn start_rotation(
     storage: Arc<LogStorage>,
     session: Weak<Mutex<Option<Session>>>,
     stop: CancellationToken,
 ) {
     tokio::spawn(async move {
         loop {
-            tokio::select! {
-                _ = stop.cancelled() => return,
-                _ = tokio::time::sleep(CHECKPOINT_INTERVAL) => {}
-            }
+            tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(Duration::from_secs(1)) => {} }
             let Some(session) = session.upgrade() else {
                 return;
             };
-            let mut session = session.lock().await;
-            if let Some(session) = session.as_mut()
-                && session.latest.is_some()
-                && session.segment.is_some()
-                && session.checkpointed.elapsed() >= CHECKPOINT_INTERVAL
-                && let Err(error) = session.finish(&storage).await
-            {
-                tracing::error!(%error, "log checkpoint failed; fencing activation");
-                stop.cancel();
-                return;
+            if let Some(session) = session.lock().await.as_mut() {
+                session.rotate(storage.clone()).await;
             }
         }
     });

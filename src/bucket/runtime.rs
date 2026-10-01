@@ -448,6 +448,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
         plan: &WritePlan,
         bytes: Vec<u8>,
     ) -> Result<crate::state_transport::StateWrite> {
+        self.ensure_write_owner(plan)?;
         let stream = &plan.stream;
         let snapshot = stream.snapshot(&bytes)?;
         ensure!(
@@ -471,11 +472,27 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             .or_default()
             .started += 1;
         self.persist(&snapshot.object, bytes).await?;
+        self.ensure_write_owner(plan)?;
         let mut uploaded = self.uploaded.lock().unwrap();
         let uploaded = uploaded.entry(stream.session.clone()).or_default();
         advance(&mut uploaded.latest, Some(snapshot))?;
         uploaded.completed += 1;
         Ok(crate::state_transport::StateWrite::Written)
+    }
+}
+
+impl RuntimeStorage {
+    fn ensure_write_owner(&self, plan: &WritePlan) -> Result<()> {
+        let actor = crate::storage_paths::actor_from_snapshot(&plan.object_name)?;
+        let owned = self.owned.lock().unwrap();
+        let record = owned
+            .get(actor.storage_key().as_str())
+            .context("actor is not locally activated")?;
+        ensure!(
+            record.stream()? == plan.stream && record.lease.expires_at_ms > self.clock.now_ms()?,
+            "actor write authority expired or changed"
+        );
+        Ok(())
     }
 }
 

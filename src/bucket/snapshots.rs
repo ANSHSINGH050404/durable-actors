@@ -13,7 +13,42 @@ pub enum PersistenceConfig {
     Rapid {
         buckets: Vec<RapidBucket>,
         archive_bucket: String,
+        #[serde(default)]
+        archive_batch: ArchiveBatchConfig,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveBatchConfig {
+    pub bytes: usize,
+    pub interval_ms: u64,
+}
+
+impl Default for ArchiveBatchConfig {
+    fn default() -> Self {
+        Self {
+            bytes: 16 * 1024 * 1024,
+            interval_ms: 10_000,
+        }
+    }
+}
+
+impl ArchiveBatchConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.bytes > 0 && self.bytes <= usize::MAX - 8 * 1024 * 1024,
+            "archive batch bytes must be positive and leave room for one record"
+        );
+        ensure!(
+            self.interval_ms > 0
+                && std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(self.interval_ms))
+                    .is_some(),
+            "archive batch interval must be positive and representable"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,15 +65,19 @@ impl PersistenceConfig {
             Self::Rapid {
                 buckets,
                 archive_bucket,
+                ..
             } => Some((buckets, archive_bucket)),
         }
     }
     pub(crate) fn same_backend(&self, other: &Self) -> bool {
-        self == other
+        self.rapid_settings() == other.rapid_settings()
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
+        if let Self::Rapid { archive_batch, .. } = self {
+            archive_batch.validate()?;
+        }
         let Some((buckets, archive_bucket)) = self.rapid_settings() else {
             return Ok(());
         };

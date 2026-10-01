@@ -277,6 +277,18 @@ impl ControlPlaneProcessConfig {
         let persistence = crate::bucket::PersistenceConfig::Rapid {
             archive_bucket,
             buckets,
+            archive_batch: crate::bucket::ArchiveBatchConfig {
+                bytes: get("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES")
+                    .map(|value| value.parse())
+                    .transpose()
+                    .context("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES must be an integer")?
+                    .unwrap_or(16 * 1024 * 1024),
+                interval_ms: get("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS")
+                    .map(|value| value.parse())
+                    .transpose()
+                    .context("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS must be an integer")?
+                    .unwrap_or(10_000),
+            },
         };
         persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");

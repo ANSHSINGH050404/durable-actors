@@ -120,6 +120,8 @@ spec:
             - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" .Values.storage.authorityBucket | quote }}}
             - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" .Values.storage.artifactBucket | quote }}}
             - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ .Values.storage.rapid.buckets | toJson | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: {{ .Values.storage.rapid.archiveBatchBytes | int64 | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: {{ .Values.storage.rapid.archiveBatchIntervalMs | int64 | quote }}}
             - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
             - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
               value: {{ .Values.serviceAccount.googleServiceAccount | quote }}

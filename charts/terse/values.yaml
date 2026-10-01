@@ -13,6 +13,8 @@ storage:
   archiveBucket: ""
   rapid:
     buckets: []
+    archiveBatchBytes: 16777216
+    archiveBatchIntervalMs: 10000
 cloudSql:
   instanceConnectionName: ""
   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4

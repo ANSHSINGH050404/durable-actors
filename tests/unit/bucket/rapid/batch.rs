@@ -1,0 +1,482 @@
+use super::*;
+use crate::bucket::{ArchiveBatchConfig, BucketObject};
+
+struct ArchiveBucket {
+    inner: Arc<FileBucket>,
+    stalled: AtomicBool,
+    fail_batch: AtomicBool,
+    batches: AtomicU64,
+    cleaned_reads: AtomicU64,
+}
+
+#[async_trait]
+impl Bucket for ArchiveBucket {
+    async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        if key.ends_with(".cleaned") {
+            self.cleaned_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.get(key).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix).await
+    }
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        generation: Option<i64>,
+        bytes: Vec<u8>,
+    ) -> Result<bool> {
+        if key.ends_with(".batch") {
+            self.batches.fetch_add(1, Ordering::SeqCst);
+            ensure!(
+                !self.fail_batch.swap(false, Ordering::SeqCst),
+                "injected archive failure"
+            );
+            while self.stalled.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+        self.inner.compare_and_swap(key, generation, bytes).await
+    }
+}
+
+fn controlled(
+    f: &Fixture,
+    bytes: usize,
+    interval_ms: u64,
+) -> Result<(RapidSnapshots, Arc<ArchiveBucket>)> {
+    let archive = Arc::new(ArchiveBucket {
+        inner: f.archive.clone(),
+        stalled: AtomicBool::new(false),
+        fail_batch: AtomicBool::new(false),
+        batches: AtomicU64::new(0),
+        cleaned_reads: AtomicU64::new(0),
+    });
+    let store = RapidSnapshots::new(
+        archive.clone(),
+        Arc::new(BucketSnapshots(f.archive.clone())),
+        f.zones
+            .iter()
+            .map(|z| z.clone() as Arc<dyn LogZone>)
+            .collect(),
+        ArchiveBatchConfig { bytes, interval_ms },
+        CancellationToken::new(),
+    )?;
+    Ok((store, archive))
+}
+
+async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let keys = f
+                .archive
+                .list("")
+                .await?
+                .into_iter()
+                .filter(|k| k.ends_with(".batch"))
+                .collect::<Vec<_>>();
+            if keys.len() >= count {
+                return Ok(keys);
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn byte_threshold_combines_commits_without_rotating_rapid_streams() -> Result<()> {
+    let f = Fixture::new()?;
+    let threshold = [state(1, 1)?, state(2, 1)?]
+        .iter()
+        .map(|b| b.len() + frame::HEADER)
+        .sum();
+    let (store, archive) = controlled(&f, threshold, 60_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 0);
+    store.put(&f.stream.object(2), state(2, 1)?).await?;
+    let keys = batches(&f, 1).await?;
+    let bytes = f.archive.get(&keys[0]).await?.unwrap().bytes.into();
+    assert_eq!(frame::decode(&bytes)?.len(), 2);
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 1);
+    assert!(f.zones.iter().all(|z| z.opens.load(Ordering::SeqCst) == 1));
+    assert!(f.archive.get(&f.stream.object(1)).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn timer_flushes_partial_batches_and_never_uploads_empty_ones() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 40)?;
+    store.start(&f.stream).await?;
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 0);
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    batches(&f, 1).await?;
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_partial_batch_retries_without_another_write() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 40)?;
+    archive.fail_batch.store(true, Ordering::SeqCst);
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    let keys = batches(&f, 1).await?;
+    let bytes = f.archive.get(&keys[0]).await?.unwrap().bytes.into();
+    let records = frame::decode(&bytes)?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].state, state(1, 1)?);
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stalled_archive_does_not_block_writes_and_backlog_is_recovered_from_rapid() -> Result<()> {
+    let f = Fixture::new()?;
+    let threshold = state(1, 1)?.len() + frame::HEADER;
+    let (store, archive) = controlled(&f, threshold, 60_000)?;
+    archive.stalled.store(true, Ordering::SeqCst);
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while archive.batches.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    for version in 2..=20 {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            store.put(&f.stream.object(version), state(version, 1)?),
+        )
+        .await??;
+    }
+    assert!(archive.batches.load(Ordering::SeqCst) > 0);
+    assert!(
+        f.zones
+            .iter()
+            .all(|z| !z.objects.lock().unwrap().is_empty())
+    );
+    archive.stalled.store(false, Ordering::SeqCst);
+    store.finish(&f.stream).await?;
+    f.cleaned().await?;
+    let reader = f.store()?;
+    for version in 1..=20 {
+        assert_eq!(
+            reader.get(&f.stream.object(version)).await?,
+            Some(state(version, 1)?)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn crash_recovery_joins_standard_batches_and_unflushed_rapid_tail() -> Result<()> {
+    let f = Fixture::new()?;
+    let threshold = state(1, 1)?.len() + frame::HEADER;
+    let (store, archive) = controlled(&f, threshold, 60_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    batches(&f, 1).await?;
+    archive.stalled.store(true, Ordering::SeqCst);
+    store.put(&f.stream.object(2), state(2, 1)?).await?;
+    drop(store);
+    f.zones[1].offline.store(true, Ordering::SeqCst);
+    let reader = f.store()?;
+    assert_eq!(
+        reader.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(2), state(2, 1)?))
+    );
+    f.zones[0].offline.store(true, Ordering::SeqCst);
+    assert_eq!(reader.get(&f.stream.object(1)).await?, Some(state(1, 1)?));
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> Result<()> {
+    let f = Fixture::new()?;
+    let store = f.store()?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    f.zones[1].stalled.store(true, Ordering::SeqCst);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(30),
+            store.put(&f.stream.object(2), state(2, 1)?)
+        )
+        .await
+        .is_err()
+    );
+    f.zones[1].stalled.store(false, Ordering::SeqCst);
+    assert!(store.put(&f.stream.object(2), state(2, 1)?).await.is_err());
+    assert!(store.finish(&f.stream).await.is_err());
+    assert!(f.archive.get(&f.stream.object(2)).await?.is_none());
+    assert_eq!(
+        f.store()?.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(2), state(2, 1)?))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> {
+    use crate::{
+        litestream::{
+            Litestream, Replicator,
+            storage::{SqliteCapture, SqliteState},
+        },
+        state_log::SqliteSnapshot,
+        storage::SnapshotRef,
+    };
+    let f = Fixture::new()?;
+    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let mut capture = SqliteCapture::new(replication.clone()).await?;
+    let db = rusqlite::Connection::open(capture.path())?;
+    db.execute_batch("INSERT INTO __terse_fields VALUES ('count','1'); CREATE TABLE entries(value INTEGER); INSERT INTO entries VALUES (1);")?;
+    let txid = replication.sync(&capture.path()).await?;
+    let first = StateSnapshot::new(
+        1,
+        1,
+        "first".into(),
+        SqliteSnapshot {
+            txid,
+            parent: None,
+            files: capture.capture(&SqliteState::position(txid)).await?,
+        },
+        serde_json::json!(1),
+    )?;
+    let first_bytes: Bytes = first.encode()?.into();
+    db.execute_batch("UPDATE __terse_fields SET value='2'; INSERT INTO entries VALUES (2);")?;
+    let txid = replication.sync(&capture.path()).await?;
+    let second = StateSnapshot::new(
+        2,
+        1,
+        "second".into(),
+        SqliteSnapshot {
+            txid,
+            parent: Some(SnapshotRef::new(f.stream.object(1), &first, &first_bytes)),
+            files: capture.capture(&SqliteState::position(txid)).await?,
+        },
+        serde_json::json!(2),
+    )?;
+    assert!(second.sqlite.files[0].first > 1);
+    let second_bytes: Bytes = second.encode()?.into();
+    let (store, archive) = controlled(&f, first_bytes.len() + frame::HEADER, 60_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), first_bytes).await?;
+    batches(&f, 1).await?;
+    archive.stalled.store(true, Ordering::SeqCst);
+    store.put(&f.stream.object(2), second_bytes.clone()).await?;
+    drop(store);
+    let reader = f.store()?;
+    assert_eq!(
+        reader.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(2), second_bytes))
+    );
+    let parent = second.sqlite.parent.as_ref().unwrap();
+    let parent_bytes = reader.get(&parent.object).await?.unwrap();
+    parent.verify(&parent_bytes)?;
+    let mut files = StateSnapshot::decode(&parent_bytes)?.sqlite.files;
+    files.extend(second.sqlite.files);
+    let restored = SqliteCapture::restore(replication, &files, txid).await?;
+    let db = rusqlite::Connection::open(restored.path())?;
+    assert_eq!(
+        db.query_row(
+            "SELECT value FROM __terse_fields WHERE name='count'",
+            [],
+            |r| r.get::<_, String>(0)
+        )?,
+        "2"
+    );
+    assert_eq!(
+        db.query_row("SELECT sum(value) FROM entries", [], |r| r.get::<_, i64>(0))?,
+        3
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    archive.stalled.store(true, Ordering::SeqCst);
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            store
+                .session
+                .lock()
+                .await
+                .as_mut()
+                .unwrap()
+                .rotate(store.storage.clone())
+                .await;
+            if f.archive
+                .list("")
+                .await
+                .unwrap()
+                .iter()
+                .filter(|key| key.ends_with(".manifest"))
+                .count()
+                == 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await?;
+    let mut version = 1;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            version += 1;
+            store
+                .put(&f.stream.object(version), state(version, 1)?)
+                .await?;
+            if f.zones.iter().all(|z| {
+                z.objects
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|o| !o.bytes.is_empty())
+                    .count()
+                    == 2
+            }) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await??;
+    assert!(f.zones.iter().all(|z| z.opens.load(Ordering::SeqCst) == 2));
+    archive.stalled.store(false, Ordering::SeqCst);
+    store.finish(&f.stream).await?;
+    f.cleaned().await?;
+    assert_eq!(
+        f.store()?.get(&f.stream.object(1)).await?,
+        Some(state(1, 1)?)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cleanup_retries_partial_deletion_and_skips_completed_segments() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    f.zones[1].offline.store(true, Ordering::SeqCst);
+    store.finish(&f.stream).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !f.zones[0].objects.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(!f.zones[1].objects.lock().unwrap().is_empty());
+    assert_eq!(
+        f.store()?.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(1), state(1, 1)?))
+    );
+    f.zones[1].offline.store(false, Ordering::SeqCst);
+    let prefix = object_name(&f.stream.prefix)?;
+    store.storage.sweep(&prefix).await?;
+    f.cleaned().await?;
+    archive.cleaned_reads.store(0, Ordering::SeqCst);
+    store.storage.sweep(&prefix).await?;
+    assert_eq!(archive.cleaned_reads.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Result<()> {
+    let f = Fixture::new()?;
+    let store = f.store()?;
+    store.start(&f.stream).await?;
+    let original = state(1, 1)?;
+    store.put(&f.stream.object(1), original.clone()).await?;
+    let key = f
+        .archive
+        .list("")
+        .await?
+        .into_iter()
+        .find(|k| k.ends_with(".manifest"))
+        .unwrap();
+    let manifest: Manifest = serde_json::from_slice(&f.archive.get(&key).await?.unwrap().bytes)?;
+    let mut snapshot = StateSnapshot::decode(&original)?;
+    snapshot.result = serde_json::json!(9);
+    let frame = Record {
+        version: 1,
+        state: snapshot.encode()?.into(),
+    }
+    .encode()?;
+    store.storage.put_batch(&manifest, 0, frame).await?;
+    assert!(f.store()?.recover(&f.stream.prefix).await.is_err());
+    assert!(
+        f.zones
+            .iter()
+            .all(|z| !z.objects.lock().unwrap().is_empty())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog() -> Result<()> {
+    let f = Fixture::new()?;
+    let threshold = state(1, 1)?.len() + frame::HEADER;
+    let (store, archive) = controlled(&f, threshold, 60_000)?;
+    let mut segment = Segment::open(&store.storage, f.stream.clone(), 1)
+        .await?
+        .unwrap();
+    let manifest = segment.manifest.clone();
+    let worker = archive::Archiver::new(store.storage.clone(), manifest.clone(), 0);
+    archive.stalled.store(true, Ordering::SeqCst);
+    let first = segment.append(1, state(1, 1)?).await?;
+    let mut end_offset = first.len() as u64;
+    worker.append(first, 1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while archive.batches.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    for version in 2..=4 {
+        let frame = segment.append(version, state(version, 1)?).await?;
+        end_offset += frame.len() as u64;
+        worker.append(frame, version);
+    }
+    worker.close();
+    let rescue = f.store()?;
+    rescue
+        .storage
+        .close_segment(
+            &manifest,
+            &archive::ClosedSegment {
+                last_version: 4,
+                end_offset,
+            },
+        )
+        .await?;
+    rescue
+        .storage
+        .sweep(&object_name(&f.stream.prefix)?)
+        .await?;
+    f.cleaned().await?;
+    archive.stalled.store(false, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(2), worker.finish()).await??;
+    assert_eq!(
+        rescue.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(4), state(4, 1)?))
+    );
+    Ok(())
+}

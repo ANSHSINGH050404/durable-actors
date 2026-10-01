@@ -131,6 +131,15 @@ impl RuntimeStorage {
         record.lease = lease.clone();
         record.inventory = inventory;
         self.save_activation(&mut record, Some(generation)).await?;
+        if let Some(owned) = self
+            .owned
+            .lock()
+            .unwrap()
+            .get_mut(actor.storage_key().as_str())
+        {
+            ensure!(owned.epoch == record.epoch, "local ownership epoch changed");
+            owned.lease = lease.clone();
+        }
         Ok(lease)
     }
 

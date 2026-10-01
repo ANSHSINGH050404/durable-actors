@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct Segment {
     pub manifest: Manifest,
     writers: Vec<Box<dyn LogWriter>>,
-    pub bytes: Vec<u8>,
+    pub offset: u64,
     healthy: bool,
 }
 
@@ -68,19 +68,21 @@ impl Segment {
         Ok(Some(Self {
             manifest,
             writers,
-            bytes: Vec::new(),
+            offset: 0,
             healthy: true,
         }))
     }
 
-    pub async fn append(&mut self, version: u64, state: Bytes) -> Result<()> {
+    pub async fn append(&mut self, version: u64, state: Bytes) -> Result<Bytes> {
         ensure!(
             self.healthy,
             "uncertain log append requires activation recovery"
         );
         let frame = Record { version, state }.encode()?;
-        let expected = self.bytes.len() as u64 + frame.len() as u64;
-        ensure!(expected <= MAX_SEGMENT_BYTES, "log segment is full");
+        let expected = self
+            .offset
+            .checked_add(frame.len() as u64)
+            .context("log offset overflow")?;
         // An interrupted flush may have persisted bytes; this pair must never be reused.
         self.healthy = false;
         let flushed = bounded(async {
@@ -95,32 +97,8 @@ impl Segment {
         for result in flushed {
             ensure!(result? == expected, "unexpected persisted log offset");
         }
-        self.bytes.extend_from_slice(&frame);
+        self.offset = expected;
         self.healthy = true;
-        Ok(())
-    }
-
-    pub fn ensure_healthy(&self) -> Result<()> {
-        ensure!(
-            self.healthy,
-            "uncertain log append requires activation recovery"
-        );
-        Ok(())
-    }
-
-    pub async fn archive(self, storage: &LogStorage) -> Result<()> {
-        self.ensure_healthy()?;
-        let key = self.manifest.archive_key()?;
-        ensure!(
-            bounded(replace(storage.archive.as_ref(), &key, None, self.bytes)).await?,
-            "conflicting archived log segment"
-        );
-        drop(self.writers);
-        for (zone, replica) in storage.zones.iter().zip(&self.manifest.replicas) {
-            if let Err(error) = bounded(zone.delete(replica)).await {
-                tracing::warn!(%error, object=%replica.object, "archived Rapid log cleanup deferred");
-            }
-        }
-        Ok(())
+        Ok(frame)
     }
 }

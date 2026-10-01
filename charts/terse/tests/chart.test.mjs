@@ -42,6 +42,19 @@ test("renders two Rapid zones and the Standard archive", () => {
     assert.match(result.stdout, /whenUnsatisfiable: DoNotSchedule/)
 })
 
+for (const [name, overrides, bytes, interval] of [
+    ["default", {}, 16777216, 10000],
+    ["configured", { storage: { rapid: { archiveBatchBytes: 2097152, archiveBatchIntervalMs: 250 } } }, 2097152, 250]
+]) test(`renders ${name} archive batch triggers`, () => {
+    const result = render(overrides)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, new RegExp(`DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: "${bytes}"`))
+    assert.match(result.stdout, new RegExp(`DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: "${interval}"`))
+})
+
+for (const field of ["archiveBatchBytes", "archiveBatchIntervalMs"])
+    test(`rejects nonpositive ${field}`, () => assert.notEqual(render({ storage: { rapid: { [field]: 0 } } }).status, 0))
+
 for (const [name, override] of [
     ["single control plane", { replicaCount: 1 }],
     ["single compute zone", { zones: { "north-america-west": "us-west4-a" } }],

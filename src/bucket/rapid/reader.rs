@@ -41,9 +41,155 @@ impl LogStorage {
     }
 
     async fn read_segment(&self, manifest: &Manifest, fence: bool) -> Result<Vec<Record>> {
-        if let Some(archived) = self.archive.get(&manifest.archive_key()?).await? {
-            return frame::decode(&Bytes::from(archived.bytes));
+        let marker = self.archive.get(&manifest.marker("replicated")?).await?;
+        let (end, archived) = self.archived(manifest).await?;
+        if let Some(marker) = marker {
+            let closed: archive::ClosedSegment = serde_json::from_slice(&marker.bytes)?;
+            closed.validate(manifest, end, &archived)?;
+            return Ok(archived);
         }
+        let rapid = match self.read_replicas(manifest, fence).await {
+            Ok(records) => records,
+            Err(error) => {
+                if let Some(marker) = self.archive.get(&manifest.marker("replicated")?).await? {
+                    let closed: archive::ClosedSegment = serde_json::from_slice(&marker.bytes)?;
+                    let (end, records) = self.archived(manifest).await?;
+                    closed.validate(manifest, end, &records)?;
+                    return Ok(records);
+                }
+                return Err(error);
+            }
+        };
+        let mut merged = BTreeMap::new();
+        for record in archived.into_iter().chain(rapid) {
+            ensure!(
+                merged
+                    .get(&record.version)
+                    .is_none_or(|prior| prior == &record),
+                "conflicting archived record"
+            );
+            merged.insert(record.version, record);
+        }
+        Ok(merged.into_values().collect())
+    }
+
+    pub async fn archived(&self, manifest: &Manifest) -> Result<(u64, Vec<Record>)> {
+        let prefix = format!("{}~", manifest.key()?.trim_end_matches(".manifest"));
+        let mut offsets = BTreeMap::new();
+        for key in self.archive.list(&prefix).await? {
+            let range = key
+                .strip_prefix(&prefix)
+                .and_then(|v| v.strip_suffix(".batch"))
+                .context("invalid archive batch key")?;
+            let (start, end) = range
+                .split_once('~')
+                .context("invalid archive batch range")?;
+            let (mut offset, end) = (start.parse::<u64>()?, end.parse::<u64>()?);
+            ensure!(end > offset, "invalid archive batch boundary");
+            let bytes: Bytes = self
+                .archive
+                .get(&key)
+                .await?
+                .context("archive batch missing")?
+                .bytes
+                .into();
+            ensure!(
+                bytes.len() as u64 == end - offset,
+                "archive batch length mismatch"
+            );
+            for record in frame::decode(&bytes)? {
+                let reference = manifest.stream.snapshot(&record.state)?;
+                ensure!(
+                    reference.object == manifest.stream.object(record.version)
+                        && record.version >= manifest.first_version,
+                    "archive record identity mismatch"
+                );
+                let next = offset + (frame::HEADER + record.state.len()) as u64;
+                ensure!(
+                    offsets.get(&offset).is_none_or(|prior| prior == &record),
+                    "conflicting archive overlap"
+                );
+                offsets.insert(offset, record);
+                offset = next;
+            }
+            ensure!(offset == end, "incomplete archive batch");
+        }
+        let mut through = 0;
+        let mut records: Vec<Record> = Vec::new();
+        for (offset, record) in offsets {
+            ensure!(offset == through, "gap in archived segment");
+            ensure!(
+                records
+                    .last()
+                    .is_none_or(|r| r.version.checked_add(1) == Some(record.version)),
+                "nonconsecutive archived versions"
+            );
+            through += (frame::HEADER + record.state.len()) as u64;
+            records.push(record);
+        }
+        Ok((through, records))
+    }
+
+    pub async fn recover_segment(&self, manifest: &Manifest) -> Result<()> {
+        let records = self.read_segment(manifest, true).await?;
+        if self
+            .archive
+            .get(&manifest.marker("replicated")?)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let (mut through, _) = self.archived(manifest).await?;
+        let end_offset = records
+            .iter()
+            .map(|r| (frame::HEADER + r.state.len()) as u64)
+            .sum();
+        let mut closed = archive::ClosedSegment {
+            last_version: records
+                .last()
+                .map_or(manifest.first_version - 1, |r| r.version),
+            end_offset,
+        };
+        if let Some(marker) = self.archive.get(&manifest.marker("closed")?).await? {
+            closed = serde_json::from_slice(&marker.bytes)?;
+            closed.validate(manifest, end_offset, &records)?;
+        }
+        let mut offset = 0;
+        let mut batch = Vec::new();
+        for record in records {
+            let frame = record.encode()?;
+            offset += frame.len() as u64;
+            if offset <= through {
+                continue;
+            }
+            batch.extend_from_slice(&frame);
+            if batch.len() >= self.batch.bytes {
+                let length = batch.len() as u64;
+                self.put_batch(manifest, through, std::mem::take(&mut batch).into())
+                    .await?;
+                through += length;
+            }
+        }
+        if !batch.is_empty() {
+            self.put_batch(manifest, through, batch.into()).await?;
+        }
+        if self
+            .archive
+            .get(&manifest.marker("closed")?)
+            .await?
+            .is_none()
+        {
+            self.close_segment(manifest, &closed).await?;
+        }
+        self.mark_replicated(manifest, &closed).await
+    }
+
+    pub(super) async fn read_replicas(
+        &self,
+        manifest: &Manifest,
+        fence: bool,
+    ) -> Result<Vec<Record>> {
         let reads = futures_util::future::join_all(
             self.zones
                 .iter()

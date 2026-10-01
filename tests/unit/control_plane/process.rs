@@ -296,6 +296,46 @@ fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
 }
 
 #[test]
+fn archive_batch_triggers_are_configurable_and_positive() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    let defaults = parse(&values)?.storage.persistence;
+    let crate::bucket::PersistenceConfig::Rapid { archive_batch, .. } = defaults.clone() else {
+        panic!()
+    };
+    assert_eq!(archive_batch.bytes, 16 * 1024 * 1024);
+    assert_eq!(archive_batch.interval_ms, 10_000);
+    values.insert("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES", "2097152");
+    values.insert("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS", "250");
+    let configured = parse(&values)?.storage.persistence;
+    let crate::bucket::PersistenceConfig::Rapid { archive_batch, .. } = configured.clone() else {
+        panic!()
+    };
+    assert_eq!(archive_batch.bytes, 2 * 1024 * 1024);
+    assert_eq!(archive_batch.interval_ms, 250);
+    assert!(configured.same_backend(&defaults));
+    assert_eq!(
+        serde_json::from_value::<crate::bucket::PersistenceConfig>(serde_json::to_value(
+            &configured
+        )?)?,
+        configured
+    );
+    for name in [
+        "DURABLE_ACTORS_ARCHIVE_BATCH_BYTES",
+        "DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS",
+    ] {
+        for invalid in ["0", "-1", "1.5", ""] {
+            let mut bad = values.clone();
+            bad.insert(name, invalid);
+            assert!(parse(&bad).is_err(), "accepted {name}={invalid}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn default_region_requires_a_configured_compute_zone() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
