@@ -22,6 +22,8 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         outputs:
             version: ${{ steps.version.outputs.version }}
+            ltx-revision: ${{ steps.ltx.outputs.revision }}
+            ltx-version: ${{ steps.ltx.outputs.version }}
         steps:
             - name: Read release version
               id: version
@@ -51,9 +53,82 @@ jobs:
             - name: Assert every manifest matches the tag
               run: node scripts/release.mjs verify "${{ steps.version.outputs.version }}"
 
+            - name: Read the pinned LTX dependency
+              id: ltx
+              run: |
+                  python3 - <<'PYTHON'
+                  import os, re, tomllib
+                  from pathlib import Path
+
+                  dependency = tomllib.loads(Path("Cargo.toml").read_text())["dependencies"]["terse-ltx"]
+                  assert dependency["git"] == "https://github.com/TerseAI/terse-ltx"
+                  assert re.fullmatch(r"[0-9a-f]{40}", dependency["rev"])
+                  assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", dependency["version"])
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                      print(f"revision={dependency['rev']}", file=output)
+                      print(f"version={dependency['version']}", file=output)
+                  PYTHON
+
+    ltx:
+        name: Validate and publish LTX dependency
+        needs: preflight
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 15
+        steps:
+            - name: Checkout the pinned LTX source
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  repository: TerseAI/terse-ltx
+                  ref: ${{ needs.preflight.outputs.ltx-revision }}
+                  persist-credentials: false
+
+            - name: Install Rust toolchain
+              run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
+
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.24.0"
+                  cache-dependency-path: tests/oracle/go.sum
+
+            - name: Validate the pinned crate and Go compatibility
+              env:
+                  LTX_VERSION: ${{ needs.preflight.outputs.ltx-version }}
+              run: |
+                  python3 - <<'PYTHON'
+                  import os, tomllib
+                  from pathlib import Path
+
+                  package = tomllib.loads(Path("Cargo.toml").read_text())["package"]
+                  assert package["name"] == "terse-ltx"
+                  assert package["version"] == os.environ["LTX_VERSION"]
+                  PYTHON
+                  cargo fmt --all -- --check
+                  cargo clippy --all-targets --locked -- -D warnings
+                  cargo test --locked -- --include-ignored
+                  cargo publish --locked --dry-run
+
+            - name: Publish terse-ltx
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+                  LTX_VERSION: ${{ needs.preflight.outputs.ltx-version }}
+              run: |
+                  status=$(curl -sS \
+                    --user-agent "durable-actors-release/1.0 (+https://github.com/TerseAI/durable-actors)" \
+                    -o /dev/null \
+                    -w "%{http_code}" \
+                    "https://crates.io/api/v1/crates/terse-ltx/$LTX_VERSION")
+                  if [ "$status" = "200" ]; then
+                      echo "terse-ltx@$LTX_VERSION already published"
+                  elif [ "$status" = "404" ]; then
+                      cargo publish --locked --no-verify
+                  else
+                      echo "::error::crates.io returned HTTP $status"
+                      exit 1
+                  fi
+
     rust:
         name: Test Rust runtime
-        needs: preflight
+        needs: [preflight, ltx]
         runs-on: blacksmith-4vcpu-ubuntu-2404
         services:
             postgres:

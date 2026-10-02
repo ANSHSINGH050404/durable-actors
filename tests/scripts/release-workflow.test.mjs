@@ -102,6 +102,18 @@ test("crate publication reuses successful verification and does not wait for npm
     assert.ok(!dependsOn("crate", "npm"))
 })
 
+test("release validates and publishes the pinned LTX crate before packaging the runtime", () => {
+    assert.ok(dependsOn("rust", "ltx"))
+    assert.match(releaseJob("preflight"), /tomllib[\s\S]*dependencies[\s\S]*terse-ltx/)
+    const job = releaseJob("ltx")
+    assert.match(job, /repository: TerseAI\/terse-ltx/)
+    assert.match(job, /ref: \$\{\{ needs\.preflight\.outputs\.ltx-revision \}\}/)
+    assert.match(job, /persist-credentials: false/)
+    assert.match(job, /cargo test --locked -- --include-ignored[\s\S]*cargo publish --locked --dry-run[\s\S]*name: Publish terse-ltx/)
+    assert.equal(job.match(/CARGO_REGISTRY_TOKEN:/g)?.length, 1)
+    assert.match(job, /name: Publish terse-ltx[\s\S]*CARGO_REGISTRY_TOKEN:[\s\S]*cargo publish --locked --no-verify/)
+})
+
 function releaseJob(name) {
     const body = read(".github/workflows/release.yml").split(`    ${name}:\n`)[1]
     assert.ok(body, `Missing release job: ${name}`)

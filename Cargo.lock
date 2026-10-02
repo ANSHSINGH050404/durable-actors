@@ -740,7 +740,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "durable-actors"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3581,7 +3581,7 @@ dependencies = [
 [[package]]
 name = "terse-ltx"
 version = "0.1.0"
-source = "git+https://github.com/TerseAI/terse-ltx?rev=c98203a0e195c3e47a9e02df96fd6c0670faa4df#c98203a0e195c3e47a9e02df96fd6c0670faa4df"
+source = "git+https://github.com/TerseAI/terse-ltx?rev=fdc27e08f09a532b8f0b8d72971de4b2772ef86b#fdc27e08f09a532b8f0b8d72971de4b2772ef86b"
 dependencies = [
  "crc",
  "lz4_flex",
