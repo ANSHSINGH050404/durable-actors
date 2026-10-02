@@ -6,7 +6,7 @@ Durable Actors help you **build real-time applications** like chat systems (e.g.
 
 They provide _stateful serverless functions_, a foundational building block that abstracts away persistence, coordination, and infrastructure challenges in distributed systems.
 
-[Live demo](https://demo.useterse.ai) · [Documentation](docs)
+[Live demo](https://demo.useterse.ai) · [TypeScript documentation](sdk/README.md) · [Python documentation](sdk-python/README.md)
 
 ## How it works
 
