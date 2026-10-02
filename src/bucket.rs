@@ -3,6 +3,7 @@ mod file;
 mod gcs;
 mod rapid;
 pub(crate) use rapid::RapidSnapshots;
+pub(crate) mod recovery;
 mod snapshots;
 pub use snapshots::{ArchiveBatchConfig, PersistenceConfig, RapidBucket};
 pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};

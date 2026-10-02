@@ -640,8 +640,18 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
         f.runtime
             .register_activation(&f.actor, &request("first"), "us-east", true, None)
             .await?;
+        let checkpoint = f
+            .runtime
+            .drain_activation(
+                &f.actor,
+                &request("first").id,
+                "first",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .await?;
+
         f.runtime
-            .finish_activation(&f.actor, &request("first").id, "first")
+            .release_with_checkpoint(&f.actor, &request("first").id, "first", Some(checkpoint))
             .await?;
         let (_, hint) = f
             .runtime
@@ -730,8 +740,18 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 f.runtime.write_snapshot(&plan, snapshot).await?;
             }
         }
+        let checkpoint = f
+            .runtime
+            .drain_activation(
+                &f.actor,
+                &first.id,
+                &first.session_id,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .await?;
+
         f.runtime
-            .finish_activation(&f.actor, &first.id, &first.session_id)
+            .release_with_checkpoint(&f.actor, &first.id, &first.session_id, Some(checkpoint))
             .await?;
         for (epoch, session) in [(2, "next"), (3, "again")] {
             let (_, hint) = f
@@ -750,8 +770,18 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
             assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_slice()));
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
+            let checkpoint = f
+                .runtime
+                .drain_activation(
+                    &f.actor,
+                    &next.id,
+                    &next.session_id,
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+                )
+                .await?;
+
             f.runtime
-                .finish_activation(&f.actor, &next.id, &next.session_id)
+                .release_with_checkpoint(&f.actor, &next.id, &next.session_id, Some(checkpoint))
                 .await?;
         }
     }
@@ -791,8 +821,18 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
     )?
     .encode()?;
     f.runtime.write_snapshot(&plan, bytes).await?;
+    let checkpoint = f
+        .runtime
+        .drain_activation(
+            &f.actor,
+            &first.id,
+            &first.session_id,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await?;
+
     f.runtime
-        .finish_activation(&f.actor, &first.id, &first.session_id)
+        .release_with_checkpoint(&f.actor, &first.id, &first.session_id, Some(checkpoint))
         .await?;
     let resumed = f
         .runtime

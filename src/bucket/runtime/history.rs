@@ -116,38 +116,16 @@ impl RuntimeStorageReader {
     }
 
     async fn read_stored_state(&self, key: &str) -> Result<Option<InspectedState>> {
-        let Some(snapshot) = self.read_commit(key).await? else {
+        let Some(bytes) = self.read_persisted(key).await? else {
             return Ok(None);
         };
-        let mut current = snapshot.clone();
-        let mut segments = Vec::new();
-        loop {
-            segments.push(current.sqlite.files.clone());
-            let Some(parent) = current.sqlite.parent.clone() else {
-                break;
-            };
-            let first = current.sqlite.files[0].first;
-            let bytes = self
-                .read_persisted(&parent.object)
-                .await?
-                .context("SQLite dependency missing")?;
-            parent.verify(&bytes)?;
-            current = StateSnapshot::decode(&bytes)?;
-            current.validate_object(&parent.object)?;
-            ensure!(
-                current.state_version == parent.state_version,
-                "SQLite dependency version mismatch"
-            );
-            ensure!(
-                current.sqlite.txid.checked_add(1) == Some(first),
-                "SQLite dependency transaction gap"
-            );
-        }
-        let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        decode_snapshot(key.into(), bytes.to_vec())?;
+        let snapshot = StateSnapshot::decode(&bytes)?;
+        let sqlite = self.read_sqlite(key, bytes).await?;
         let fields = crate::litestream::storage::restored_fields(
             self.restore.as_ref(),
-            &files,
-            snapshot.sqlite.txid,
+            &sqlite.files,
+            sqlite.txid,
         )
         .await?;
         Ok(Some(InspectedState {

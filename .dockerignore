@@ -47,3 +47,7 @@
 !sdk-python/src/**
 !sdk-python/README.md
 !sdk-python/LICENSE.md
+
+!third_party
+!third_party/terse-ltx
+!third_party/terse-ltx/**

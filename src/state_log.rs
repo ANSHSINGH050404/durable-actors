@@ -25,7 +25,7 @@ pub struct SqliteSnapshot {
 }
 
 impl SqliteSnapshot {
-    fn validate(&self, state_version: u64) -> Result<()> {
+    pub(crate) fn validate(&self, state_version: u64) -> Result<()> {
         ensure!(self.txid > 0, "SQLite transaction must be positive");
         let first = self
             .files

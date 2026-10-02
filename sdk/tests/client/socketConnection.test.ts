@@ -16,14 +16,20 @@ test(
     { timeout: 5_000 },
     async t => {
         const received: unknown[] = []
-        const connection = await connect(t, socket => {
-            socket.on("message", (data, binary) => {
-                assert.equal(binary, false)
-                const value: unknown = JSON.parse(data.toString())
-                received.push(value)
-                socket.send(JSON.stringify(value))
-            })
-        })
+        const timings: Record<string, boolean | number | string | undefined>[] = []
+        const connection = await connect(
+            t,
+            socket => {
+                socket.on("message", (data, binary) => {
+                    assert.equal(binary, false)
+                    const value: unknown = JSON.parse(data.toString())
+                    received.push(value)
+                    socket.send(JSON.stringify(value))
+                })
+            },
+            {},
+            event => timings.push(event)
+        )
         const removed = () => assert.fail("removed message listener ran")
         connection.addEventListener("message", removed)
         connection.removeEventListener("message", removed)
@@ -40,6 +46,11 @@ test(
             assert.deepEqual(await reply, value)
         }
         assert.equal(received.length, 6)
+        assert.deepEqual(
+            timings.map(event => event.event),
+            ["actor_client_socket_connect", "actor_client_socket_first_message"]
+        )
+        assert.ok(Number(timings[1]!.completed_at_ms) >= Number(timings[0]!.socket_opened_at_ms))
         assert.equal(connection.readyState, 1)
         const closed = new Promise(resolve =>
             connection.addEventListener("close", ({ type, code, reason, wasClean }) =>
@@ -114,7 +125,8 @@ test("connection metadata is validated before opening a transport", async () => 
 async function connect(
     t: TestContext,
     connected: (socket: WebSocket) => void,
-    schemas?: ActorSchemas
+    schemas?: ActorSchemas,
+    telemetry?: (event: Record<string, boolean | number | string | undefined>) => void
 ): Promise<ActorConnection> {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     t.after(async () => {
@@ -136,6 +148,7 @@ async function connect(
             controlPlaneUrl: `http://127.0.0.1:${address.port}`
         },
         {
+            telemetry,
             fetch: async () =>
                 Response.json({ websocketUrl: `ws://127.0.0.1:${address.port}/v1/socket?key=token`, key: "token" })
         }

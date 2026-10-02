@@ -77,7 +77,7 @@ struct UploadedSnapshots {
     latest: Option<SnapshotRef>,
 }
 
-struct SessionCheckpoint {
+pub(crate) struct SessionCheckpoint {
     snapshot: Option<SnapshotRef>,
 }
 
@@ -144,6 +144,14 @@ impl std::ops::Deref for RuntimeStorage {
 }
 
 impl RuntimeStorageReader {
+    pub(crate) async fn read_sqlite(
+        &self,
+        object: &str,
+        bytes: Bytes,
+    ) -> Result<crate::state_log::SqliteSnapshot> {
+        self.snapshots.restore(object, bytes).await
+    }
+
     pub(crate) fn new(
         authority: Arc<dyn Bucket>,
         clock: Arc<dyn crate::clock::Clock>,

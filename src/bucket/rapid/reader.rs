@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::{StreamExt, TryStreamExt, stream};
 
 impl LogStorage {
     pub async fn latest(&self, prefix: &str, fence: bool) -> Result<Option<(String, Bytes)>> {
@@ -14,20 +15,22 @@ impl LogStorage {
     }
 
     pub async fn records(&self, prefix: &str, fence: bool) -> Result<BTreeMap<String, Bytes>> {
+        let started = std::time::Instant::now();
         let physical = super::super::rapid::object_name(prefix)?;
+        let keys: Vec<_> = self
+            .archive
+            .list(&physical)
+            .await?
+            .into_iter()
+            .filter(|key| key.ends_with(".manifest"))
+            .collect();
+        let manifests = keys.len();
+        let mut segments = stream::iter(keys)
+            .map(|key| async move { self.read_manifest(&key, prefix, fence).await })
+            .buffered(4);
         let mut records = BTreeMap::new();
-        for key in self.archive.list(&physical).await? {
-            if !key.ends_with(".manifest") {
-                continue;
-            }
-            let bytes = self
-                .archive
-                .get(&key)
-                .await?
-                .context("log manifest disappeared")?;
-            let manifest: Manifest = serde_json::from_slice(&bytes.bytes)?;
-            manifest.validate(&key, prefix, &self.zones)?;
-            for record in self.read_segment(&manifest, fence).await? {
+        while let Some((manifest, segment)) = segments.try_next().await? {
+            for record in segment {
                 let object = manifest.stream.object(record.version);
                 let reference = manifest.stream.snapshot(&record.state)?;
                 ensure!(
@@ -37,7 +40,31 @@ impl LogStorage {
                 insert(&mut records, object, record.state)?;
             }
         }
+        tracing::info!(
+            event = "rapid_history_scanned",
+            prefix,
+            manifests,
+            records = records.len(),
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+        );
         Ok(records)
+    }
+
+    async fn read_manifest(
+        &self,
+        key: &str,
+        prefix: &str,
+        fence: bool,
+    ) -> Result<(Manifest, Vec<Record>)> {
+        let bytes = self
+            .archive
+            .get(key)
+            .await?
+            .context("log manifest disappeared")?;
+        let manifest: Manifest = serde_json::from_slice(&bytes.bytes)?;
+        manifest.validate(key, prefix, &self.zones)?;
+        let records = self.read_segment(&manifest, fence).await?;
+        Ok((manifest, records))
     }
 
     async fn read_segment(&self, manifest: &Manifest, fence: bool) -> Result<Vec<Record>> {
@@ -74,6 +101,9 @@ impl LogStorage {
     }
 
     pub async fn archived(&self, manifest: &Manifest) -> Result<(u64, Vec<Record>)> {
+        let started = std::time::Instant::now();
+        let mut batches = 0;
+        let mut downloaded_bytes = 0;
         let prefix = format!("{}~", manifest.key()?.trim_end_matches(".manifest"));
         let mut offsets = BTreeMap::new();
         for key in self.archive.list(&prefix).await? {
@@ -93,6 +123,8 @@ impl LogStorage {
                 .context("archive batch missing")?
                 .bytes
                 .into();
+            batches += 1;
+            downloaded_bytes += bytes.len();
             ensure!(
                 bytes.len() as u64 == end - offset,
                 "archive batch length mismatch"
@@ -127,6 +159,8 @@ impl LogStorage {
             through += (frame::HEADER + record.state.len()) as u64;
             records.push(record);
         }
+        tracing::info!(event = "rapid_archive_read", segment = %manifest.id, batches, downloaded_bytes,
+            records = records.len(), duration_ms = started.elapsed().as_secs_f64() * 1000.0);
         Ok((through, records))
     }
 

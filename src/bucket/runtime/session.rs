@@ -1,12 +1,13 @@
 use super::*;
 
 impl RuntimeStorage {
-    pub(crate) async fn finish_activation(
+    pub(crate) async fn drain_activation(
         &self,
         actor: &ActorKey,
         host: &HostId,
         session: &str,
-    ) -> Result<()> {
+        deadline: tokio::time::Instant,
+    ) -> Result<SessionCheckpoint> {
         let record = self
             .owned
             .lock()
@@ -19,9 +20,8 @@ impl RuntimeStorage {
             "actor ownership changed"
         );
         let checkpoint = self.upload_checkpoint(&record)?;
-        self.snapshots.finish(&record.stream()?).await?;
-        self.release_with_checkpoint(actor, host, session, Some(checkpoint))
-            .await
+        self.snapshots.finish(&record.stream()?, deadline).await?;
+        Ok(checkpoint)
     }
 
     fn upload_checkpoint(&self, record: &Ownership) -> Result<SessionCheckpoint> {

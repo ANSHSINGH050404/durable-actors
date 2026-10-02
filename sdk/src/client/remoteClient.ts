@@ -32,6 +32,60 @@ class RemoteActorClient extends HttpActorClient {
         schemas: ActorSchemas = {}
     ): Promise<ActorConnection> {
         const requestId = validateActorComponent("request ID", this.requestId())
+        const timeline = new LatencyTimeline(this.monotonicNow)
+        let outcome = "failed"
+        try {
+            const url = await this.socketGrant(actorName, actorId, metadata, schemas, requestId)
+            timeline.mark("grant_received")
+            const connection = await this.connectWebSocket(url, schemas, event => {
+                if (event === "opened") timeline.mark("socket_opened")
+                else
+                    this.telemetry({
+                        event: "actor_client_socket_first_message",
+                        request_id: requestId,
+                        actor_name: actorName,
+                        actor_id: actorId,
+                        ...timeline.finish()
+                    })
+            })
+            outcome = "connected"
+            return connection
+        } finally {
+            this.telemetry({
+                event: "actor_client_socket_connect",
+                request_id: requestId,
+                actor_name: actorName,
+                actor_id: actorId,
+                outcome,
+                ...timeline.finish()
+            })
+        }
+    }
+
+    async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
+        const requestId = validateActorComponent("request ID", this.requestId())
+        const actor = {
+            requestId,
+            projectId: this.settings.projectId,
+            actorName: validateActorComponent("actor name", actorName),
+            actorId: validateActorComponent("actor ID", actorId)
+        }
+        const target = await this.target(actor, new LatencyTimeline(this.monotonicNow))
+        await this.deliverSocketEffects(
+            target,
+            actor,
+            [{ type: "broadcast", message: socketMessage(message), except_connection_ids: [], tags: [] }],
+            "actor socket broadcast"
+        )
+    }
+
+    private async socketGrant(
+        actorName: string,
+        actorId: string,
+        metadata: unknown,
+        schemas: ActorSchemas,
+        requestId: string
+    ): Promise<string> {
         const actor = {
             projectId: this.settings.projectId,
             actorName: validateActorComponent("actor name", actorName),
@@ -57,24 +111,7 @@ class RemoteActorClient extends HttpActorClient {
                 websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol))
             })
             .parse(await response.json())
-        return this.connectWebSocket(grant.websocketUrl, schemas)
-    }
-
-    async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
-        const requestId = validateActorComponent("request ID", this.requestId())
-        const actor = {
-            requestId,
-            projectId: this.settings.projectId,
-            actorName: validateActorComponent("actor name", actorName),
-            actorId: validateActorComponent("actor ID", actorId)
-        }
-        const target = await this.target(actor, new LatencyTimeline(this.monotonicNow))
-        await this.deliverSocketEffects(
-            target,
-            actor,
-            [{ type: "broadcast", message: socketMessage(message), except_connection_ids: [], tags: [] }],
-            "actor socket broadcast"
-        )
+        return grant.websocketUrl
     }
 
     private async deliverSocketEffects(
@@ -96,9 +133,13 @@ class RemoteActorClient extends HttpActorClient {
         }
     }
 }
-function openWebSocket(url: string, schemas: ActorSchemas): Promise<ActorConnection> {
+function openWebSocket(
+    url: string,
+    schemas: ActorSchemas,
+    observe: (event: "opened" | "first_message") => void
+): Promise<ActorConnection> {
     const socket = new WebSocket(url)
-    const connection = new SocketConnection(socket, schemas)
+    const connection = new SocketConnection(socket, schemas, observe)
     return new Promise((resolve, reject) => {
         let opened = false
         socket.addEventListener(
@@ -121,7 +162,11 @@ function openWebSocket(url: string, schemas: ActorSchemas): Promise<ActorConnect
 interface RemoteActorClientDependencies extends HttpActorClientDependencies {
     readonly connectWebSocket?: WebSocketConnector
 }
-type WebSocketConnector = (url: string, schemas: ActorSchemas) => Promise<ActorConnection>
+type WebSocketConnector = (
+    url: string,
+    schemas: ActorSchemas,
+    observe: (event: "opened" | "first_message") => void
+) => Promise<ActorConnection>
 type ActorAddress = Pick<ActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 export { RemoteActorClient }
 export type { DurableActorsClientOptions, RemoteActorClientDependencies }

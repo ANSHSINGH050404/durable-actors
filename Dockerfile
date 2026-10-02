@@ -51,6 +51,7 @@ RUN apt-get update -qq \
 COPY --from=python-sdk /usr/local /usr/local
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY --from=sdk-builder /out/litestream /usr/local/bin/litestream
+COPY third_party/terse-ltx/LICENSE /usr/share/licenses/terse-ltx/
 COPY --from=sdk-builder /out/LICENSE.litestream /usr/share/licenses/litestream/LICENSE
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules

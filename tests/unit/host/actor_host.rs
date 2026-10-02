@@ -1097,17 +1097,24 @@ impl ActorStorage for FakeAuthority {
         }
         Ok(self.initial_state.clone().unwrap_or_default())
     }
-    async fn read_snapshot(
+    async fn read_sqlite(
         &self,
-        _: &ActorKey,
-        snapshot: &crate::storage::SnapshotRef,
-    ) -> Result<bytes::Bytes> {
-        Ok(self
-            .history
-            .get(&snapshot.object)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing snapshot dependency"))?
-            .into())
+        actor: &ActorKey,
+        bytes: &[u8],
+    ) -> Result<crate::state_log::SqliteSnapshot> {
+        let snapshot = StateSnapshot::decode(bytes)?;
+        let object = crate::storage::snapshot_object_name(
+            actor,
+            snapshot.state_version,
+            &format!("{:032x}", snapshot.owner_epoch),
+        )?;
+        Ok(crate::bucket::recovery::resolve(
+            &mut FakeHistory(&self.history),
+            &object,
+            bytes::Bytes::copy_from_slice(bytes),
+        )
+        .await?
+        .sqlite)
     }
     async fn prepare_state_write(
         &self,
@@ -1132,6 +1139,22 @@ impl ActorStorage for FakeAuthority {
             ticket.stream = stream;
         }
         Ok(ticket)
+    }
+}
+
+struct FakeHistory<'a>(&'a std::collections::HashMap<String, Vec<u8>>);
+
+#[async_trait]
+impl crate::bucket::recovery::SnapshotHistory for FakeHistory<'_> {
+    async fn read(&mut self, object: &str) -> Result<bytes::Bytes> {
+        self.0
+            .get(object)
+            .cloned()
+            .map(Into::into)
+            .ok_or_else(|| anyhow::anyhow!("missing snapshot dependency"))
+    }
+    async fn checkpoint(&mut self, _: &str) -> Result<Option<bytes::Bytes>> {
+        Ok(None)
     }
 }
 

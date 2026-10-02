@@ -25,13 +25,19 @@ const physical = "durable-actors-v3-snapshots-" + createHash("sha256").update(ac
 const { stdout } = await promisify(execFile)("gcloud", ["storage", "ls", `gs://${resources.buckets.archive}/${physical}*`, `--project=${resources.project}`])
 const objects = stdout.trim().split("\n")
 assert.ok(
-    objects.some(object => object.endsWith(".segment")),
-    "background checkpoint did not archive a segment"
+    objects.some(object => object.endsWith(".batch")),
+    "background archiving did not publish a batch"
 )
 assert.ok(objects.filter(object => object.endsWith(".manifest")).length >= 2, "writes did not open a new segment after checkpoint")
+assert.ok(
+    objects.some(object => object.endsWith(".checkpoint")),
+    "background compaction did not publish a checkpoint"
+)
 assert.equal(await client.invoke("Counter", actor, "read", []), 131)
-await delay(15000)
+await delay(45000)
+const resumeStarted = performance.now()
 assert.equal(await client.invoke("Counter", actor, "increment", []), 132)
-const result = { actor, writesBeforeResume: 131, valueAfterResume: 132, objects, passed: true }
+const resumeMs = performance.now() - resumeStarted
+const result = { actor, writesBeforeResume: 131, valueAfterResume: 132, resumeMs, objects, passed: true }
 writeFileSync(root + "checkpoint-result.json", JSON.stringify(result, null, 2))
 console.log(JSON.stringify(result))

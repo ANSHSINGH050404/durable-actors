@@ -26,6 +26,7 @@ test("installs the runtime from a verified release and reuses the cache offline"
     const binary = await new RuntimeInstaller(options, download).install()
     assert.equal(await readFile(binary, "utf8"), "runtime")
     assert.equal(await readFile(path.join(path.dirname(binary), "litestream"), "utf8"), "litestream")
+    assert.equal(await readFile(path.join(path.dirname(binary), "LICENSE.terse-ltx"), "utf8"), "license")
     assert.equal(requests.length, 2)
     assert.deepEqual(requests, [
         "https://github.com/TerseAI/durable-actors/releases/download/v1.2.3/durable-actors-darwin-arm64.tar.gz",
@@ -61,7 +62,13 @@ async function fixture(directory: string): Promise<Buffer> {
     await writeFile(path.join(directory, "durable-actors"), "runtime")
     await writeFile(path.join(directory, "litestream"), "litestream")
     await writeFile(path.join(directory, "LICENSE.litestream"), "license")
+    await writeFile(path.join(directory, "LICENSE.terse-ltx"), "license")
     const archive = path.join(directory, "runtime.tar.gz")
-    await c({ gzip: true, file: archive, cwd: directory }, ["durable-actors", "litestream", "LICENSE.litestream"])
+    await c({ gzip: true, file: archive, cwd: directory }, [
+        "durable-actors",
+        "litestream",
+        "LICENSE.litestream",
+        "LICENSE.terse-ltx"
+    ])
     return readFile(archive)
 }

@@ -111,6 +111,7 @@ async function cacheRuntime(cache: string, version: string): Promise<string> {
     await mkdir(runtime, { recursive: true })
     await writeFile(path.join(runtime, "litestream"), "litestream")
     await writeFile(path.join(runtime, "LICENSE.litestream"), "license")
+    await writeFile(path.join(runtime, "LICENSE.terse-ltx"), "license")
     const binary = path.join(runtime, "durable-actors")
     await writeFile(
         binary,

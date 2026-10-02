@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod archive;
+mod checkpoint;
 mod frame;
 mod gcs;
 mod prepared;
@@ -59,6 +60,7 @@ struct LogStorage {
     zones: Vec<Arc<dyn LogZone>>,
     prepared: std::sync::Mutex<Option<Prepared>>,
     batch: super::ArchiveBatchConfig,
+    compactor: Arc<dyn crate::litestream::compaction::LtxCompactor>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -111,6 +113,7 @@ impl RapidSnapshots {
         snapshots: Arc<dyn SnapshotStore>,
         zones: Vec<Arc<dyn LogZone>>,
         batch: super::ArchiveBatchConfig,
+        compactor: Arc<dyn crate::litestream::compaction::LtxCompactor>,
         stop: CancellationToken,
     ) -> Result<Self> {
         ensure!(
@@ -124,6 +127,7 @@ impl RapidSnapshots {
             zones,
             prepared: std::sync::Mutex::new(None),
             batch,
+            compactor,
         });
         let session = Arc::new(Mutex::new(None));
         writer::start_rotation(storage.clone(), Arc::downgrade(&session), stop.clone());
@@ -152,11 +156,26 @@ impl SnapshotStore for RapidSnapshots {
             return Ok(Some(bytes));
         }
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
-        Ok(self
-            .storage
-            .records(&format!("{prefix}/"), false)
-            .await?
-            .remove(object))
+        let records = self.storage.records(&format!("{prefix}/"), false).await?;
+        Ok(records.get(object).cloned())
+    }
+    async fn restore(
+        &self,
+        object: &str,
+        bytes: Bytes,
+    ) -> Result<crate::state_log::SqliteSnapshot> {
+        let restored = self.storage.restore(object, bytes.clone()).await?;
+        if let Some(session) = self.session.lock().await.as_mut() {
+            session
+                .restored(
+                    self.storage.clone(),
+                    object,
+                    bytes,
+                    restored.checkpoint_version,
+                )
+                .await?;
+        }
+        Ok(restored.sqlite)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys: std::collections::BTreeSet<_> = self
@@ -210,11 +229,11 @@ impl SnapshotStore for RapidSnapshots {
         }
         Ok(latest)
     }
-    async fn finish(&self, stream: &StateStream) -> Result<()> {
+    async fn finish(&self, stream: &StateStream, deadline: tokio::time::Instant) -> Result<()> {
         let mut session = self.session.lock().await;
         let active = session.as_mut().context("log stream is not activated")?;
         ensure!(active.stream == *stream, "cannot finish another log stream");
-        active.finish(self.storage.clone()).await?;
+        active.finish(self.storage.clone(), deadline).await?;
         *session = None;
         Ok(())
     }

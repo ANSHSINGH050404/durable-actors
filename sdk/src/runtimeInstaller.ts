@@ -7,7 +7,7 @@ import { x } from "tar"
 import { actorEnvironment } from "./environment.js"
 
 const executables = ["durable-actors", "litestream"]
-const bundleFiles = [...executables, "LICENSE.litestream"]
+const bundleFiles = [...executables, "LICENSE.litestream", "LICENSE.terse-ltx"]
 const maximumBytes = 200 * 1024 * 1024
 
 export async function fetchRuntimeExecutablePath(): Promise<string> {

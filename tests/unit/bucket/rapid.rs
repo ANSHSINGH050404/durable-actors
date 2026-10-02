@@ -142,6 +142,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             .map(|zone| zone.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
+        Arc::new(crate::litestream::compaction::RustCompactor),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
@@ -243,11 +244,21 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
         .prepare_actor_write(&actor, &recovered.placement.lease, 2, 3)
         .await?;
     second.write_snapshot(&plan, state(3, 2)?.to_vec()).await?;
-    second
-        .finish_activation(
+    let checkpoint = second
+        .drain_activation(
             &actor,
             &recovered.placement.owner,
             &recovered.placement.lease.session_id,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await?;
+
+    second
+        .release_with_checkpoint(
+            &actor,
+            &recovered.placement.owner,
+            &recovered.placement.lease.session_id,
+            Some(checkpoint),
         )
         .await?;
     let third = runtime()?
@@ -277,7 +288,12 @@ async fn large_segments_reuse_streams_and_preserve_batched_history() -> Result<(
         f.store()?.latest(&f.stream.prefix).await?,
         Some((f.stream.object(10), snapshots[&10].clone()))
     );
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     f.cleaned().await?;
     assert!(
         f.zones
@@ -345,7 +361,12 @@ async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Re
     let bytes: Bytes = snapshot.encode()?.into();
     assert!(bytes.len() > frame::MAX_STATE);
     store.put(&f.stream.object(2), bytes.clone()).await?;
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     assert_eq!(f.store()?.get(&f.stream.object(2)).await?, Some(bytes));
     assert_eq!(
         f.store()?.get(&f.stream.object(1)).await?,
@@ -387,11 +408,20 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
+        Arc::new(crate::litestream::compaction::RustCompactor),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
-    assert!(store.finish(&f.stream).await.is_err());
+    assert!(
+        store
+            .finish(
+                &f.stream,
+                tokio::time::Instant::now() + Duration::from_secs(30)
+            )
+            .await
+            .is_err()
+    );
     assert!(
         f.zones
             .iter()
@@ -434,7 +464,12 @@ async fn shutdown_replicates_history_before_deleting_rapid_replicas() -> Result<
     for v in 1..=3 {
         store.put(&f.stream.object(v), state(v, 1)?).await?;
     }
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     f.cleaned().await?;
     assert!(f.zones.iter().all(|z| z.objects.lock().unwrap().is_empty()));
     for zone in &f.zones {
@@ -488,7 +523,12 @@ async fn unavailable_rapid_at_activation_uses_standard_without_losing_state() ->
     let store = f.store()?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     assert_eq!(
         f.archive.get(&f.stream.object(1)).await?.unwrap().bytes,
         state(1, 1)?
@@ -611,6 +651,7 @@ impl Fixture {
                 .map(|z| z.clone() as Arc<dyn LogZone>)
                 .collect(),
             crate::bucket::ArchiveBatchConfig::default(),
+            Arc::new(crate::litestream::compaction::RustCompactor),
             CancellationToken::new(),
         )
     }

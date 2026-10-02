@@ -152,8 +152,8 @@ pub(super) async fn serve_assigned_host(
         Ok(ready) => ready,
         Err(error) => {
             log_startup(&config, &timings, "failed", Some(&error));
-            let _ = renewal.shutdown().await;
             let _ = lease.unregister().await;
+            let _ = renewal.shutdown().await;
             return Err(error);
         }
     };
@@ -209,11 +209,24 @@ pub(super) async fn serve_assigned_host(
         |last_active| host.evict_idle(last_active),
     )
     .await;
+    let shutdown_started = Instant::now();
+    let shutdown_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     socket_stop.cancel();
     stop_host_tasks(&host, &stop, server, executor_task).await;
     drop(javascript);
+    let unregister_result = storage
+        .finish(shutdown_deadline - Duration::from_secs(2))
+        .await;
     let renewal_result = renewal.shutdown().await;
-    let unregister_result = lease.unregister().await;
+    info!(
+        event = "host_shutdown",
+        duration_ms = shutdown_started.elapsed().as_secs_f64() * 1000.0,
+        storage_released = unregister_result.is_ok(),
+        error = unregister_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"))
+    );
     info!(host_id = %config.host_id, "durable-actors host stopped");
     stop_result?;
     renewal_result?;
@@ -455,8 +468,8 @@ async fn prepare_actor_host(
     let (executor_connection, javascript) = match executor {
         Ok(executor) => executor,
         Err(error) => {
-            renewal.shutdown().await?;
-            lease.unregister().await?;
+            let _ = lease.unregister().await;
+            let _ = renewal.shutdown().await;
             return Err(error);
         }
     };

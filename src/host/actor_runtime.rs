@@ -44,11 +44,11 @@ pub(crate) trait ActorStorage: Send + Sync {
         _host: &super::HostId,
         _epoch: u64,
     ) -> Result<(u64, bytes::Bytes)>;
-    async fn read_snapshot(
+    async fn read_sqlite(
         &self,
         actor: &crate::actor::ActorKey,
-        snapshot: &SnapshotRef,
-    ) -> Result<bytes::Bytes>;
+        bytes: &[u8],
+    ) -> Result<SqliteSnapshot>;
     fn ensure_authority(&self) -> Result<()>;
     async fn prepare_state_write(
         &self,
@@ -555,30 +555,15 @@ impl ActorRuntime {
             snapshot.owner_epoch <= owner_epoch,
             "actor snapshot belongs to a newer owner epoch"
         );
-        let mut segments = Vec::new();
-        let mut current = snapshot.clone();
-        loop {
-            segments.push(current.sqlite.files.clone());
-            let Some(parent) = current.sqlite.parent.clone() else {
-                break;
-            };
-            let first = current.sqlite.files[0].first;
-            let bytes = self.storage.read_snapshot(actor, &parent).await?;
-            parent.verify(&bytes)?;
-            current = StateSnapshot::decode(&bytes)?;
-            current.validate_object(&parent.object)?;
-            ensure!(
-                current.state_version == parent.state_version,
-                "SQLite dependency version mismatch"
-            );
-            ensure!(
-                current.sqlite.txid.checked_add(1) == Some(first),
-                "SQLite dependency transaction gap"
-            );
-        }
-        let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let sqlite = self.storage.read_sqlite(actor, loaded).await?;
+        let history_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let apply_started = std::time::Instant::now();
         let capture =
-            SqliteCapture::restore(self.replication.clone(), &files, snapshot.sqlite.txid).await?;
+            SqliteCapture::restore(self.replication.clone(), &sqlite.files, sqlite.txid).await?;
+        tracing::info!(event = "actor_sqlite_restored", actor = %actor.storage_key(), state_version,
+            history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
         let mut cached = CachedActorState::new(owner_epoch, capture);
         cached.state_version = state_version;
         cached.state = cached.state();

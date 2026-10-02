@@ -153,7 +153,7 @@ impl RuntimeStorage {
             .await
     }
 
-    pub(super) async fn release_with_checkpoint(
+    pub(crate) async fn release_with_checkpoint(
         &self,
         actor: &ActorKey,
         host: &HostId,

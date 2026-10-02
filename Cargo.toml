@@ -10,9 +10,10 @@ repository = "https://github.com/TerseAI/durable-actors"
 license = "MIT"
 keywords = ["actors", "distributed-systems", "durable-actors", "serverless"]
 categories = ["asynchronous", "network-programming"]
-include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
+include = ["/third_party/terse-ltx/**", "/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+terse-ltx = { version = "0.1.0", git = "https://github.com/TerseAI/terse-ltx", rev = "c98203a0e195c3e47a9e02df96fd6c0670faa4df" }
 walkdir = "2"
 kube = { version = "2.0.1", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "runtime", "ws"] }
 k8s-openapi = { version = "0.26", features = ["v1_34"] }

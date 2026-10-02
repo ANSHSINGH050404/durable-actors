@@ -8,6 +8,7 @@ use std::{
 };
 use tokio::process::{Child, Command};
 
+pub(crate) mod compaction;
 pub(crate) mod storage;
 
 pub(crate) const VERSION: &str = "0.5.17";

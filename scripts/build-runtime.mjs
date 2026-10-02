@@ -22,6 +22,7 @@ export class RuntimeBuilder {
         try {
             await this.compile(staging)
             await this.installReplication(staging, { platform: this.platform, arch: this.arch })
+            await copyFile(path.join(this.root, "third_party/terse-ltx/LICENSE"), path.join(staging, "LICENSE.terse-ltx"))
             return await this.package(staging, output)
         } finally {
             await rm(staging, { recursive: true, force: true })
@@ -36,7 +37,7 @@ export class RuntimeBuilder {
     async package(staging, output) {
         const name = `durable-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "LICENSE.litestream"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "LICENSE.litestream", "LICENSE.terse-ltx"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")

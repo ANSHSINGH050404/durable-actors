@@ -7,12 +7,17 @@ import type { ActorSchemas } from "../actor/socketValidation.js"
 
 class SocketConnection implements ActorConnection {
     private readonly events = new EventTarget()
+    private receivedFirstMessage = false
 
     constructor(
         private readonly socket: Pick<WebSocket, "readyState" | "send" | "close" | "addEventListener">,
-        private readonly schemas: ActorSchemas = {}
+        private readonly schemas: ActorSchemas = {},
+        private readonly observe: (event: "opened" | "first_message") => void = () => {}
     ) {
-        socket.addEventListener("open", () => this.events.dispatchEvent(new Event("open")))
+        socket.addEventListener("open", () => {
+            this.observe("opened")
+            this.events.dispatchEvent(new Event("open"))
+        })
         socket.addEventListener("error", () => this.events.dispatchEvent(new Event("error")))
         socket.addEventListener("close", ({ code, reason, wasClean }) =>
             this.events.dispatchEvent(Object.assign(new Event("close"), { code, reason, wasClean }))
@@ -53,6 +58,10 @@ class SocketConnection implements ActorConnection {
             value = receivedMessage(decodeSocketMessage({ type: "text", data }), this.schemas)
         } catch {
             return this.rejectMessage(1007, "socket message is not valid JSON")
+        }
+        if (!this.receivedFirstMessage) {
+            this.receivedFirstMessage = true
+            this.observe("first_message")
         }
         this.events.dispatchEvent(new MessageEvent("message", { data: value }))
     }

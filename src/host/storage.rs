@@ -38,6 +38,7 @@ pub(crate) struct HostStorage {
     activation: Mutex<Option<ActorActivation>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
+    renewal: tokio::sync::Mutex<()>,
 }
 
 impl HostStorage {
@@ -89,6 +90,7 @@ impl HostStorage {
             activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
+            renewal: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -123,6 +125,53 @@ impl HostStorage {
             .unwrap()
             .clone()
             .context("activation lease missing")
+    }
+
+    pub(super) async fn finish(&self, deadline: tokio::time::Instant) -> Result<()> {
+        let started = Instant::now();
+        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let drain_deadline = deadline - Duration::from_secs(3);
+        let completed = tokio::time::timeout_at(
+            drain_deadline,
+            self.runtime
+                .drain_activation(actor, &self.host, &self.session, drain_deadline),
+        )
+        .await
+        .context("snapshot drain timed out")
+        .and_then(|result| result);
+        let checkpoint = match completed {
+            Ok(checkpoint) => Some(checkpoint),
+            Err(error) => {
+                tracing::warn!(%error, "clean session shutdown deferred to recovery");
+                None
+            }
+        };
+        let sealed = checkpoint.is_some();
+        let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let release_started = Instant::now();
+        self.fence.lock().unwrap().fenced = true;
+        // Ownership CAS prevents an in-flight renewal from reviving the released lease.
+        let released = tokio::time::timeout_at(
+            deadline,
+            self.runtime
+                .release_with_checkpoint(actor, &self.host, &self.session, checkpoint),
+        )
+        .await
+        .context("ownership release timed out")
+        .and_then(|result| result);
+        if released.is_ok() {
+            self.notify_observer();
+        }
+        tracing::info!(
+            event = "host_storage_shutdown",
+            sealed = sealed && released.is_ok(),
+            released = released.is_ok(),
+            error = released.as_ref().err().map(|error| format!("{error:#}")),
+            storage_ms,
+            release_ms = release_started.elapsed().as_secs_f64() * 1000.0,
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+        );
+        released
     }
 
     fn notify_observer(&self) {
@@ -215,24 +264,21 @@ impl ActorStorage for HostStorage {
         ))
     }
 
-    async fn read_snapshot(
+    async fn read_sqlite(
         &self,
         actor: &ActorKey,
-        snapshot: &crate::storage::SnapshotRef,
-    ) -> Result<bytes::Bytes> {
+        bytes: &[u8],
+    ) -> Result<crate::state_log::SqliteSnapshot> {
         self.authorize(actor, &self.host)?;
-        ensure!(
-            snapshot
-                .object
-                .starts_with(&crate::storage_paths::snapshots(actor)?),
-            "SQLite dependency belongs to another actor"
-        );
-        crate::storage::SnapshotReader::read_snapshot(
-            self.runtime.as_ref(),
-            &self.region,
-            &snapshot.object,
-        )
-        .await
+        let snapshot = crate::state_log::StateSnapshot::decode(bytes)?;
+        let object = crate::storage::snapshot_object_name(
+            actor,
+            snapshot.state_version,
+            &format!("{:032x}", snapshot.owner_epoch),
+        )?;
+        self.runtime
+            .read_sqlite(&object, bytes::Bytes::copy_from_slice(bytes))
+            .await
     }
 
     async fn prepare_state_write(
@@ -289,6 +335,7 @@ impl HostLeaseRegistry for HostStorage {
             request.id == self.host && request.session_id == self.session,
             "host lease scope mismatch"
         );
+        let _renewal = self.renewal.lock().await;
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
         let actor = self.actor.as_ref().context("host actor identity missing")?;
@@ -354,23 +401,8 @@ impl HostLeaseRegistry for HostStorage {
             *host == self.host && session == self.session,
             "host lease scope mismatch"
         );
-        self.fence.lock().unwrap().fenced = true;
-        let actor = self.actor.as_ref().context("host actor identity missing")?;
-        let completed = tokio::time::timeout(
-            Duration::from_secs(5),
-            self.runtime.finish_activation(actor, host, session),
-        )
-        .await
-        .context("snapshot drain timed out")
-        .and_then(|result| result);
-        if let Err(error) = completed {
-            tracing::warn!(%error, "clean session shutdown deferred to recovery");
-            self.runtime
-                .release_activation(actor, host, session)
-                .await?;
-        }
-        self.notify_observer();
-        Ok(())
+        self.finish(tokio::time::Instant::now() + Duration::from_secs(25))
+            .await
     }
 }
 
