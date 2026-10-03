@@ -54,12 +54,12 @@ with chat.subscribe(lambda state: print(state.messages), on_error=print):
 
 ## Execution and failures
 
-Calls serialize and roll back persisted state on failure by default. `@reentrant` allows overlapping threads and disables rollback for the entire class; protect shared mutations with an ephemeral lock.
+Calls serialize and roll back persisted state on failure by default. `@interleave` allows overlapping threads and disables rollback for the entire class; protect shared mutations with an ephemeral lock.
 
 ```python
 import time
 from threading import Lock
-from durable_actors import Actor, ephemeral, persisted, reentrant
+from durable_actors import Actor, ephemeral, interleave, persisted
 
 class Counter(Actor):
     count: int = persisted(0)
@@ -70,7 +70,7 @@ class Counter(Actor):
             self.count += 1
             return self.count
 
-    @reentrant
+    @interleave
     def wait(self, seconds: float) -> str:
         time.sleep(seconds)
         return self.id

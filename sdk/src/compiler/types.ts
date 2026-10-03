@@ -13,7 +13,7 @@ interface SdkSymbols {
     readonly Persisted: ts.Symbol
     readonly Ephemeral: ts.Symbol
     readonly Emittable: ts.Symbol
-    readonly Reentrant?: ts.Symbol
+    readonly Interleave?: ts.Symbol
     readonly Sandbox?: ts.Symbol
 }
 

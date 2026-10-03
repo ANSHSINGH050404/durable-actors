@@ -1,7 +1,7 @@
 from threading import Lock
 from typing import assert_type
 
-from durable_actors import Actor, ActorSocket, emitted, ephemeral, persisted, reentrant
+from durable_actors import Actor, ActorSocket, emitted, ephemeral, interleave, persisted
 
 
 class TypedActor(Actor[str, str, str]):
@@ -11,7 +11,7 @@ class TypedActor(Actor[str, str, str]):
     busy: bool = ephemeral(False)
     lock: Lock = ephemeral(default_factory=Lock)
 
-    @reentrant
+    @interleave
     def append(self, message: str) -> int:
         with self.lock:
             self.messages.append(message)

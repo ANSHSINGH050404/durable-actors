@@ -22,7 +22,8 @@ function validateReentrancy(actor: ParsedActor) {
     const diagnostics: ts.Diagnostic[] = []
     for (const member of actor.members) {
         const annotations = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Reentrancy)
-        if (annotations.length > 1) diagnostics.push(definitionDiagnostic(member.node, "@Reentrant cannot be repeated"))
+        if (annotations.length > 1)
+            diagnostics.push(definitionDiagnostic(member.node, "@Interleave cannot be repeated"))
         if (annotations.length === 1) methods.push((member.node.name as ts.Identifier | ts.StringLiteral).text)
     }
     return { methods, diagnostics }
@@ -38,7 +39,7 @@ function invalidReentrancy(use: DecoratorUse): DecoratorResult {
         diagnostics: [
             definitionDiagnostic(
                 use.target,
-                "@Reentrant requires a public instance async method; use it without parentheses"
+                "@Interleave requires a public instance async method; use it without parentheses"
             )
         ]
     }

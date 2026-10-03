@@ -1,4 +1,4 @@
-import { Actor, type ActorSocket, Ephemeral, Persisted, Reentrant } from "durable-actors"
+import { Actor, type ActorSocket, Ephemeral, Interleave, Persisted } from "durable-actors"
 
 type Event = { event: string; label?: string; count: number; waiting: number }
 
@@ -8,7 +8,7 @@ export class ReentrantProbe extends Actor<Record<string, never>, string, Event> 
     @Ephemeral private ordinaryRunning = false
     @Ephemeral private releases = new Map<string, () => void>()
 
-    @Reentrant
+    @Interleave
     async hold(label: string, fail = false): Promise<number> {
         this.count++
         this.waiting++
@@ -28,7 +28,7 @@ export class ReentrantProbe extends Actor<Record<string, never>, string, Event> 
         this.ordinaryRunning = false
     }
 
-    @Reentrant
+    @Interleave
     async observeOrdinary(): Promise<boolean> {
         return this.ordinaryRunning
     }

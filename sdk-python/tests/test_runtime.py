@@ -6,7 +6,7 @@ from fixtures.effects import Effects
 from fixtures.sqlite import seed
 from pydantic import BaseModel
 
-from durable_actors import Actor, ephemeral, persisted, reentrant
+from durable_actors import Actor, ephemeral, interleave, persisted
 from durable_actors.runtime import ActorRuntime
 
 
@@ -81,7 +81,7 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
     class Shared(Actor):
         count: int = persisted(0)
 
-        @reentrant
+        @interleave
         def wait_and_fail(self) -> None:
             loop.call_soon_threadsafe(entered.set)
             if not resume.wait(3):
@@ -234,7 +234,7 @@ async def test_nested_sync_reentrant_calls_keep_the_ordinary_call_exclusive():
             self.hold()
             calls.append("ordinary:end")
 
-        @reentrant
+        @interleave
         def hold(self) -> None:
             calls.append("hold")
             loop.call_soon_threadsafe(entered.set)
@@ -272,7 +272,7 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
     class Concurrent(Actor):
         count: int = persisted(0)
 
-        @reentrant
+        @interleave
         def hold(self, index: int) -> None:
             loop.call_soon_threadsafe(entered.put_nowait, index)
             try:

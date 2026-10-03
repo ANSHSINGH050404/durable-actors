@@ -130,7 +130,7 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
         current_scope(self).broadcast(message, except_ids, tags, tag_match)
 
 
-def reentrant(method: F) -> F:
+def interleave(method: F) -> F:
     """Allow other invocations to enter before this method finishes.
 
     Works with def RPCs and socket hooks. Handlers overlap on worker threads.

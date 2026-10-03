@@ -5,9 +5,9 @@ import { ActorDefinitionError } from "../errors.js"
  * Disables error rollback for the whole actor class. State is saved on successful completion.
  * @experimental
  */
-function Reentrant(_value: Function, context: ClassMethodDecoratorContext): void {
+function Interleave(_value: Function, context: ClassMethodDecoratorContext): void {
     if (context.kind !== "method" || context.static || context.private || typeof context.name !== "string")
-        throw new ActorDefinitionError("@Reentrant requires a public instance async method")
+        throw new ActorDefinitionError("@Interleave requires a public instance async method")
 }
 
 /** Saves a field after successful calls. Cannot decorate `#private` fields. */
@@ -32,4 +32,4 @@ function validateField(name: string, context: ClassFieldDecoratorContext): void 
         throw new ActorDefinitionError(`@${name} requires an instance field with a string name`)
 }
 
-export { Emittable, Ephemeral, Persisted, Reentrant }
+export { Emittable, Ephemeral, Interleave, Persisted }

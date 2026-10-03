@@ -43,7 +43,7 @@ For example, a chat history actor:
 ```ts
 import { openai } from "@ai-sdk/openai"
 import { streamText } from "ai"
-import { Actor, type ActorSocket, Persisted, Reentrant } from "durable-actors"
+import { Actor, type ActorSocket, Interleave, Persisted } from "durable-actors"
 
 type Message = { role: "user" | "assistant"; content: string }
 
@@ -54,7 +54,7 @@ export class ChatHistory extends Actor<null, string, Message[]> {
         socket.send(this.messages)
     }
 
-    @Reentrant // Let other calls run during await, e.g. new connections while a reply streams.
+    @Interleave // Let other calls run during await, e.g. new connections while a reply streams.
     async onMessage(_socket: ActorSocket<null, Message[]>, text: string) {
         this.messages.push({ role: "user", content: text })
         const result = streamText({ model: openai("gpt-5-mini"), messages: [...this.messages] })

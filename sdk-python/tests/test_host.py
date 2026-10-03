@@ -118,10 +118,10 @@ async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path
     project.mkdir()
     (project / "eviction_actors.py").write_text("""import os
 from threading import Event
-from durable_actors import Actor, persisted, reentrant
+from durable_actors import Actor, interleave, persisted
 class Counter(Actor):
     count: int = persisted(0)
-    @reentrant
+    @interleave
     def hold(self) -> None:
         self.broadcast(os.getpid())
         Event().wait()

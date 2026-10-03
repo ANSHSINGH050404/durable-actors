@@ -110,10 +110,10 @@ test("correlates overlapping worker replies and socket lookups", { timeout: 1000
     const file = path.join(root, "src/actors.ts")
     await writeFile(
         file,
-        `import { Actor, Persisted, Reentrant } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        `import { Actor, Interleave, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
         export class InterleavedWorker extends Actor {
             @Persisted count = 0
-            @Reentrant async hold() {
+            @Interleave async hold() {
                 const sockets = await this.getConnections()
                 this.broadcast("started:" + sockets[0]?.id)
                 await new Promise(resolve => setTimeout(resolve, 150))

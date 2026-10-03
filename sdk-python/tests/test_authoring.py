@@ -4,7 +4,7 @@ from typing import Annotated, ClassVar, Literal
 import pytest
 from pydantic import BaseModel
 
-from durable_actors import Actor, emitted, ephemeral, persisted, reentrant
+from durable_actors import Actor, emitted, ephemeral, interleave, persisted
 from durable_actors.contract import describe_actor, public_contract
 
 
@@ -103,9 +103,9 @@ def test_explicit_persisted_fields_and_class_variables_are_not_state():
     assert right.history == []
 
 
-def test_reentrant_preserves_method_types_and_marks_runtime_metadata():
+def test_interleave_preserves_method_types_and_marks_runtime_metadata():
     class Counter(Actor):
-        @reentrant
+        @interleave
         def read(self) -> int:
             return 1
 

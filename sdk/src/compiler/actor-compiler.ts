@@ -297,7 +297,7 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readPersistence(use, Persistence.Ephemeral)
         case sdk.Emittable:
             return readEmission(use)
-        case sdk.Reentrant:
+        case sdk.Interleave:
             return readReentrancy(use)
         case sdk.Sandbox:
             return readSandbox(use)
@@ -335,7 +335,7 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         if (symbol === undefined) throw new ActorDefinitionError(`cannot resolve SDK export ${name}`)
         return canonicalSymbol(checker, symbol)
     }
-    const reentrant = exports.find(symbol => symbol.name === "Reentrant")
+    const interleave = exports.find(symbol => symbol.name === "Interleave")
     const sandbox = exports.find(symbol => symbol.name === "Sandbox")
     return {
         Actor: resolve("Actor"),
@@ -343,7 +343,7 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
         ...(sandbox === undefined ? {} : { Sandbox: canonicalSymbol(checker, sandbox) }),
-        ...(reentrant === undefined ? {} : { Reentrant: canonicalSymbol(checker, reentrant) })
+        ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) })
     }
 }
 

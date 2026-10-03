@@ -76,14 +76,14 @@ def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
     from durable_actors import StateSnapshot, StateUpdate
 
     (tmp_path / "socket_actors.py").write_text("""from pydantic import BaseModel
-from durable_actors import Actor, ActorSocket, emitted, persisted, reentrant
+from durable_actors import Actor, ActorSocket, emitted, interleave, persisted
 class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
     count: int = emitted(persisted(0))
     def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
         socket.set_tags("connected")
-    @reentrant
+    @interleave
     def on_message(self, socket: ActorSocket[Payload, Payload], message: Payload) -> None:
         self.count += message.value
         socket.send(Payload(value=self.count + socket.metadata.value))
@@ -158,12 +158,12 @@ class Counter(Actor[None, None, None]):
 )
 def test_sync_reentrant_rpc_allows_another_rpc_to_release_its_wait(tmp_path, monkeypatch):
     (tmp_path / "actors.py").write_text("""from threading import Event
-from durable_actors import Actor, ephemeral, persisted, reentrant
+from durable_actors import Actor, ephemeral, interleave, persisted
 class Waiting(Actor):
     count: int = persisted(0)
     entered: Event = ephemeral(default_factory=Event)
     release: Event = ephemeral(default_factory=Event)
-    @reentrant
+    @interleave
     def hold(self) -> int:
         self.entered.set()
         if not self.release.wait(5):

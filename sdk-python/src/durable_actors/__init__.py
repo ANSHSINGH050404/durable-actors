@@ -1,7 +1,7 @@
 """Define durable Python actors and use synchronous typed clients and subscriptions."""
 
 from .actor import Actor as Actor
-from .actor import reentrant as reentrant
+from .actor import interleave as interleave
 from .client import ActorInvocationError as ActorInvocationError
 from .client import ActorProtocolError as ActorProtocolError
 from .client import ActorTransport as ActorTransport

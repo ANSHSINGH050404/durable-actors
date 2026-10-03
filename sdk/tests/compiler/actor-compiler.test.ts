@@ -28,8 +28,8 @@ test("db is reserved for the actor SQLite database", () => {
     assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
 })
 
-test("recognizes aliased reentrant async methods", () => {
-    const result = analyze(`import { Actor, Reentrant as R } from "./sdk.js"
+test("recognizes aliased interleave async methods", () => {
+    const result = analyze(`import { Actor, Interleave as R } from "./sdk.js"
         export class Room extends Actor { @R async stream() {} async read() {} }`)
     assert.deepEqual(result.diagnostics, [])
     assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [], reentrantMethods: ["stream"] }])
@@ -46,16 +46,16 @@ test("continues compiling undecorated actors against SDKs without reentrancy", (
     assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [] }])
 })
 
-test("rejects invalid reentrant declarations", () => {
+test("rejects invalid interleave declarations", () => {
     for (const member of [
-        "@Reentrant value = 1",
-        "@Reentrant sync() {}",
-        "@Reentrant static async run() {}",
-        "@Reentrant private async run() {}",
-        "@Reentrant() async run() {}",
-        "@Reentrant @Reentrant async run() {}"
+        "@Interleave value = 1",
+        "@Interleave sync() {}",
+        "@Interleave static async run() {}",
+        "@Interleave private async run() {}",
+        "@Interleave() async run() {}",
+        "@Interleave @Interleave async run() {}"
     ]) {
-        const result = analyze(`import { Actor, Reentrant } from "./sdk.js"
+        const result = analyze(`import { Actor, Interleave } from "./sdk.js"
             export class Room extends Actor { ${member} }`)
         assert.ok(result.diagnostics.length > 0, member)
     }
@@ -468,7 +468,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             "sdk.ts": `export abstract class Actor { protected constructor() {} }
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
-            export function Reentrant(...args: unknown[]) {}
+            export function Interleave(...args: unknown[]) {}
             export function Sandbox(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
