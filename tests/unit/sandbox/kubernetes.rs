@@ -183,3 +183,23 @@ async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Res
     server.abort();
     Ok(())
 }
+
+#[test]
+fn temporary_storage_is_disk_backed_and_bounded() {
+    let pod = base_pod(
+        "actor",
+        "image",
+        &["us-west4-a".into()],
+        &ResourceLimits {
+            cpu_millis: 500,
+            memory_mib: 143,
+        },
+    );
+    let resources = &pod["spec"]["containers"][0]["resources"];
+    assert_eq!(resources["requests"]["ephemeral-storage"], "1Gi");
+    assert_eq!(resources["limits"]["ephemeral-storage"], "8Gi");
+    for volume in pod["spec"]["volumes"].as_array().unwrap() {
+        assert!(volume["emptyDir"]["medium"].is_null());
+        assert!(volume["emptyDir"]["sizeLimit"].is_string());
+    }
+}

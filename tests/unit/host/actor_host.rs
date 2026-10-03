@@ -1040,11 +1040,11 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
 #[derive(Default)]
 struct FakeAuthority {
     persisted: Option<Arc<FakeStateTransport>>,
-    history: std::collections::HashMap<String, Vec<u8>>,
+    history: std::collections::HashMap<String, bytes::Bytes>,
     fenced: std::sync::atomic::AtomicBool,
     loads: AtomicUsize,
     initial_state: Option<(u64, bytes::Bytes)>,
-    activation_state: Option<Vec<u8>>,
+    activation_state: Option<bytes::Bytes>,
     preparations: Mutex<Vec<u64>>,
 }
 
@@ -1142,7 +1142,7 @@ impl ActorStorage for FakeAuthority {
     }
 }
 
-struct FakeHistory<'a>(&'a std::collections::HashMap<String, Vec<u8>>);
+struct FakeHistory<'a>(&'a std::collections::HashMap<String, bytes::Bytes>);
 
 #[async_trait]
 impl crate::bucket::recovery::SnapshotHistory for FakeHistory<'_> {
@@ -1161,13 +1161,13 @@ impl crate::bucket::recovery::SnapshotHistory for FakeHistory<'_> {
 #[derive(Default)]
 struct FakeStateTransport {
     failures: AtomicUsize,
-    writes: Mutex<Vec<Vec<u8>>>,
+    writes: Mutex<Vec<bytes::Bytes>>,
     paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
 }
 
 #[async_trait]
 impl crate::state_transport::SnapshotWriter for FakeStateTransport {
-    async fn write_snapshot(&self, _ticket: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
+    async fn write_snapshot(&self, _ticket: &WritePlan, bytes: bytes::Bytes) -> Result<StateWrite> {
         if StateSnapshot::decode(&bytes)?.request_id == "first"
             && let Some((started, release)) = &self.paused_commit
         {

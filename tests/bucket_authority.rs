@@ -34,6 +34,23 @@ struct MemoryBucket {
 
 #[async_trait]
 impl Bucket for MemoryBucket {
+    async fn range(
+        &self,
+        key: &str,
+        start: u64,
+        length: u64,
+    ) -> Result<Option<durable_actors::bucket::BucketObject>> {
+        let Some(mut object) = self.get(key).await? else {
+            return Ok(None);
+        };
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+        anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+        object.bytes = object.bytes.slice(start as usize..end as usize);
+        Ok(Some(object))
+    }
+
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
         self.reads.lock().unwrap().push(key.into());
         Ok(self.objects.lock().unwrap().get(key).cloned())
@@ -43,7 +60,7 @@ impl Bucket for MemoryBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
         anyhow::ensure!(
             !key.contains("/snapshots/") || !self.reject_snapshots.load(Ordering::SeqCst),
@@ -112,6 +129,23 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
     }
     #[async_trait]
     impl Bucket for RacingBucket {
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<durable_actors::bucket::BucketObject>> {
+            let Some(mut object) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+            anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+            object.bytes = object.bytes.slice(start as usize..end as usize);
+            Ok(Some(object))
+        }
+
         async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
             let observed = self.inner.get(key).await?;
             if key.contains("/owners/") && self.readers.fetch_add(1, Ordering::SeqCst) < 2 {
@@ -123,7 +157,7 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
             &self,
             key: &str,
             generation: Option<i64>,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
         ) -> Result<bool> {
             self.inner.compare_and_swap(key, generation, bytes).await
         }

@@ -182,7 +182,7 @@ impl SnapshotStore for BucketSnapshots {
 
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
         ensure!(
-            replace(self.0.as_ref(), object, None, bytes.to_vec()).await?,
+            replace(self.0.as_ref(), object, None, bytes).await?,
             "conflicting immutable snapshot"
         );
         Ok(())

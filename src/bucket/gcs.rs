@@ -26,6 +26,7 @@ pub(crate) struct WarmGcs {
 pub(crate) struct GcsClients {
     pub storage: Storage,
     pub control: StorageControl,
+    pub transfers: Arc<tokio::sync::Semaphore>,
 }
 
 impl GcsBucket {
@@ -114,8 +115,16 @@ impl WarmGcs {
 }
 
 impl GcsClients {
+    async fn transfer(&self, length: u64) -> Result<Option<tokio::sync::SemaphorePermit<'_>>> {
+        if length <= crate::payload::BUFFER_BYTES as u64 {
+            return Ok(None);
+        }
+        Ok(Some(self.transfers.acquire().await?))
+    }
+
     async fn new(credentials: Credentials) -> Result<Self> {
         Ok(Self {
+            transfers: Arc::new(tokio::sync::Semaphore::new(2)),
             storage: Storage::builder()
                 .with_credentials(credentials.clone())
                 .build()
@@ -131,42 +140,31 @@ impl GcsClients {
 #[async_trait]
 impl Bucket for GcsBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
-        let mut response = match self
-            .clients
-            .storage
-            .read_object(&self.bucket, key)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error)
-                if error.http_status_code() == Some(404)
-                    || error
-                        .status()
-                        .is_some_and(|status| status.code.name() == "NOT_FOUND") =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let generation = response.object().generation;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.next().await {
-            bytes.extend_from_slice(&chunk?);
-        }
-        Ok(Some(BucketObject { generation, bytes }))
+        self.read(key, None).await
+    }
+    async fn range(&self, key: &str, start: u64, length: u64) -> Result<Option<BucketObject>> {
+        let result = self.read(key, Some((start, length))).await?;
+        anyhow::ensure!(
+            result
+                .as_ref()
+                .is_none_or(|object| object.bytes.len() as u64 == length),
+            "incomplete object range"
+        );
+        Ok(result)
     }
 
     async fn compare_and_swap(
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
+        let _transfer = self.clients.transfer(bytes.len() as u64).await?;
+        let source = crate::payload::Upload::new(bytes);
         match self
             .clients
             .storage
-            .write_object(&self.bucket, key, bytes::Bytes::from(bytes))
+            .write_object(&self.bucket, key, source)
             .set_if_generation_match(generation.unwrap_or(0))
             .send_unbuffered()
             .await
@@ -248,3 +246,35 @@ impl CredentialsProvider for PendingCredentials {
 #[cfg(test)]
 #[path = "../../tests/unit/bucket/gcs.rs"]
 mod tests;
+
+impl GcsBucket {
+    async fn read(&self, key: &str, range: Option<(u64, u64)>) -> Result<Option<BucketObject>> {
+        let mut request = self.clients.storage.read_object(&self.bucket, key);
+        if let Some((start, length)) = range {
+            request = request.set_read_range(google_cloud_storage::model_ext::ReadRange::segment(
+                start, length,
+            ));
+        }
+        let mut response = match request.send().await {
+            Ok(response) => response,
+            Err(error)
+                if error.http_status_code() == Some(404)
+                    || error
+                        .status()
+                        .is_some_and(|status| status.code.name() == "NOT_FOUND") =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let length = range.map_or(response.object().size as u64, |(_, length)| length);
+        let _transfer = self.clients.transfer(length).await?;
+        let generation = response.object().generation;
+        let mut download = crate::payload::Download::new();
+        while let Some(chunk) = response.next().await {
+            download = download.append(chunk?).await?;
+        }
+        let bytes = download.finish().await?;
+        Ok(Some(BucketObject { generation, bytes }))
+    }
+}

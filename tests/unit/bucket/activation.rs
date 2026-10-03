@@ -134,6 +134,23 @@ struct CountedBucket {
 
 #[async_trait]
 impl Bucket for CountedBucket {
+    async fn range(
+        &self,
+        key: &str,
+        start: u64,
+        length: u64,
+    ) -> Result<Option<crate::bucket::BucketObject>> {
+        let Some(mut object) = self.get(key).await? else {
+            return Ok(None);
+        };
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+        anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+        object.bytes = object.bytes.slice(start as usize..end as usize);
+        Ok(Some(object))
+    }
+
     async fn get(&self, key: &str) -> Result<Option<super::super::BucketObject>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.inner.get(key).await
@@ -142,7 +159,7 @@ impl Bucket for CountedBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         let delayed = self.delay_write.lock().unwrap().take();
@@ -767,7 +784,7 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .register_activation(&f.actor, &next, "us-east", false, hint.as_ref())
                 .await?;
             assert_eq!(loaded.placement.owner_epoch, epoch);
-            assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_slice()));
+            assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_ref()));
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
             assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
             let checkpoint = f
@@ -843,7 +860,7 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
         .await?
         .context("durable base missing")?;
     assert_eq!(resumed.placement.owner_epoch, 2);
-    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_slice()));
+    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_ref()));
     Ok(())
 }
 
@@ -907,7 +924,7 @@ async fn crash_recovery_persists_the_selected_snapshot_before_claiming_the_next_
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, None)
         .await?;
-    assert_eq!(resumed.state.as_deref(), Some(bytes.as_slice()));
+    assert_eq!(resumed.state.as_deref(), Some(bytes.as_ref()));
     Ok(())
 }
 

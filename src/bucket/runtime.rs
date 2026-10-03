@@ -332,7 +332,7 @@ impl RuntimeStorageReader {
             .snapshots
             .latest(&record.stream()?.prefix)
             .await?
-            .map(|(key, bytes)| decode_snapshot(key, bytes.to_vec()))
+            .map(|(key, bytes)| decode_snapshot(key, bytes))
             .transpose()?;
         self.load_latest(record, latest.or(known)).await
     }
@@ -360,7 +360,7 @@ impl RuntimeStorageReader {
         Ok(loaded)
     }
 
-    async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {
+    async fn persist(&self, object: &str, bytes: bytes::Bytes) -> Result<()> {
         self.snapshots.put(object, bytes.into()).await
     }
 
@@ -458,7 +458,7 @@ fn snapshot_position(object: &str) -> Option<(u64, u64)> {
     Some((epoch, version))
 }
 
-fn decode_snapshot(object: String, bytes: Vec<u8>) -> Result<LoadedSnapshot> {
+fn decode_snapshot(object: String, bytes: bytes::Bytes) -> Result<LoadedSnapshot> {
     let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
     ensure!(
         snapshot_position(&object) == Some((snapshot.owner_epoch, snapshot.state_version)),
@@ -475,7 +475,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
     async fn write_snapshot(
         &self,
         plan: &WritePlan,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<crate::state_transport::StateWrite> {
         self.ensure_write_owner(plan)?;
         let stream = &plan.stream;

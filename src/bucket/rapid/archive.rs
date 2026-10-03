@@ -51,7 +51,7 @@ impl Archiver {
             closed: false,
         }));
         let wake = Arc::new(Notify::new());
-        let batch_bytes = storage.batch.bytes;
+        let batch_bytes = storage.batch.bytes.min(1024 * 1024);
         let task = AbortOnDropHandle::new(tokio::spawn(run(
             storage,
             manifest,
@@ -145,7 +145,7 @@ async fn run(
                 || end - through >= storage.batch.bytes as u64
                 || due.is_some_and(|at| at <= Instant::now()))
         {
-            let cached = take_cache(&pending, through);
+            let cached = take_cache(&pending, through)?;
             match upload(&storage, &manifest, through, end, cached).await {
                 Ok(next) => {
                     retry = false;
@@ -178,11 +178,11 @@ async fn run(
     }
 }
 
-fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Option<Bytes> {
+fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Result<Option<Bytes>> {
     let frames = {
         let mut p = pending.lock().unwrap();
         if p.cache_start != through || p.cache_bytes == 0 {
-            return None;
+            return Ok(None);
         }
         p.cache_start += p.cache_bytes as u64;
         p.cache_bytes = 0;
@@ -191,7 +191,12 @@ fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Option<Bytes> {
         }
         std::mem::take(&mut p.cache)
     };
-    Some(frames.concat().into())
+    use std::io::Write;
+    let mut spool = crate::payload::Spool::new();
+    for frame in frames {
+        spool.write_all(&frame)?;
+    }
+    Ok(Some(spool.finish()?))
 }
 
 async fn upload(
@@ -204,9 +209,7 @@ async fn upload(
     let bytes = match cached {
         Some(bytes) => bytes,
         None => {
-            let length =
-                (end - start).min((storage.batch.bytes + frame::MAX_STATE + frame::HEADER) as u64);
-            match storage.read_range(manifest, start, length).await {
+            match read_batch(storage, manifest, start, end).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     // Another worker may have archived and deleted the Rapid copies.
@@ -240,6 +243,29 @@ async fn upload(
     Ok(start + length as u64)
 }
 
+async fn read_batch(
+    storage: &LogStorage,
+    manifest: &Manifest,
+    start: u64,
+    end: u64,
+) -> Result<Bytes> {
+    let requested = (end - start).min(storage.batch.bytes.max(frame::HEADER) as u64);
+    let bytes = storage.read_range(manifest, start, requested).await?;
+    let length = frame::length(&bytes)? as u64;
+    if length <= requested {
+        return Ok(bytes);
+    }
+    ensure!(length <= end - start, "incomplete committed record");
+    let tail = storage
+        .read_range(manifest, start + requested, length - requested)
+        .await?;
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        crate::payload::copy(bytes.as_ref().chain(tail.as_ref()))
+    })
+    .await?
+}
+
 impl LogStorage {
     pub async fn put_batch(&self, manifest: &Manifest, start: u64, bytes: Bytes) -> Result<()> {
         let end = start
@@ -251,9 +277,10 @@ impl LogStorage {
         );
         let began = Instant::now();
         ensure!(
-            bounded(replace(self.archive.as_ref(), &key, None, bytes.to_vec())).await?,
+            bounded(replace(self.archive.as_ref(), &key, None, bytes.clone())).await?,
             "conflicting archive batch"
         );
+        self.index_batch(manifest, key, &bytes).await?;
         tracing::info!(
             event = "rapid_log_batch",
             start_offset = start,
@@ -280,7 +307,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("closed")?,
                 None,
-                serde_json::to_vec(closed)?
+                crate::payload::encode(closed)?
             ))
             .await?,
             "conflicting closed segment"
@@ -294,7 +321,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("replicated")?,
                 None,
-                serde_json::to_vec(closed)?
+                crate::payload::encode(closed)?
             ))
             .await?,
             "conflicting replication coverage"
@@ -336,7 +363,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("cleaned")?,
                 None,
-                b"{}".to_vec()
+                Bytes::from_static(b"{}")
             ))
             .await?,
             "conflicting cleanup marker"

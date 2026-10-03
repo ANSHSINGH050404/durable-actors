@@ -22,7 +22,11 @@ impl LogStorage {
             checkpoint = resolved.checkpoint,
             checkpoint_version = resolved.checkpoint_version,
             parents = resolved.parents,
-            archive_epochs = history.epochs.len(),
+            archive_epochs = history
+                .epochs
+                .values()
+                .filter(|epoch| epoch.records.is_some())
+                .count(),
             dependency_gets = history.reads,
             checkpoint_gets = history.probes,
             files = resolved.sqlite.files.len(),
@@ -84,7 +88,8 @@ impl LogStorage {
                 files: vec![file],
             },
         };
-        let bytes = serde_json::to_vec(&checkpoint)?;
+        let bytes =
+            tokio::task::spawn_blocking(move || crate::payload::encode(&checkpoint)).await??;
         let size = bytes.len();
         let upload_started = std::time::Instant::now();
         bounded(
@@ -117,7 +122,9 @@ struct LogHistory<'a> {
 }
 
 struct EpochHistory {
-    records: BTreeMap<String, Bytes>,
+    records: Option<BTreeMap<String, Bytes>>,
+    indexes: Vec<String>,
+    indexed: BTreeMap<String, Bytes>,
     checkpoints: std::collections::BTreeSet<String>,
 }
 
@@ -125,25 +132,18 @@ struct EpochHistory {
 impl SnapshotHistory for LogHistory<'_> {
     async fn read(&mut self, object: &str) -> Result<Bytes> {
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
-        if let Some(records) = self.epochs.get(prefix)
-            && let Some(bytes) = records.records.get(object)
-        {
-            return Ok(bytes.clone());
-        }
-        self.reads += 1;
-        if let Some(bytes) = self.storage.snapshots.get(object).await? {
-            return Ok(bytes);
-        }
         if !self.epochs.contains_key(prefix) {
             let prefix_key = format!("{prefix}/");
-            let (records, keys) = tokio::try_join!(
-                self.storage.records(&prefix_key, false),
-                self.storage.snapshots.list(&prefix_key)
+            let (keys, indexes) = tokio::try_join!(
+                self.storage.snapshots.list(&prefix_key),
+                self.storage.index_keys(&prefix_key)
             )?;
             self.epochs.insert(
                 prefix.into(),
                 EpochHistory {
-                    records,
+                    records: None,
+                    indexes,
+                    indexed: BTreeMap::new(),
                     checkpoints: keys
                         .into_iter()
                         .filter(|key| key.ends_with(".checkpoint"))
@@ -151,9 +151,57 @@ impl SnapshotHistory for LogHistory<'_> {
                 },
             );
         }
-        self.epochs
-            .get(prefix)
-            .and_then(|epoch| epoch.records.get(object))
+        let epoch = self.epochs.get_mut(prefix).unwrap();
+        if let Some(bytes) = epoch
+            .records
+            .as_ref()
+            .and_then(|records| records.get(object))
+        {
+            return Ok(bytes.clone());
+        }
+        if let Some(bytes) = epoch.indexed.remove(object) {
+            return Ok(bytes);
+        }
+        let version =
+            super::super::snapshots::version(object).context("invalid snapshot version")?;
+        let first = epoch
+            .checkpoints
+            .iter()
+            .filter_map(|key| key.strip_suffix(".checkpoint"))
+            .filter_map(super::super::snapshots::version)
+            .filter(|v| *v <= version)
+            .max()
+            .unwrap_or(0);
+        if let Some(records) = self.storage.live_records(object, first).await? {
+            self.reads += 1;
+            epoch.indexed = records;
+            return epoch
+                .indexed
+                .remove(object)
+                .context("live SQLite dependency missing");
+        }
+        self.reads += 1;
+        if let Some(bytes) = self.storage.snapshots.get(object).await? {
+            return Ok(bytes);
+        }
+        if let Some(records) = self
+            .storage
+            .indexed_records(object, first, &epoch.indexes)
+            .await
+        {
+            epoch.indexed = records;
+            return epoch
+                .indexed
+                .remove(object)
+                .context("indexed SQLite dependency missing");
+        }
+        if epoch.records.is_none() {
+            epoch.records = Some(self.storage.records(&format!("{prefix}/"), false).await?);
+        }
+        epoch
+            .records
+            .as_ref()
+            .and_then(|records| records.get(object))
             .cloned()
             .context("SQLite dependency missing")
     }

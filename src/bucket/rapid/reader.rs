@@ -1,5 +1,6 @@
 use super::*;
 use futures_util::{StreamExt, TryStreamExt, stream};
+use std::io::Write;
 
 impl LogStorage {
     pub async fn latest(&self, prefix: &str, fence: bool) -> Result<Option<(String, Bytes)>> {
@@ -27,7 +28,7 @@ impl LogStorage {
         let manifests = keys.len();
         let mut segments = stream::iter(keys)
             .map(|key| async move { self.read_manifest(&key, prefix, fence).await })
-            .buffered(4);
+            .buffered(1);
         let mut records = BTreeMap::new();
         while let Some((manifest, segment)) = segments.try_next().await? {
             for record in segment {
@@ -190,23 +191,25 @@ impl LogStorage {
             closed.validate(manifest, end_offset, &records)?;
         }
         let mut offset = 0;
-        let mut batch = Vec::new();
+        let mut batch = crate::payload::Spool::new();
+        let mut length = 0;
         for record in records {
             let frame = record.encode()?;
             offset += frame.len() as u64;
             if offset <= through {
                 continue;
             }
-            batch.extend_from_slice(&frame);
-            if batch.len() >= self.batch.bytes {
-                let length = batch.len() as u64;
-                self.put_batch(manifest, through, std::mem::take(&mut batch).into())
-                    .await?;
-                through += length;
+            batch.write_all(&frame)?;
+            length += frame.len();
+            if length >= self.batch.bytes {
+                let bytes = std::mem::replace(&mut batch, crate::payload::Spool::new()).finish()?;
+                self.put_batch(manifest, through, bytes).await?;
+                through += length as u64;
+                length = 0;
             }
         }
-        if !batch.is_empty() {
-            self.put_batch(manifest, through, batch.into()).await?;
+        if length > 0 {
+            self.put_batch(manifest, through, batch.finish()?).await?;
         }
         if self
             .archive

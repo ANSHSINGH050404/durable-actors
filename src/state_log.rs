@@ -93,9 +93,9 @@ impl StateSnapshot {
         Ok(snapshot)
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<bytes::Bytes> {
         self.validate()?;
-        Ok(serde_json::to_vec(self)?)
+        crate::payload::encode(self)
     }
 
     pub(crate) fn validate_object(&self, object: &str) -> Result<()> {

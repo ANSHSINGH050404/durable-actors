@@ -12,6 +12,7 @@ mod archive;
 mod checkpoint;
 mod frame;
 mod gcs;
+mod index;
 mod prepared;
 mod reader;
 mod segment;
@@ -60,6 +61,7 @@ struct LogStorage {
     zones: Vec<Arc<dyn LogZone>>,
     prepared: std::sync::Mutex<Option<Prepared>>,
     batch: super::ArchiveBatchConfig,
+    live: std::sync::Mutex<BTreeMap<u64, index::LiveRecord>>,
     compactor: Arc<dyn crate::litestream::compaction::LtxCompactor>,
 }
 
@@ -127,6 +129,7 @@ impl RapidSnapshots {
             zones,
             prepared: std::sync::Mutex::new(None),
             batch,
+            live: std::sync::Mutex::new(BTreeMap::new()),
             compactor,
         });
         let session = Arc::new(Mutex::new(None));
@@ -152,10 +155,24 @@ impl SnapshotStore for RapidSnapshots {
         {
             return Ok(Some(bytes));
         }
+        let version = super::snapshots::version(object);
+        if let Some(version) = version
+            && let Some(mut records) = self.storage.live_records(object, version).await?
+        {
+            return Ok(records.remove(object));
+        }
         if let Some(bytes) = self.storage.snapshots.get(object).await? {
             return Ok(Some(bytes));
         }
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
+        let keys = self.storage.index_keys(&format!("{prefix}/")).await?;
+        if let Some(mut records) = self
+            .storage
+            .indexed_records(object, version.context("invalid snapshot version")?, &keys)
+            .await
+        {
+            return Ok(records.remove(object));
+        }
         let records = self.storage.records(&format!("{prefix}/"), false).await?;
         Ok(records.get(object).cloned())
     }

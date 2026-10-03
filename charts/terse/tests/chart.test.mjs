@@ -19,7 +19,7 @@ function render(overrides = {}) {
 }
 
 for (const [name, overrides, cpuMillis] of [
-    ["default", {}, 500],
+    ["default", {}, 1000],
     ["configured", { pool: { cpuMillis: 750 } }, 750]
 ]) {
     test(`renders ${name} sandbox CPU allocation`, () => {
@@ -111,7 +111,7 @@ test("node capacity buffering can be disabled", () => {
 })
 
 for (const [name, overrides, replicas, cpu, memory, namespace, zones] of [
-    ["default", {}, 32, "500m", "256Mi", "terse-sandboxes", ["us-west4-a", "us-west4-b", "us-west4-c"]],
+    ["default", {}, 32, "1000m", "256Mi", "terse-sandboxes", ["us-west4-a", "us-west4-b", "us-west4-c"]],
     ["configured", {
         capacityBuffer: { replicas: 16 },
         pool: { cpuMillis: 750, memoryMiB: 512 },

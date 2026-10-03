@@ -119,7 +119,7 @@ impl RuntimeStorageReader {
         let Some(bytes) = self.read_persisted(key).await? else {
             return Ok(None);
         };
-        decode_snapshot(key.into(), bytes.to_vec())?;
+        decode_snapshot(key.into(), bytes.clone())?;
         let snapshot = StateSnapshot::decode(&bytes)?;
         let sqlite = self.read_sqlite(key, bytes).await?;
         let fields = crate::litestream::storage::restored_fields(
@@ -138,7 +138,7 @@ impl RuntimeStorageReader {
         self.read_persisted(key)
             .await?
             .map(|bytes| {
-                decode_snapshot(key.to_owned(), bytes.to_vec())
+                decode_snapshot(key.to_owned(), bytes)
                     .and_then(|loaded| StateSnapshot::decode(&loaded.bytes))
             })
             .transpose()
@@ -167,7 +167,7 @@ impl RuntimeStorageReader {
                 self.authority.as_ref(),
                 key,
                 None,
-                serde_json::to_vec(record)?,
+                crate::payload::encode(record)?,
             ),
         )
         .await??;

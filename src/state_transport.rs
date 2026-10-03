@@ -12,6 +12,6 @@ pub trait SnapshotWriter: Send + Sync {
     async fn write_snapshot(
         &self,
         plan: &crate::storage::WritePlan,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<StateWrite>;
 }

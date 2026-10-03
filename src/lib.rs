@@ -7,6 +7,7 @@ mod grpc;
 pub mod host;
 pub mod host_leases;
 mod litestream;
+mod payload;
 pub mod placement;
 mod postgres;
 pub mod sandbox;

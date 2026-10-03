@@ -82,9 +82,6 @@ impl Session {
                 preparing.await.context("Rapid preparation failed")??,
             );
         }
-        if bytes.len() > frame::MAX_STATE {
-            self.standard = true;
-        }
         if self.standard {
             bounded(storage.snapshots.put(object, bytes.clone())).await?;
         } else {
@@ -94,6 +91,11 @@ impl Session {
                 .context("Rapid stream missing")?
                 .append(reference.state_version, bytes.clone())
                 .await?;
+            storage.remember(
+                self.segment.as_ref().unwrap(),
+                reference.state_version,
+                frame.len(),
+            );
             self.archive
                 .as_ref()
                 .context("archive worker missing")?

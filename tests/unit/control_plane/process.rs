@@ -36,7 +36,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     let resources = &config.sandbox_provider.pool.resources;
-    assert_eq!((resources.cpu_millis, resources.memory_mib), (500, 256));
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (1000, 256));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
@@ -59,8 +59,10 @@ fn pool_capacity_is_configurable_and_validated() -> Result<()> {
         ("DURABLE_ACTORS_SPARE_IDLE", "128"),
         ("DURABLE_ACTORS_SPARE_FLEET_MAX", "512"),
         ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
+        ("DURABLE_ACTORS_HOST_CPU_MILLIS", "500"),
     ]);
     let configured = parse(&values)?.sandbox_provider.pool;
+    assert_eq!(configured.resources.cpu_millis, 500);
     assert_eq!(
         (
             configured.idle,

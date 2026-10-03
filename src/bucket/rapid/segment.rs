@@ -53,7 +53,7 @@ impl Segment {
                 storage.archive.as_ref(),
                 &key,
                 None,
-                serde_json::to_vec(&manifest)?
+                crate::payload::encode(&manifest)?
             ))
             .await?,
             "conflicting log manifest"

@@ -118,6 +118,23 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
     struct UnavailableArchive;
     #[async_trait]
     impl Bucket for UnavailableArchive {
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<crate::bucket::BucketObject>> {
+            let Some(mut object) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+            anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+            object.bytes = object.bytes.slice(start as usize..end as usize);
+            Ok(Some(object))
+        }
+
         async fn get(&self, _key: &str) -> Result<Option<crate::bucket::BucketObject>> {
             anyhow::bail!("archive unavailable")
         }
@@ -128,7 +145,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             &self,
             _key: &str,
             _generation: Option<i64>,
-            _bytes: Vec<u8>,
+            _bytes: bytes::Bytes,
         ) -> Result<bool> {
             anyhow::bail!("archive unavailable")
         }
@@ -206,7 +223,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
     let plan = first
         .prepare_actor_write(&actor, &active.placement.lease, 1, 1)
         .await?;
-    first.write_snapshot(&plan, state(1, 1)?.to_vec()).await?;
+    first.write_snapshot(&plan, state(1, 1)?).await?;
     assert!(
         runtime()?
             .register_activation(&actor, &request("early"), "us-west", false, None)
@@ -218,7 +235,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
             &first
                 .prepare_actor_write(&actor, &active.placement.lease, 1, 2)
                 .await?,
-            state(2, 1)?.to_vec(),
+            state(2, 1)?,
         )
         .await?;
     clock.0.store(2000, Ordering::SeqCst);
@@ -235,7 +252,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
                 &first
                     .prepare_actor_write(&actor, &active.placement.lease, 1, 3)
                     .await?,
-                state(3, 1)?.to_vec()
+                state(3, 1)?
             )
             .await
             .is_err()
@@ -243,7 +260,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
     let plan = second
         .prepare_actor_write(&actor, &recovered.placement.lease, 2, 3)
         .await?;
-    second.write_snapshot(&plan, state(3, 2)?.to_vec()).await?;
+    second.write_snapshot(&plan, state(3, 2)?).await?;
     let checkpoint = second
         .drain_activation(
             &actor,
@@ -351,7 +368,7 @@ fn lifecycle_rules_must_exclude_unarchived_logs() -> Result<()> {
 }
 
 #[tokio::test]
-async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Result<()> {
+async fn large_records_and_subsequent_small_writes_stay_on_rapid() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
@@ -359,19 +376,31 @@ async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Re
     let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
     snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
     let bytes: Bytes = snapshot.encode()?.into();
-    assert!(bytes.len() > frame::MAX_STATE);
     store.put(&f.stream.object(2), bytes.clone()).await?;
-    store
-        .finish(
-            &f.stream,
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        )
-        .await?;
-    assert_eq!(f.store()?.get(&f.stream.object(2)).await?, Some(bytes));
+    store.put(&f.stream.object(3), state(3, 1)?).await?;
+    for zone in &f.zones {
+        let objects = zone.objects.lock().unwrap();
+        let records = frame::decode(&Bytes::copy_from_slice(
+            &objects.values().next().unwrap().bytes,
+        ))?;
+        assert_eq!(
+            records.iter().map(|r| r.version).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(records[1].state, bytes);
+    }
+    assert!(f.archive.get(&f.stream.object(2)).await?.is_none());
+    assert!(f.archive.get(&f.stream.object(3)).await?.is_none());
+    drop(store);
+    f.zones[1].offline.store(true, Ordering::SeqCst);
+    let reader = f.store()?;
     assert_eq!(
-        f.store()?.get(&f.stream.object(1)).await?,
-        Some(state(1, 1)?)
+        reader.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(3), state(3, 1)?))
     );
+    f.zones[0].offline.store(true, Ordering::SeqCst);
+    assert_eq!(reader.get(&f.stream.object(2)).await?, Some(bytes));
+    assert_eq!(reader.get(&f.stream.object(1)).await?, Some(state(1, 1)?));
     Ok(())
 }
 
@@ -380,6 +409,23 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
     struct RejectCoverage(Arc<FileBucket>);
     #[async_trait]
     impl Bucket for RejectCoverage {
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<crate::bucket::BucketObject>> {
+            let Some(mut object) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+            anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+            object.bytes = object.bytes.slice(start as usize..end as usize);
+            Ok(Some(object))
+        }
+
         async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
             self.0.get(key).await
         }
@@ -390,7 +436,7 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             &self,
             key: &str,
             generation: Option<i64>,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
         ) -> Result<bool> {
             ensure!(
                 !key.ends_with(".replicated"),
@@ -491,6 +537,13 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
     let store = f.store()?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
+    let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
+    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    let interrupted = Record {
+        version: 2,
+        state: snapshot.encode()?,
+    }
+    .encode()?;
     f.zones[0]
         .objects
         .lock()
@@ -499,7 +552,7 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
         .next()
         .unwrap()
         .bytes
-        .extend_from_slice(b"RLG1partial");
+        .extend_from_slice(&interrupted[..crate::payload::IO_BUFFER_BYTES]);
     assert_eq!(
         f.store()?.latest(&f.stream.prefix).await?,
         Some((f.stream.object(1), state(1, 1)?))
@@ -597,7 +650,7 @@ async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()
             .compare_and_swap(
                 &left,
                 Some(stored.generation),
-                serde_json::to_vec(&manifest)?
+                crate::payload::encode(&manifest)?
             )
             .await?
     );
@@ -668,6 +721,7 @@ struct MemoryZone {
     offline: Arc<AtomicBool>,
     stalled: Arc<AtomicBool>,
     opens: AtomicU64,
+    range_reads: AtomicU64,
 }
 impl MemoryZone {
     fn new(name: &str) -> Self {
@@ -677,6 +731,7 @@ impl MemoryZone {
             offline: Default::default(),
             stalled: Default::default(),
             opens: AtomicU64::new(0),
+            range_reads: AtomicU64::new(0),
         }
     }
 }
@@ -718,6 +773,7 @@ impl LogZone for MemoryZone {
         Ok(Bytes::copy_from_slice(&object.bytes))
     }
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+        self.range_reads.fetch_add(1, Ordering::SeqCst);
         let bytes = self.read(replica, false).await?;
         let end = start.checked_add(length).context("range overflow")? as usize;
         ensure!(end <= bytes.len(), "incomplete range");

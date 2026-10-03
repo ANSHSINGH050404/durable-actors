@@ -112,6 +112,7 @@ impl LogZone for GcsZone {
     }
 
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
+        let _transfer = self.clients.transfers.acquire().await?;
         let mut writer = if fence {
             Some(
                 self.clients
@@ -146,42 +147,44 @@ impl LogZone for GcsZone {
         let mut reader = descriptor
             .read_range(ReadRange::segment(0, size as u64))
             .await;
-        let mut bytes = Vec::with_capacity(size as usize);
+        let mut download = crate::payload::Download::new();
+        let mut length = 0usize;
         while let Some(chunk) = reader.next().await {
-            bytes.extend_from_slice(&chunk?);
-            ensure!(
-                bytes.len() <= size as usize,
-                "log read exceeded persisted size"
-            );
+            let chunk = chunk?;
+            length += chunk.len();
+            ensure!(length <= size as usize, "log read exceeded persisted size");
+            download = download.append(chunk).await?;
         }
         ensure!(
-            bytes.len() == size as usize
-                && persisted.is_none_or(|size| size as usize == bytes.len()),
+            length == size as usize && persisted.is_none_or(|size| size as usize == length),
             "incomplete fenced log read"
         );
         drop(writer);
-        Ok(bytes.into())
+        download.finish().await
     }
 
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
-        let mut reader = self
+        let _transfer = self.clients.transfers.acquire().await?;
+        let descriptor = self
             .clients
             .storage
-            .read_object(&self.bucket, &replica.object)
+            .open_object(&self.bucket, &replica.object)
             .set_generation(replica.generation)
-            .set_read_range(ReadRange::segment(start, length))
             .send()
             .await?;
-        let mut bytes = Vec::new();
+        let mut reader = descriptor
+            .read_range(ReadRange::segment(start, length))
+            .await;
+        let mut download = crate::payload::Download::new();
+        let mut received = 0u64;
         while let Some(chunk) = reader.next().await {
-            bytes.extend_from_slice(&chunk?);
-            ensure!(
-                bytes.len() as u64 <= length,
-                "Rapid range exceeded requested length"
-            );
+            let chunk = chunk?;
+            received += chunk.len() as u64;
+            ensure!(received <= length, "Rapid range exceeded requested length");
+            download = download.append(chunk).await?;
         }
-        ensure!(bytes.len() as u64 == length, "incomplete Rapid range");
-        Ok(bytes.into())
+        ensure!(received == length, "incomplete Rapid range");
+        download.finish().await
     }
 
     async fn delete(&self, replica: &Replica) -> Result<()> {
@@ -210,7 +213,11 @@ impl LogZone for GcsZone {
 #[async_trait]
 impl LogWriter for GcsWriter {
     async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
-        self.0.append(bytes).await?;
+        use google_cloud_storage::streaming_source::StreamingSource;
+        let mut upload = crate::payload::Upload::new(bytes);
+        while let Some(chunk) = upload.next().await {
+            self.0.append(chunk?).await?;
+        }
         Ok(self.0.flush().await?.try_into()?)
     }
 }
@@ -242,3 +249,7 @@ pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/bucket/rapid/gcs.rs"]
+mod tests;

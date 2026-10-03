@@ -35,7 +35,7 @@ pool:
   fleetMaximum: 256
   maxStarting: 32
   idleTtlSeconds: 600
-  cpuMillis: 500
+  cpuMillis: 1000
   memoryMiB: 256
 capacityBuffer:
   enabled: true

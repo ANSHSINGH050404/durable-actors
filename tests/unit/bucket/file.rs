@@ -13,13 +13,13 @@ async fn independent_local_clients_share_atomic_generations_across_restart() -> 
     let key = "runtime/owners/actor.json";
     assert!(
         first
-            .compare_and_swap(key, None, b"initial".to_vec())
+            .compare_and_swap(key, None, bytes::Bytes::from_static(b"initial"))
             .await?
     );
     let generation = first.get(key).await?.unwrap().generation;
     let (one, two) = tokio::join!(
-        first.compare_and_swap(key, Some(generation), b"one".to_vec()),
-        second.compare_and_swap(key, Some(generation), b"two".to_vec())
+        first.compare_and_swap(key, Some(generation), bytes::Bytes::from_static(b"one")),
+        second.compare_and_swap(key, Some(generation), bytes::Bytes::from_static(b"two"))
     );
     assert_ne!(one?, two?);
     drop(first);
@@ -27,12 +27,12 @@ async fn independent_local_clients_share_atomic_generations_across_restart() -> 
     let reopened = FileBucket::new(directory.path().into())?;
     let object = reopened.get(key).await?.unwrap();
     assert_eq!(object.generation, generation + 1);
-    assert!(object.bytes == b"one" || object.bytes == b"two");
+    assert!(object.bytes.as_ref() == b"one" || object.bytes.as_ref() == b"two");
     assert_eq!(reopened.list("runtime/owners/").await?, [key]);
     assert!(reopened.list("other/").await?.is_empty());
     assert!(
         reopened
-            .compare_and_swap("../escape", None, vec![])
+            .compare_and_swap("../escape", None, bytes::Bytes::new())
             .await
             .is_err()
     );
@@ -46,7 +46,7 @@ async fn an_object_lock_blocks_only_its_own_writes_and_survives_replacement() ->
     let key = "owners/actor.json";
     assert!(
         bucket
-            .compare_and_swap(key, None, b"initial".to_vec())
+            .compare_and_swap(key, None, bytes::Bytes::from_static(b"initial"))
             .await?
     );
     let mut holder = Client::start(directory.path(), key, "lock", "1")?;
@@ -57,7 +57,7 @@ async fn an_object_lock_blocks_only_its_own_writes_and_survives_replacement() ->
     let writer = FileBucket::new(directory.path().into())?;
     let mut pending = tokio::spawn(async move {
         writer
-            .compare_and_swap(key, Some(1), b"next".to_vec())
+            .compare_and_swap(key, Some(1), bytes::Bytes::from_static(b"next"))
             .await
     });
     let blocked = tokio::time::timeout(Duration::from_millis(100), &mut pending).await;
@@ -67,11 +67,15 @@ async fn an_object_lock_blocks_only_its_own_writes_and_survives_replacement() ->
     assert!(
         tokio::time::timeout(
             Duration::from_secs(2),
-            bucket.compare_and_swap("owners/other.json", None, b"independent".to_vec()),
+            bucket.compare_and_swap(
+                "owners/other.json",
+                None,
+                bytes::Bytes::from_static(b"independent")
+            ),
         )
         .await??
     );
-    assert_eq!(bucket.get(key).await?.unwrap().bytes, b"initial");
+    assert_eq!(bucket.get(key).await?.unwrap().bytes.as_ref(), b"initial");
     holder.process.kill()?;
     holder.process.wait()?;
     assert!(tokio::time::timeout(Duration::from_secs(2), pending).await???);
@@ -79,7 +83,7 @@ async fn an_object_lock_blocks_only_its_own_writes_and_survives_replacement() ->
     let writer = FileBucket::new(directory.path().into())?;
     let mut pending = tokio::spawn(async move {
         writer
-            .compare_and_swap(key, Some(2), b"last".to_vec())
+            .compare_and_swap(key, Some(2), bytes::Bytes::from_static(b"last"))
             .await
     });
     assert!(
@@ -116,12 +120,20 @@ async fn readers_observe_complete_versions_during_replacement() -> Result<()> {
     let reader = FileBucket::new(directory.path().into())?;
     let key = "snapshots/state.json";
     let size = 200 * 1024;
-    assert!(writer.compare_and_swap(key, None, vec![1; size]).await?);
+    assert!(
+        writer
+            .compare_and_swap(key, None, vec![1; size].into())
+            .await?
+    );
     let writes = tokio::spawn(async move {
         for generation in 1..=32 {
             assert!(
                 writer
-                    .compare_and_swap(key, Some(generation), vec![(generation + 1) as u8; size])
+                    .compare_and_swap(
+                        key,
+                        Some(generation),
+                        vec![(generation + 1) as u8; size].into()
+                    )
                     .await?
             );
         }
@@ -246,7 +258,7 @@ fn subprocess_client() -> Result<()> {
         let result = tokio::runtime::Runtime::new()?.block_on(bucket.compare_and_swap(
             &key,
             expected,
-            b"child".to_vec(),
+            bytes::Bytes::from_static(b"child"),
         ))?;
         println!("result={result}");
     }

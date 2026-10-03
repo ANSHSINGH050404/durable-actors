@@ -22,7 +22,7 @@ impl ActorPersistence {
 }
 #[async_trait]
 impl SnapshotWriter for ActorPersistence {
-    async fn write_snapshot(&self, plan: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
+    async fn write_snapshot(&self, plan: &WritePlan, bytes: bytes::Bytes) -> Result<StateWrite> {
         let _writing = self.writing.lock().await;
         self.storage.ensure_authority()?;
         let attempt = self.storage.stop.clone().drop_guard();

@@ -224,7 +224,7 @@ impl RuntimeStorage {
             .snapshots
             .recover(&record.stream()?.prefix)
             .await?
-            .map(|(key, bytes)| decode_snapshot(key, bytes.to_vec()))
+            .map(|(key, bytes)| decode_snapshot(key, bytes))
             .transpose()?;
         let snapshot = self.load_latest(record, recovered).await?;
         Ok(ActivationRecovery {
@@ -270,7 +270,7 @@ impl RuntimeStorage {
             self.authority.as_ref(),
             &ownership_key(&record.actor.storage_key())?,
             generation,
-            serde_json::to_vec(record)?,
+            crate::payload::encode(record)?,
         )
         .await
     }

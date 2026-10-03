@@ -9,6 +9,8 @@ struct ArchiveBucket {
     cleaned_reads: AtomicU64,
     read_requests: AtomicU64,
     read_batches: AtomicU64,
+    range_bytes: AtomicU64,
+    index_failure: AtomicU64,
     fail_checkpoint: AtomicBool,
     stalled_checkpoint: AtomicBool,
     checkpoint_attempts: AtomicU64,
@@ -16,7 +18,25 @@ struct ArchiveBucket {
 
 #[async_trait]
 impl Bucket for ArchiveBucket {
+    async fn range(
+        &self,
+        key: &str,
+        start: u64,
+        length: u64,
+    ) -> Result<Option<crate::bucket::BucketObject>> {
+        self.read_batches.fetch_add(1, Ordering::SeqCst);
+        self.range_bytes.fetch_add(length, Ordering::SeqCst);
+        self.inner.range(key, start, length).await
+    }
+
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        if key.ends_with(".idx") {
+            match self.index_failure.load(Ordering::SeqCst) {
+                1 => return Ok(None),
+                2 => anyhow::bail!("injected index read failure"),
+                _ => {}
+            }
+        }
         self.read_requests.fetch_add(1, Ordering::SeqCst);
         if key.ends_with(".batch") {
             self.read_batches.fetch_add(1, Ordering::SeqCst);
@@ -27,6 +47,10 @@ impl Bucket for ArchiveBucket {
         self.inner.get(key).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        ensure!(
+            !prefix.ends_with("index~") || self.index_failure.load(Ordering::SeqCst) != 3,
+            "injected index list failure"
+        );
         self.read_requests.fetch_add(1, Ordering::SeqCst);
         self.inner.list(prefix).await
     }
@@ -34,7 +58,7 @@ impl Bucket for ArchiveBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
         if key.ends_with(".checkpoint") {
             self.checkpoint_attempts.fetch_add(1, Ordering::SeqCst);
@@ -73,6 +97,8 @@ fn controlled(
         cleaned_reads: AtomicU64::new(0),
         read_requests: AtomicU64::new(0),
         read_batches: AtomicU64::new(0),
+        range_bytes: AtomicU64::new(0),
+        index_failure: AtomicU64::new(0),
         fail_checkpoint: AtomicBool::new(false),
         stalled_checkpoint: AtomicBool::new(false),
         checkpoint_attempts: AtomicU64::new(0),
@@ -108,6 +134,34 @@ async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
         }
     })
     .await?
+}
+
+#[tokio::test]
+#[ignore = "requires pinned Litestream on PATH"]
+async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
+    let (replication, history) = write_history(&f, &writer, 31).await?;
+    let sqlite = writer
+        .restore(&f.stream.object(31), history[30].clone())
+        .await?;
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            &sqlite.files,
+            sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":31})
+    );
+    assert_eq!(
+        f.zones
+            .iter()
+            .map(|zone| zone.range_reads.load(Ordering::SeqCst))
+            .sum::<u64>(),
+        1
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -168,10 +222,17 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         35
     );
 
+    archive.read_batches.store(0, Ordering::SeqCst);
+    archive.range_bytes.store(0, Ordering::SeqCst);
     let tail = reader
         .restore(&f.stream.object(34), history[33].clone())
         .await?;
     assert_eq!(tail.files.len(), 3);
+    assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        archive.range_bytes.load(Ordering::SeqCst),
+        (history[31].len() + history[32].len() + 2 * frame::HEADER) as u64
+    );
     assert_eq!(
         restored_fields(replication.as_ref(), &tail.files, tail.txid).await?,
         serde_json::json!({"count":34})
@@ -209,7 +270,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
             .compare_and_swap(
                 &key,
                 Some(stored.generation),
-                serde_json::to_vec(&checkpoint)?
+                crate::payload::encode(&checkpoint)?
             )
             .await?
     );
@@ -775,5 +836,115 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
         rescue.latest(&f.stream.prefix).await?,
         Some((f.stream.object(4), state(4, 1)?))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, archive) = controlled(&f, 64 * 1024, 60_000)?;
+    archive.fail_batch.store(true, Ordering::SeqCst);
+    writer.start(&f.stream).await?;
+    let mut snapshot = StateSnapshot::decode(&state(1, 1)?)?;
+    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    let bytes = snapshot.encode()?;
+    writer.put(&f.stream.object(1), bytes.clone()).await?;
+    writer.put(&f.stream.object(2), state(2, 1)?).await?;
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await?;
+    f.cleaned().await?;
+    assert!(
+        f.zones
+            .iter()
+            .any(|z| z.range_reads.load(Ordering::SeqCst) > 0)
+    );
+    let (reader, archive) = controlled(&f, 64 * 1024, 60_000)?;
+    assert_eq!(reader.get(&f.stream.object(1)).await?, Some(bytes.clone()));
+    assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        archive.range_bytes.load(Ordering::SeqCst),
+        (bytes.len() + frame::HEADER) as u64
+    );
+    assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));
+    Ok(())
+}
+
+#[tokio::test]
+async fn indexed_reads_fetch_only_the_requested_archived_record() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, _) = controlled(&f, 1, 10_000)?;
+    writer.start(&f.stream).await?;
+    for version in 1..=5 {
+        writer
+            .put(&f.stream.object(version), state(version, 1)?)
+            .await?;
+    }
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await?;
+    f.cleaned().await?;
+    let (reader, archive) = controlled(&f, 1, 10_000)?;
+    let result = reader.get(&f.stream.object(3)).await?;
+    assert_eq!(result, Some(state(3, 1)?));
+    assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        archive.range_bytes.load(Ordering::SeqCst),
+        (state(3, 1)?.len() + frame::HEADER) as u64
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_or_invalid_indexes_preserve_archive_recovery() -> Result<()> {
+    let f = Fixture::new()?;
+    let writer = f.store()?;
+    writer.start(&f.stream).await?;
+    for version in 1..=3 {
+        writer
+            .put(&f.stream.object(version), state(version, 1)?)
+            .await?;
+    }
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await?;
+    f.cleaned().await?;
+    let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    for failure in 1..=3 {
+        archive.index_failure.store(failure, Ordering::SeqCst);
+        assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));
+    }
+    archive.index_failure.store(0, Ordering::SeqCst);
+    let key = f
+        .archive
+        .list("")
+        .await?
+        .into_iter()
+        .find(|key| key.ends_with(".idx"))
+        .unwrap();
+    let original = f.archive.get(&key).await?.unwrap();
+    let mut wrong: serde_json::Value = serde_json::from_slice(&original.bytes)?;
+    wrong["records"][1]["start"] = 1.into();
+    for bytes in [
+        Bytes::from_static(b"invalid json"),
+        serde_json::to_vec(&wrong)?.into(),
+    ] {
+        let stored = f.archive.get(&key).await?.unwrap();
+        assert!(
+            f.archive
+                .compare_and_swap(&key, Some(stored.generation), bytes)
+                .await?
+        );
+        assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));
+    }
     Ok(())
 }

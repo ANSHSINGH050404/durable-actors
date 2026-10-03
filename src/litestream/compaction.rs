@@ -1,9 +1,9 @@
 use super::storage::LtxFile;
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::engine::general_purpose::STANDARD;
 use std::{
-    io::{self, Cursor, Read},
+    io::{self, Read},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -32,28 +32,38 @@ fn compact(files: Vec<LtxFile>, cancel: CancellationToken) -> Result<LtxFile> {
         .into_iter()
         .map(|file| {
             Ok(CompactionInput {
-                reader: Cursor::new(STANDARD.decode(file.data)?),
+                reader: base64::read::DecoderReader::new(
+                    std::io::Cursor::new(file.data),
+                    &STANDARD,
+                ),
                 cancel: cancel.clone(),
                 deadline,
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut data = Vec::new();
-    let header = terse_ltx::compact(readers, &mut data).context("compact LTX checkpoint")?;
+    let mut data = crate::payload::Spool::new();
+    let mut encoder = base64::write::EncoderWriter::new(&mut data, &STANDARD);
+    let header = terse_ltx::compact(readers, &mut encoder).context("compact LTX checkpoint")?;
     ensure!(
         header.min_txid == 1 && header.max_txid == last,
         "compacted checkpoint transaction mismatch"
     );
+    encoder.finish()?;
+    drop(encoder);
     Ok(LtxFile {
         level: 9,
         first: header.min_txid,
         last: header.max_txid,
-        data: STANDARD.encode(data),
+        data: crate::payload::Text::from_bytes(data.finish()?)?,
     })
 }
 
 struct CompactionInput {
-    reader: Cursor<Vec<u8>>,
+    reader: base64::read::DecoderReader<
+        'static,
+        base64::engine::general_purpose::GeneralPurpose,
+        std::io::Cursor<crate::payload::Text>,
+    >,
     cancel: CancellationToken,
     deadline: Instant,
 }

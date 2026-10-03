@@ -37,11 +37,29 @@ impl Bucket for FileBucket {
             .await
     }
 
+    async fn range(&self, key: &str, start: u64, length: u64) -> Result<Option<BucketObject>> {
+        use std::io::{Seek, SeekFrom};
+        let key = key.to_owned();
+        self.run(move |directory| {
+            let Some(mut file) = open(&object_path(directory, &key)?)? else {
+                return Ok(None);
+            };
+            let generation = read_generation(&mut file)?;
+            file.seek(SeekFrom::Start(
+                start.checked_add(8).context("range overflow")?,
+            ))?;
+            let bytes = crate::payload::copy(file.take(length))?;
+            ensure!(bytes.len() as u64 == length, "incomplete object range");
+            Ok(Some(BucketObject { generation, bytes }))
+        })
+        .await
+    }
+
     async fn compare_and_swap(
         &self,
         key: &str,
         expected: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
         let key = key.to_owned();
         self.run(move |directory| {
@@ -94,8 +112,7 @@ fn read(path: &Path) -> Result<Option<BucketObject>> {
         return Ok(None);
     };
     let generation = read_generation(&mut file)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let bytes = crate::payload::copy(file)?;
     Ok(Some(BucketObject { generation, bytes }))
 }
 

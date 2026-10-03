@@ -13,6 +13,23 @@ struct MemoryBucket {
 }
 #[async_trait]
 impl Bucket for MemoryBucket {
+    async fn range(
+        &self,
+        key: &str,
+        start: u64,
+        length: u64,
+    ) -> Result<Option<crate::bucket::BucketObject>> {
+        let Some(mut object) = self.get(key).await? else {
+            return Ok(None);
+        };
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+        anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+        object.bytes = object.bytes.slice(start as usize..end as usize);
+        Ok(Some(object))
+    }
+
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
         ensure!(
             !key.contains("/snapshots/")
@@ -31,7 +48,7 @@ impl Bucket for MemoryBucket {
         &self,
         key: &str,
         generation: Option<i64>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     ) -> Result<bool> {
         if key.contains("/owners/") {
             let delayed = self.delay_ownership.lock().unwrap().take();
@@ -133,7 +150,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
         .await?;
     let (version, loaded) = storage.load_actor_state(&actor, &host, 1).await?;
     assert_eq!(version, 1);
-    assert_eq!(loaded.as_ref(), snapshot.as_slice());
+    assert_eq!(loaded.as_ref(), snapshot.as_ref());
     assert!(
         storage
             .prepare_state_write(&actor, &host, 2, 1)
@@ -252,7 +269,7 @@ async fn canceling_an_ambiguous_write_permanently_fences_the_host() -> Result<()
     Ok(())
 }
 
-async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePlan, Vec<u8>)> {
+async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePlan, bytes::Bytes)> {
     let bucket = Arc::new(MemoryBucket::default());
     let storage = Arc::new(host_storage(bucket.clone()).await?);
     storage
@@ -319,7 +336,7 @@ async fn socket_authorization_checks_persisted_ownership_without_reading_snapsho
             .1;
         let mut record: serde_json::Value = serde_json::from_slice(&owner.bytes)?;
         record["lease"]["session_id"] = "replacement".into();
-        owner.bytes = serde_json::to_vec(&record)?;
+        owner.bytes = crate::payload::encode(&record)?;
         owner.generation += 1;
     }
     assert!(

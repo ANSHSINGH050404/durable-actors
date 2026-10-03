@@ -13,7 +13,7 @@ impl GcsSnapshots {
 impl SnapshotStore for GcsSnapshots {
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
         ensure!(
-            replace(&self.0, &object_name(object)?, None, bytes.to_vec()).await?,
+            replace(&self.0, &object_name(object)?, None, bytes).await?,
             "conflicting immutable checkpoint"
         );
         Ok(())

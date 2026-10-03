@@ -1,8 +1,9 @@
 use super::{DatabaseRestore, Replicator};
 use anyhow::{Context, Result, ensure};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use std::{
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -38,7 +39,7 @@ pub struct LtxFile {
     pub level: u8,
     pub first: u64,
     pub last: u64,
-    pub data: String,
+    pub data: crate::payload::Text,
 }
 
 impl LtxFile {
@@ -49,8 +50,13 @@ impl LtxFile {
             "invalid LTX transaction range"
         );
         ensure!(self.level != 9 || self.first == 1, "invalid LTX snapshot");
-        ensure!(!STANDARD.decode(&self.data)?.is_empty(), "empty LTX file");
+        let count = std::io::copy(&mut self.reader(), &mut std::io::sink())?;
+        ensure!(count > 0, "empty LTX file");
         Ok(())
+    }
+
+    pub(crate) fn reader(&self) -> impl std::io::Read {
+        base64::read::DecoderReader::new(self.data.as_ref(), &STANDARD)
     }
 
     fn path(&self, replica: &Path) -> PathBuf {
@@ -184,18 +190,20 @@ impl SqliteCapture {
             let Some((first, last)) = range(&name.to_string_lossy()) else {
                 continue;
             };
-            if last > through || (level == 0 && last <= self.published) {
+            if last > through || last <= self.published {
                 continue;
             }
-            files.push(LtxFile {
-                level,
-                first,
-                last,
-                data: STANDARD.encode(tokio::fs::read(entry.path()).await?),
-            });
+            files.push((first, last, entry.path()));
         }
-        files.sort_by_key(|file| (file.first, file.last));
-        Ok(files)
+        files.sort_by_key(|(first, last, _)| (*first, *last));
+        if level == 9 && files.len() > 1 {
+            files.drain(..files.len() - 1);
+        }
+        let mut captured = Vec::with_capacity(files.len());
+        for (first, last, path) in files {
+            captured.push(read_ltx(level, first, last, path).await?);
+        }
+        Ok(captured)
     }
 }
 
@@ -211,6 +219,24 @@ impl Drop for SqliteCapture {
             });
         }
     }
+}
+
+async fn read_ltx(level: u8, first: u64, last: u64, path: PathBuf) -> Result<LtxFile> {
+    tokio::task::spawn_blocking(move || {
+        let mut input = std::fs::File::open(path)?;
+        let mut spool = crate::payload::Spool::new();
+        let mut encoder = base64::write::EncoderWriter::new(&mut spool, &STANDARD);
+        std::io::copy(&mut input, &mut encoder)?;
+        encoder.finish()?;
+        drop(encoder);
+        Ok(LtxFile {
+            level,
+            first,
+            last,
+            data: crate::payload::Text::from_bytes(spool.finish()?)?,
+        })
+    })
+    .await?
 }
 
 fn range(name: &str) -> Option<(u64, u64)> {
@@ -248,7 +274,17 @@ async fn restore_database(
         file.validate()?;
         let path = file.path(&recovery);
         tokio::fs::create_dir_all(path.parent().context("LTX directory missing")?).await?;
-        tokio::fs::write(path, STANDARD.decode(&file.data)?).await?;
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut output = BufWriter::with_capacity(
+                crate::payload::IO_BUFFER_BYTES,
+                std::fs::File::create(path)?,
+            );
+            std::io::copy(&mut file.reader(), &mut output)?;
+            output.flush()?;
+            Ok(())
+        })
+        .await??;
     }
     restore
         .restore(&recovery, &directory.join("actor.sqlite"), txid)
