@@ -34,7 +34,7 @@ test("loads a prepared JavaScript artifact only inside the first execution Worke
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 21 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
             socket.end()
         })
     })
@@ -113,10 +113,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 21,
+            protocol: 23,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 21 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
         await startup
 
         customerSocket.write(
@@ -277,7 +277,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 21, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 23, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()

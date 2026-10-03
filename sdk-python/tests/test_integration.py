@@ -100,7 +100,6 @@ class Room(Actor[Payload, Payload, Payload]):
             initial = connection.receive(timeout=5)
             assert isinstance(initial, StateSnapshot)
             assert initial.state.count == 0
-            assert room.count_connections() == 1
             connection.send(models.Payload(value=3))
             message = connection.receive(timeout=5)
             assert isinstance(message, models.Payload)
@@ -108,6 +107,7 @@ class Room(Actor[Payload, Payload, Payload]):
             update = connection.receive(timeout=5)
             assert isinstance(update, StateUpdate)
             assert update.changes.count == 3
+            assert room.count_connections() == 1
             room.broadcast(models.Payload(value=17))
             assert connection.receive(timeout=5).value == 17
             with pytest.raises(TimeoutError):

@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 21;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 23;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -72,7 +72,7 @@ pub enum ActorSocketEvent {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActorSocketInvocation {
     pub request_id: String,
     pub actor: ActorKey,
@@ -91,6 +91,10 @@ pub enum ActorSocketTagMatch {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActorSocketEffect {
+    SetAutoResponse {
+        request: Option<String>,
+        response: Option<String>,
+    },
     StateSnapshot {
         connection_id: String,
         state: Value,
@@ -655,7 +659,7 @@ struct ExecutorDriver {
     sockets: Option<Arc<dyn ActorSocketSource>>,
     publishing: JoinSet<(u64, Result<()>)>,
     publishing_ids: HashSet<u64>,
-    loading_connections: JoinSet<(u64, Result<Vec<ActorSocketConnection>>)>,
+    loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
 }
 
@@ -681,7 +685,7 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
-                        ActorExecutorClientMessage::GetConnections { message_id } => self.load_connections(message_id)?,
+                        ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
                 }
@@ -701,7 +705,7 @@ impl ExecutorDriver {
                     self.connection_lookup_ids.remove(&message_id);
                     let (connections, error) = match result {
                         Ok(connections) => (connections, None),
-                        Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+                        Err(error) => (super::SocketLookup::Connections(Vec::new()), Some(format!("{error:#}"))),
                     };
                     self.outbound.send(ExecutorWrite {
                         bytes: encode_server_message(&ActorExecutorServerMessage::SocketConnections {
@@ -768,7 +772,7 @@ impl ExecutorDriver {
         Ok(())
     }
 
-    fn load_connections(&mut self, message_id: u64) -> Result<()> {
+    fn load_connections(&mut self, message_id: u64, query: super::SocketQuery) -> Result<()> {
         let pending = self
             .pending
             .get(&message_id)
@@ -787,7 +791,7 @@ impl ExecutorDriver {
             let result = async {
                 sockets
                     .context("actor connection lookup is unavailable")?
-                    .connections(&actor)
+                    .query(&actor, query)
                     .await
             }
             .await;
@@ -1039,7 +1043,7 @@ async fn remove_socket(path: &Path) -> Result<()> {
 enum ActorExecutorServerMessage<'a> {
     SocketConnections {
         message_id: u64,
-        connections: Vec<ActorSocketConnection>,
+        connections: super::SocketLookup,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -1078,6 +1082,8 @@ enum ActorExecutorClientMessage {
     },
     GetConnections {
         message_id: u64,
+        #[serde(default)]
+        query: super::SocketQuery,
     },
     ReadyForInvocation {
         message_id: u64,

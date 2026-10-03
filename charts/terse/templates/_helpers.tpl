@@ -1,3 +1,6 @@
+{{- define "terse.socketGatewayName" -}}
+{{- printf "%s-sockets" (include "terse.name" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}
 {{- define "terse.name" -}}
 {{- printf "%s-terse" .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

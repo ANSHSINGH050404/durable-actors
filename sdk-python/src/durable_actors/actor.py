@@ -97,7 +97,7 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
         """
         pass
 
-    def get_connections(self) -> list[ActorSocket[Metadata, Outgoing, Tag]]:
+    def get_connections(self, tag: Tag | None = None) -> list[ActorSocket[Metadata, Outgoing, Tag]]:
         """Return connected sockets from a synchronous actor method or hook.
 
         Use the returned handles only during the current invocation.
@@ -105,7 +105,22 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
         from .socket import current_scope
 
         scope = current_scope(self)
-        return scope.blocking(scope.get_connections)
+        return scope.blocking(lambda: scope.get_connections(tag))
+
+    def get_connection_count(self) -> int:
+        """Return the active connection count without fetching the connection list."""
+        from .socket import current_scope
+
+        scope = current_scope(self)
+        return scope.blocking(scope.get_connection_count)
+
+    def set_websocket_auto_response(
+        self, request: str | None = None, response: str | None = None
+    ) -> None:
+        """Match raw text frames without waking the actor. Omit both values to clear."""
+        from .socket import current_scope
+
+        current_scope(self).set_websocket_auto_response(request, response)
 
     def broadcast(
         self,

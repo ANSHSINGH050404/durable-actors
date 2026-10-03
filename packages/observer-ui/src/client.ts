@@ -21,6 +21,7 @@ interface ActorConnection {
 }
 
 interface ActorInventory {
+    connectionsComplete: boolean
     actors: { actorName: string; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
 }
 
@@ -152,6 +153,7 @@ function queryString(query: object): string {
 
 function isInventory(value: unknown): value is ActorInventory {
     if (!value || typeof value !== "object" || !("actors" in value) || !Array.isArray(value.actors)) return false
+    if (!("connectionsComplete" in value) || typeof value.connectionsComplete !== "boolean") return false
     return value.actors.every(
         row =>
             row &&

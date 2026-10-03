@@ -42,3 +42,7 @@ pub(crate) use self::{
     issuer::ActorJwtIssuer,
     service::ControlPlaneService,
 };
+
+mod socket_directory;
+pub(crate) mod socket_gateway;
+mod socket_inventory;

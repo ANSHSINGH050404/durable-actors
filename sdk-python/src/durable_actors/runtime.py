@@ -293,9 +293,7 @@ async def socket_arguments(event: Document, scope: SocketScope) -> list[Any]:
             event["reason"],
             event["was_clean"],
         ]
-    socket = next(
-        (item for item in await scope.get_connections() if item.id == event["connection_id"]), None
-    )
+    socket = scope.sockets.get(event["connection_id"])
     if socket is None or event["message"]["type"] != "text":
         raise ValueError("socket messages require an active connection and JSON text")
     return [socket, decode(scope.incoming, json.loads(event["message"]["data"]))]

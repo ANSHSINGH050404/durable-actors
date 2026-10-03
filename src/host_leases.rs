@@ -35,7 +35,6 @@ impl HostLeaseRequest {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ActivationInventory {
     pub resident: Option<bool>,
-    pub connections: Vec<crate::actor::ActorSocketConnection>,
     pub waiting: Option<Vec<WaitingOperation>>,
 }
 
@@ -72,7 +71,6 @@ pub trait HostLeaseRegistry: Send + Sync {
         &self,
         request: &HostLeaseRequest,
         residents: Option<&[ActorKey]>,
-        _sockets: &[ActorSocketInventory],
         _queues: Option<&[ActorQueueInventory]>,
     ) -> Result<HostLease> {
         self.register_with_residents(request, residents).await

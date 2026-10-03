@@ -606,34 +606,6 @@ async fn controlled_host() -> (
     (Arc::new(host), receiver, release)
 }
 
-#[tokio::test]
-async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<()> {
-    let (host, mut started, release) = controlled_host().await;
-    let activity = host.activity();
-    assert_eq!(invoke(&host, "warm").await?, completed(1));
-    assert_eq!(started.recv().await.as_deref(), Some("warm"));
-    let last_active = activity.borrow().last_active;
-
-    let caller = host.clone();
-    let running = tokio::spawn(async move { invoke(&caller, "first").await });
-    assert_eq!(started.recv().await.as_deref(), Some("first"));
-    host.evict_idle(last_active).await?;
-    assert!(activity.borrow().resident);
-    assert_eq!(activity.borrow().active, 1);
-
-    release.add_permits(1);
-    assert_eq!(running.await??, completed(2));
-    host.evict_idle(last_active).await?;
-    assert!(activity.borrow().resident);
-
-    let last_active = activity.borrow().last_active;
-    host.evict_idle(last_active).await?;
-    assert!(!activity.borrow().resident);
-    assert_eq!(invoke(&host, "after-eviction").await?, completed(3));
-    assert!(activity.borrow().resident);
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {
@@ -807,14 +779,14 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 }
 
 #[tokio::test]
-async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Result<()> {
+async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<()> {
     let (host, mut started, release) = controlled_host().await;
     let mut activity = host.activity();
     let caller = host.clone();
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
     assert_eq!(started.recv().await.as_deref(), Some("first"));
     let mut queued = Vec::new();
-    for index in 0..32 {
+    for index in 0..128 {
         let caller = host.clone();
         queued.push(tokio::spawn(async move {
             invoke(&caller, &format!("queued-{index}")).await
@@ -822,13 +794,9 @@ async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Resul
     }
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|activity| activity.active == 33),
+        activity.wait_for(|activity| activity.active == 129),
     )
     .await??;
-    assert_eq!(
-        invoke(&host, "overflow").await?,
-        ActorExecutionResult::HostUnavailable
-    );
     let other = host.invoke_actor(
         ActorInvocation {
             request_id: "other".into(),
@@ -1585,14 +1553,15 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         metadata: json!({ "userId": "user-1" }),
         tags: Vec::new(),
     };
+    let executor = Arc::new(IncrementingExecutor {
+        invocations: AtomicU64::new(0),
+    });
     let host = ActorHost::new(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
         },
-        Arc::new(IncrementingExecutor {
-            invocations: AtomicU64::new(0),
-        }),
+        executor.clone(),
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
@@ -1607,9 +1576,20 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         },
         connections: Vec::new(),
     };
+    let activity = host.activity();
+    authority.fenced.store(true, Ordering::SeqCst);
+    assert_eq!(
+        host.submit(ActorOperation::Socket(invocation("fenced")), 1)
+            .await?,
+        ActorExecutionResult::HostUnavailable
+    );
+    assert_eq!(executor.invocations.load(Ordering::SeqCst), 0);
+    authority.fenced.store(false, Ordering::SeqCst);
+    let before_connect = activity.borrow().last_active;
     let result = host
         .submit(ActorOperation::Socket(invocation("committed")), 1)
         .await?;
+    assert!(activity.borrow().last_active > before_connect);
 
     assert!(matches!(
         result,

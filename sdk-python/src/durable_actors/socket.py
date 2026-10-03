@@ -25,7 +25,9 @@ T = TypeVar("T")
 
 class Effects(Protocol):
     async def publish(self, effects: list[Document]) -> None: ...
-    async def get_connections(self) -> list[Document]: ...
+    async def get_connections(
+        self, tag: str | None = None, count_only: bool = False
+    ) -> list[Document] | int: ...
     def admit(self) -> None: ...
 
 
@@ -60,7 +62,7 @@ class ActorSocket(Generic[Metadata, Outgoing, Tag]):
 
         Assign a replacement value to save changes. Mutating the returned value
         in place does not publish a metadata update. Encoded metadata is limited
-        to 64 KiB.
+        to 16 KiB.
         """
         return self._metadata
 
@@ -68,8 +70,8 @@ class ActorSocket(Generic[Metadata, Outgoing, Tag]):
     def metadata(self, value: Metadata) -> None:
         """Validate and publish replacement connection metadata."""
         encoded = encode(self._scope.metadata, value)
-        if len(json.dumps(encoded, separators=(",", ":")).encode()) > 64 * 1024:
-            raise ValueError("socket metadata exceeds 64 KiB")
+        if len(json.dumps(encoded, separators=(",", ":")).encode()) > 16 * 1024:
+            raise ValueError("socket metadata exceeds 16 KiB")
         self._scope.push(
             {
                 "type": "set_metadata",
@@ -87,7 +89,7 @@ class ActorSocket(Generic[Metadata, Outgoing, Tag]):
     def send(self, message: Outgoing) -> None:
         """Queue a value matching the actor's outgoing application-message type.
 
-        Encoded messages are limited to 16 MiB. The top-level message types
+        Incoming WebSocket messages are limited to 32 MiB. The top-level message types
         "state" and "state_update" are reserved for emitted state.
         """
         if self._state == "closed":
@@ -112,8 +114,8 @@ class ActorSocket(Generic[Metadata, Outgoing, Tag]):
     def set_tags(self, *tags: Tag) -> None:
         """Replace tags used by Actor.broadcast() selectors.
 
-        Tags are deduplicated. At most 128 nonempty tags are allowed, with up to
-        256 characters per tag and 8 KiB of UTF-8 data in total.
+        Tags are deduplicated. At most 10 nonempty tags are allowed, with up to
+        256 characters per tag.
         """
         checked = self._scope.validate_tags(tags)
         self._scope.push({"type": "set_tags", "connection_id": self.id, "tags": checked})
@@ -150,13 +152,14 @@ class SocketScope:
             TypeAdapter(hint) for hint in types
         )
         self.effects = effects
-        self.connections = connections
         self.live = live
         self.active = True
         self.pending: list[Document] = []
         self.output: asyncio.Task[None] | None = None
         self.failure: Exception | None = None
         self.sockets: dict[str, ActorSocket[Any, Any, Any]] = {}
+        for connection in connections or []:
+            self.socket(connection)
 
     def blocking(self, operation: Callable[[], Coroutine[Any, Any, T]]) -> T:
         if get_ident() == self.thread:
@@ -181,26 +184,50 @@ class SocketScope:
         if self.output is not None:
             self.output.cancel()
 
-    async def get_connections(self) -> list[ActorSocket[Any, Any, Any]]:
+    async def get_connections(self, tag: str | None = None) -> list[ActorSocket[Any, Any, Any]]:
         self.ensure_active()
-        connections = (
-            self.connections
-            if self.connections is not None
-            else await self.effects.get_connections()
-        )
-        return [self.socket(connection) for connection in connections]
+        if tag is not None:
+            validate_tags((tag,))
+        connections = await self.effects.get_connections(tag=tag)
+        if isinstance(connections, int):
+            raise ValueError("expected socket list")
+        sockets = [self.socket(connection) for connection in connections]
+        ids = {socket.id for socket in sockets}
+        return sockets + [
+            socket
+            for socket in self.sockets.values()
+            if socket.state == "connecting"
+            and socket.id not in ids
+            and (tag is None or tag in socket.tags)
+        ]
+
+    async def get_connection_count(self) -> int:
+        self.ensure_active()
+        count = await self.effects.get_connections(count_only=True)
+        if not isinstance(count, int):
+            raise ValueError("expected socket count")
+        return count + sum(socket.state == "connecting" for socket in self.sockets.values())
+
+    def set_websocket_auto_response(
+        self, request: str | None = None, response: str | None = None
+    ) -> None:
+        if (request is None) != (response is None):
+            raise ValueError("automatic response requires both request and response")
+        if any(value is not None and len(value) > 2048 for value in (request, response)):
+            raise ValueError("automatic response exceeds 2048 characters")
+        self.push({"type": "set_auto_response", "request": request, "response": response})
 
     def socket(
         self, connection: Document, state: SocketState = "open"
     ) -> ActorSocket[Any, Any, Any]:
-        if connection["id"] not in self.sockets:
+        if state != "open" or connection["id"] not in self.sockets:
             self.sockets[connection["id"]] = ActorSocket(connection, self, state)
         return self.sockets[connection["id"]]
 
     def broadcast(
         self, message: Any, except_ids: tuple[str, ...], tags: tuple[str, ...], tag_match: str
     ) -> None:
-        if tag_match not in ("all", "any") or len(except_ids) > 128:
+        if tag_match not in ("all", "any"):
             raise ValueError("invalid broadcast selectors")
         self.push(
             {
@@ -229,11 +256,6 @@ class SocketScope:
         self.ensure_active()
         if self.failure:
             raise self.failure
-        if (
-            len(self.pending) >= 512
-            or len(json.dumps([*self.pending, effect]).encode()) > 24 * 1024 * 1024
-        ):
-            raise ValueError("socket output queue is full")
         self.pending.append(effect)
         if self.live and self.output is None:
             self.output = asyncio.create_task(self.drain())
@@ -276,10 +298,6 @@ def current_scope(instance: object) -> SocketScope:
 
 def validate_tags(tags: tuple[str, ...]) -> list[str]:
     unique = list(dict.fromkeys(tags))
-    if (
-        len(unique) > 128
-        or any(not tag or len(tag) > 256 for tag in unique)
-        or sum(len(tag.encode()) for tag in unique) > 8192
-    ):
+    if len(unique) > 10 or any(not tag or len(tag) > 256 for tag in unique):
         raise ValueError("invalid socket tags")
     return unique

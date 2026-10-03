@@ -1,6 +1,6 @@
 import type { ActorInventory } from "./client.js"
 
-export type SocketSessionStatus = "open" | "closed" | "lost"
+export type SocketSessionStatus = "open" | "closed" | "lost" | "unknown"
 
 export interface SocketSession {
     connectionId: string
@@ -42,7 +42,7 @@ export function socketSessions(rows: SocketSessionRow[], inventory: ActorInvento
         for (const instance of actor.instances) for (const connection of instance.connections) live.set(JSON.stringify([actor.actorName, instance.actorId, connection.id]), connection.metadata)
     const sessions: SocketSession[] = rows.map(row => {
         const key = JSON.stringify([row.actorName, row.actorId, row.connectionId])
-        const status: SocketSessionStatus = row.closedAtMs !== null ? "closed" : live.has(key) ? "open" : "lost"
+        const status: SocketSessionStatus = row.closedAtMs !== null ? "closed" : live.has(key) ? "open" : inventory?.connectionsComplete === false ? "unknown" : "lost"
         return status === "open" ? { ...row, status, metadata: live.get(key) } : { ...row, status }
     })
     const known = new Set(sessions.map(session => JSON.stringify([session.actorName, session.actorId, session.connectionId])))
@@ -73,7 +73,7 @@ export function socketSessions(rows: SocketSessionRow[], inventory: ActorInvento
 export function sessionDuration(session: Pick<SocketSession, "status" | "openedAtMs" | "closedAtMs" | "lastSeenMs">, now: number): SocketDuration | null {
     if (session.openedAtMs === null) return null
     const end = session.status === "closed" ? session.closedAtMs! : session.status === "open" ? Math.max(now, session.openedAtMs) : session.lastSeenMs!
-    return { ms: Math.max(0, end - session.openedAtMs), lowerBound: session.status === "lost" }
+    return { ms: Math.max(0, end - session.openedAtMs), lowerBound: session.status === "lost" || session.status === "unknown" }
 }
 
 export function sessionSummary(sessions: SocketSession[], now: number) {
@@ -83,6 +83,7 @@ export function sessionSummary(sessions: SocketSession[], now: number) {
         total: sessions.length,
         open: sessions.filter(session => session.status === "open").length,
         lost: sessions.filter(session => session.status === "lost").length,
+        closed: sessions.filter(session => session.status === "closed").length,
         median: percentile(
             durations.map(duration => duration.ms),
             0.5

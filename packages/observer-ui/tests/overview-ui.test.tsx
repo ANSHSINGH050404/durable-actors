@@ -15,6 +15,7 @@ const { requestSummary, tracesInRange } = await import("../src/overview-data.js"
 afterEach(cleanup)
 
 const inventory: ActorInventory = {
+    connectionsComplete: true,
     actors: [
         { actorName: "Room", live: 2, dormant: 1, unknown: 0, instances: [{ actorId: "general", status: "live", connections: [{ id: "socket-a", metadata: null }] }] },
         { actorName: "Counter", live: 0, dormant: 0, unknown: 1, instances: [] }
@@ -62,12 +63,12 @@ const page: RequestTracePage = {
     ]
 }
 
-test("overview uses live inventory and retained traces, filters classes, and opens an actor", async () => {
+test("overview retains partial inventory and traces, filters classes, and opens an actor", async () => {
     let receive: (value: RequestTracePage) => void = () => {}
     let requestSignal: AbortSignal | undefined
     let selected = ""
     const client: ObserverClient = {
-        listActors: async () => inventory,
+        listActors: async () => ({ ...inventory, connectionsComplete: false }),
         checkConnection: async () => {},
         watchRequests: async (next, signal) => {
             receive = next
@@ -77,6 +78,7 @@ test("overview uses live inventory and retained traces, filters classes, and ope
     }
     const view = render(<Overview client={client} onSelectActor={actor => (selected = actor)} />)
     await view.findByRole("button", { name: "Inspect Room" })
+    assert.match(view.getByRole("status").textContent!, /Connection inventory incomplete/)
     assert.equal(view.getByRole("combobox", { name: "Filter by residency" }).getAttribute("data-slot"), "native-select")
     assert.equal(view.getByRole("table", { name: "Actor class metrics" }).getAttribute("data-slot"), "table")
     const scrollRegion = view.getByRole("region", { name: "Actor class metrics" })

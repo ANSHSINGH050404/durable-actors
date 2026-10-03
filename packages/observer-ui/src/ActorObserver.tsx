@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react"
 
 import { Box, CircleHelp, RefreshCw, Search, Unplug } from "lucide-react"
 
+import { ConnectionInventoryNotice } from "./ConnectionInventoryNotice.js"
 import { FilterCombobox } from "./FilterCombobox.js"
 import type { FilterSuggestion } from "./FilterCombobox.js"
 import { RequestObserver } from "./RequestObserver.js"
@@ -121,6 +122,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                 </div>
             )}
             {!inventory && !failed && <InventorySkeleton />}
+            <ConnectionInventoryNotice inventory={inventory} />
             {inventory && (
                 <>
                     {selectedActorName !== undefined ? (
@@ -128,7 +130,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                             <>
                                 {selectedInstanceId === undefined && (
                                     <InventorySummary
-                                        inventory={{ actors: [selectedActor] }}
+                                        inventory={{ ...inventory, actors: [selectedActor] }}
                                         actorName={selectedActorName}
                                         queueWait={waits.supported ? (totalWait ?? null) : undefined}
                                         range={range}

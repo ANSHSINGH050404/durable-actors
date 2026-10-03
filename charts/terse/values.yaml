@@ -30,6 +30,17 @@ controlPlane:
       memory: 1Gi
     limits:
       memory: 2Gi
+sockets:
+  maxConnectionsPerActor: 32768
+  dedicatedGateway: false
+  replicaCount: 2
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      memory: 2Gi
 pool:
   idle: 64
   fleetMaximum: 256

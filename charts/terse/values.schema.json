@@ -160,6 +160,34 @@
       "required": [
         "enabled"
       ]
+    },
+    "sockets": {
+      "type": "object",
+      "properties": {
+        "maxConnectionsPerActor": {
+          "type": "integer",
+          "maximum": 32768,
+          "minimum": 1
+        },
+        "dedicatedGateway": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "maxConnectionsPerActor",
+        "dedicatedGateway",
+        "replicaCount"
+      ]
     }
   },
   "required": [

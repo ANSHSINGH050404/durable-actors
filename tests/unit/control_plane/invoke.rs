@@ -90,11 +90,25 @@ async fn combined_invocation_authenticates_and_validates_requests() -> Result<()
 }
 
 #[tokio::test]
-async fn combined_invocation_returns_pre_dispatch_rejections_for_the_client_retry_budget()
--> Result<()> {
-    for reason in ["stale_owner", "host_unavailable", "upstream_not_reached"] {
-        let outcome = json!({"type":"not_executed", "reason":reason});
-        let fixture = Fixture::start(vec![(StatusCode::OK, outcome.clone())]).await?;
+async fn combined_invocation_retries_known_non_execution_through_handoff() -> Result<()> {
+    for (status, outcome) in [
+        (
+            StatusCode::OK,
+            json!({"type":"not_executed", "reason":"stale_owner"}),
+        ),
+        (
+            StatusCode::OK,
+            json!({"type":"not_executed", "reason":"host_unavailable"}),
+        ),
+        (
+            StatusCode::OK,
+            json!({"type":"not_executed", "reason":"upstream_not_reached"}),
+        ),
+        (StatusCode::UNAUTHORIZED, json!({})),
+    ] {
+        let mut replies = vec![(status, outcome); 4];
+        replies.push((StatusCode::OK, json!({"type":"completed", "result":42})));
+        let fixture = Fixture::start(replies).await?;
         let reply: Value = fixture
             .call(
                 "api-key",
@@ -103,39 +117,18 @@ async fn combined_invocation_returns_pre_dispatch_rejections_for_the_client_retr
             .await?
             .json()
             .await?;
-        assert_eq!(reply["outcome"], outcome);
-        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reply["outcome"], json!({"type":"completed", "result":42}));
+        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 5);
+        assert!(
+            fixture
+                .host
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, request)| request["requestId"] == "same-id")
+        );
     }
-    let fixture = Fixture::start(vec![(StatusCode::UNAUTHORIZED, json!({}))]).await?;
-    let reply: Value = fixture
-        .call(
-            "api-key",
-            json!({"requestId":"same-id", "method":"clear", "args":[]}),
-        )
-        .await?
-        .json()
-        .await?;
-    assert_eq!(reply["outcome"], json!({"type":"unauthenticated"}));
-    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
-
-    let mut fixture = Fixture::start(vec![]).await?;
-    let host = fixture.servers.pop().unwrap();
-    host.abort();
-    assert!(host.await.unwrap_err().is_cancelled());
-    let reply: Value = fixture
-        .call(
-            "api-key",
-            json!({"requestId":"refused", "method":"clear", "args":[]}),
-        )
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(
-        reply["outcome"],
-        json!({"type":"not_executed", "reason":"upstream_not_reached"})
-    );
-    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -357,6 +350,14 @@ impl Fixture {
         service.gateway = Some(super::super::super::gateway::Gateway::new(
             &issuer,
             origin.clone(),
+            super::super::super::socket_gateway::SocketGateway::start(
+                origin.clone(),
+                Arc::new(super::super::super::socket_directory::MemorySocketDirectory::default()),
+                32768,
+                true,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?,
         )?);
         let routes = super::super::super::public_api::router(service, admin.clone());
         let server = tokio::spawn(async move { axum::serve(listener, routes).await });

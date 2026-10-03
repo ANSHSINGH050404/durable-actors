@@ -69,6 +69,22 @@ Actor-scoped credentials cover only the ownership object, the actor's log and ar
 
 ## Capacity and deployment
 
+WebSockets can use independently sized replicas of the same control-plane image:
+
+```yaml
+sockets:
+  dedicatedGateway: true
+  replicaCount: 4
+  maxConnectionsPerActor: 32768
+  resources:
+    requests: {cpu: "1", memory: 1Gi}
+    limits: {memory: 2Gi}
+```
+
+This adds a `-sockets` Deployment, Service, disruption budget, and GKE backend/health policies. The HTTPS route sends exact `/v1/socket` requests to those replicas; other routes and internal host RPCs use the original control-plane Service. `sockets.nodeSelector` controls placement separately. Isolation is disabled by default. With an external ingress (`gateway.enabled: false`), configure the equivalent WebSocket route yourself.
+
+The connection limit applies per actor at its socket-owning gateway, even with isolation disabled. PostgreSQL coordinates room ownership across replicas; ordinary control-plane pods are ineligible when dedicated gateways are enabled. See the [runtime limits](../../docs/reference/configuration.md#websockets). Scale socket replicas for aggregate connections and traffic; a busy individual actor still executes on one host. Changing the route or replacing gateway pods disconnects their existing sockets. Idle sandbox shutdown preserves connections, metadata, tags, and automatic responses at the gateway. The next application message activates a replacement sandbox.
+
 The chart defaults to two control-plane replicas. The default pool keeps 64 ready pods per image and region, shared across those replicas, with 0.5 CPU and 256 MiB per pod. `pool.fleetMaximum` bounds idle spares, not active actors. An exhausted pool creates new pods. State records above 4 MiB use Standard; large state increases memory and transfer costs.
 
 To keep node capacity available for new hosts and spare replenishment, the chart enables an active [GKE CapacityBuffer](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-capacity-buffer) with these defaults:

@@ -220,7 +220,7 @@ class Client:
         Args:
             actor_name: Exported actor class name.
             actor_id: Identity of the actor instance.
-            metadata: JSON-compatible connection metadata, limited to 64 KiB.
+            metadata: JSON-compatible connection metadata, limited to 16 KiB.
             authorization_lifetime_ms: Duration from 1,000 to 86,400,000
                 milliseconds; defaults to 15 minutes.
             home_region: Placement preference overriding the client default.
@@ -237,8 +237,8 @@ class Client:
             or not 1000 <= authorization_lifetime_ms <= 86400000
         ):
             raise ValueError("authorization lifetime must be between one second and one day")
-        if len(json.dumps(metadata, allow_nan=False).encode()) > 65536:
-            raise ValueError("socket metadata exceeds 64 KiB")
+        if len(json.dumps(metadata, allow_nan=False).encode()) > 16384:
+            raise ValueError("socket metadata exceeds 16 KiB")
         response = self._http.post(
             self.origin + self.actor_path(actor_name, actor_id) + "/find-websocket",
             headers=self.headers,

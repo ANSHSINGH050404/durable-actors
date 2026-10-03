@@ -14,7 +14,7 @@ type Completion = (u64, ActorRequest, Execution);
 pub(super) async fn run(
     object: ActorStorageKey,
     runtime: ActorRuntime,
-    mut requests: mpsc::Receiver<ActorRequest>,
+    mut requests: mpsc::UnboundedReceiver<ActorRequest>,
     completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
     mut admission: watch::Receiver<()>,
@@ -262,7 +262,6 @@ impl Mailbox {
         let _ = self
             .completed
             .send(ActorCompletion {
-                resets_idle_timer: request.operation.resets_idle_timer(),
                 object: self.object.clone(),
                 reply: request.reply,
                 result,

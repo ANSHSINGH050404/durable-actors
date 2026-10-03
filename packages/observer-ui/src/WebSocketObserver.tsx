@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { RefreshCw } from "lucide-react"
 
+import { ConnectionInventoryNotice } from "./ConnectionInventoryNotice.js"
 import { FilterCombobox } from "./FilterCombobox.js"
 import type { FilterSuggestion } from "./FilterCombobox.js"
 import { SocketTimeline, durationLabel, shortId, statusLabel } from "./SocketTimeline.js"
@@ -106,6 +107,7 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
                 </p>
             )}
             <SummaryTiles summary={summary} ready={ready} history={history.supported && !!history.rows} range={range} />
+            <ConnectionInventoryNotice inventory={inventory} />
             <div className="socket-filterbar">
                 <FilterCombobox label="Filter connections" placeholder="Filter by connection, actor, instance, or host…" value={query} onChange={setQuery} suggestions={suggestions} />
                 <NativeSelect aria-label="Filter by status" size="sm" value={status} onChange={event => setStatus(event.target.value as SocketSessionStatus | "all")}>
@@ -113,6 +115,7 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
                     <NativeSelectOption value="open">Open</NativeSelectOption>
                     <NativeSelectOption value="closed">Closed</NativeSelectOption>
                     <NativeSelectOption value="lost">Lost</NativeSelectOption>
+                    <NativeSelectOption value="unknown">Unknown</NativeSelectOption>
                 </NativeSelect>
             </div>
             {history.supported && (
@@ -244,7 +247,7 @@ function SummaryTiles({ summary, ready, history, range }: { summary: ReturnType<
                     <span>live connections</span>
                 </div>
                 <div className="overview-metric-foot">
-                    <span>Latest host report</span>
+                    <span>Latest gateway report</span>
                 </div>
             </section>
             <section className="overview-metric">
@@ -255,7 +258,7 @@ function SummaryTiles({ summary, ready, history, range }: { summary: ReturnType<
                 </div>
                 <div className="overview-metric-foot">
                     <span>
-                        <b>{history ? (summary.total - summary.open - summary.lost).toLocaleString() : "—"}</b> closed
+                        <b>{history ? summary.closed.toLocaleString() : "—"}</b> closed
                     </span>
                     <span>
                         <b>{history ? summary.lost.toLocaleString() : "—"}</b> lost
@@ -347,6 +350,7 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
 function SessionDetails({ session, now, onSelectActor }: { session: SocketSession; now: number; onSelectActor?: (actorName: string) => void }) {
     const fields: Record<string, string> = {
         Status: session.status === "lost" ? "Lost — no disconnect recorded" : statusLabel(session.status),
+        ...(session.status === "unknown" ? { Inventory: "Gateway unavailable; connection status unconfirmed" } : {}),
         Connection: session.connectionId,
         "Actor class": session.actorName,
         "Instance ID": session.actorId,

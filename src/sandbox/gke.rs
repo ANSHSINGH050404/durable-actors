@@ -11,12 +11,10 @@ pub(crate) use kubernetes::GkeConfig;
 pub(crate) struct GkeSandboxProvider {
     cluster: Arc<dyn SandboxCluster>,
     assignment: Arc<dyn HostAssignment>,
-    public_origin: String,
 }
 
 impl GkeSandboxProvider {
     pub async fn new(config: GkeConfig) -> Result<Self> {
-        let public_origin = config.public_origin.clone();
         let cluster = Arc::new(kubernetes::Kubernetes::new(
             kube::Client::try_default().await?,
             config.clone(),
@@ -29,7 +27,6 @@ impl GkeSandboxProvider {
                     .redirect(reqwest::redirect::Policy::none())
                     .build()?,
             )),
-            public_origin,
         })
     }
 
@@ -128,12 +125,6 @@ impl SandboxProvider for GkeSandboxProvider {
         }
     }
 
-    async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
-        Ok(SocketCredentials {
-            url: self.public_origin.clone(),
-        })
-    }
-
     async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
         anyhow::bail!("GKE hosts must be retired through the durable spare registry")
     }
@@ -172,10 +163,6 @@ fn assignment_environment(
         (
             "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE".into(),
             request.invocation_jwt_audience.clone(),
-        ),
-        (
-            "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE".into(),
-            request.socket_jwt_audience.clone(),
         ),
         ("DURABLE_ACTORS_HOST_ID".into(), request.host_id.to_string()),
         (

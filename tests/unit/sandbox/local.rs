@@ -36,19 +36,6 @@ async fn warm_host_lookups_do_not_wait_for_another_startup() -> Result<()> {
     let starting = fixture.start(&cold);
     fixture.started(&cold).await?;
     tokio::time::timeout(DEADLINE, fixture.provider.wait_ready(&warm.host_id)).await??;
-    let credentials = tokio::time::timeout(
-        DEADLINE,
-        fixture
-            .provider
-            .socket_credentials(&super::super::SocketCredentialsRequest {
-                resource_id: None,
-                canonical_region: warm.canonical_region.clone(),
-                host_id: warm.host_id.clone(),
-                session_id: warm.session_id.clone(),
-            }),
-    )
-    .await??;
-    assert_eq!(credentials.url, "http://127.0.0.1:7101");
     fixture.release(&cold)?;
     starting.await??;
     fixture.provider.shutdown().await;
@@ -308,7 +295,6 @@ impl LocalFixture {
             control_plane_url: "http://127.0.0.1:7100".into(),
             jwt_issuer: "local".into(),
             invocation_jwt_audience: "local".into(),
-            socket_jwt_audience: "local:websocket".into(),
             image_ref: "local".into(),
             working_directory: self.directory.path().display().to_string(),
             actor_entrypoint: None,
@@ -409,7 +395,6 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         control_plane_url: "http://127.0.0.1:7100".into(),
         jwt_issuer: "local".into(),
         invocation_jwt_audience: "local".into(),
-        socket_jwt_audience: "local:websocket".into(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
         actor_entrypoint: None,

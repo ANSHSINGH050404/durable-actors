@@ -3,18 +3,67 @@ use crate::actor::{
     ActorSocketTagMatch,
 };
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{RwLock, mpsc, watch};
-use tokio_util::sync::CancellationToken;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+use tokio::sync::{RwLock, mpsc};
 
 pub(crate) mod browser;
-const MAX_CONNECTIONS_PER_ACTOR: usize = 128;
+pub(crate) mod operations;
+pub(crate) const DEFAULT_MAX_CONNECTIONS: usize = 32768;
+pub(crate) const READ_BUFFER_BYTES: usize = 8 * 1024;
+pub(crate) const WRITE_BUFFER_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+
+pub(crate) fn max_connections(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> anyhow::Result<usize> {
+    let value = get("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(DEFAULT_MAX_CONNECTIONS);
+    anyhow::ensure!(
+        (1..=DEFAULT_MAX_CONNECTIONS).contains(&value),
+        "DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS must be between 1 and 32768"
+    );
+    Ok(value)
+}
+
+pub(crate) fn message_too_large(error: &axum::Error) -> bool {
+    use std::error::Error;
+    matches!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<tokio_tungstenite::tungstenite::Error>()),
+        Some(tokio_tungstenite::tungstenite::Error::Capacity(_))
+    )
+}
 
 #[derive(Clone)]
 pub(crate) struct SocketRegistry {
-    inventory_changes: watch::Sender<()>,
-    entries: Arc<RwLock<HashMap<ActorKey, HashMap<String, RegisteredSocket>>>>,
-    activity: watch::Sender<usize>,
+    max_connections: usize,
+    entries: Arc<RwLock<HashMap<ActorKey, RoomSockets>>>,
+}
+
+#[derive(Default)]
+struct RoomSockets {
+    connections: HashMap<String, RegisteredSocket>,
+    active: usize,
+    auto_response: Option<(String, String)>,
+}
+
+impl std::ops::Deref for RoomSockets {
+    type Target = HashMap<String, RegisteredSocket>;
+    fn deref(&self) -> &Self::Target {
+        &self.connections
+    }
+}
+
+impl std::ops::DerefMut for RoomSockets {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connections
+    }
 }
 
 #[derive(Clone)]
@@ -34,22 +83,30 @@ pub(crate) enum OutboundMessage {
 impl Default for SocketRegistry {
     fn default() -> Self {
         Self {
-            inventory_changes: watch::channel(()).0,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
             entries: Default::default(),
-            activity: watch::channel(0).0,
         }
     }
 }
 
 impl SocketRegistry {
-    pub(crate) fn inventory_changes(&self) -> watch::Receiver<()> {
-        self.inventory_changes.subscribe()
+    pub(crate) fn with_max_connections(max_connections: usize) -> Self {
+        Self {
+            max_connections,
+            ..Self::default()
+        }
     }
 
-    pub(crate) async fn inventory(&self) -> Vec<crate::host_leases::ActorSocketInventory> {
+    pub(crate) async fn inventory(
+        &self,
+        project: &str,
+    ) -> Vec<crate::host_leases::ActorSocketInventory> {
         let entries = self.entries.read().await;
         let mut inventory = Vec::new();
-        for (actor, sockets) in entries.iter() {
+        for (actor, sockets) in entries
+            .iter()
+            .filter(|(actor, _)| actor.project_id == project)
+        {
             let mut connections: Vec<_> = sockets
                 .values()
                 .filter(|entry| entry.open)
@@ -69,20 +126,15 @@ impl SocketRegistry {
         inventory
     }
 
-    pub(crate) fn activity(&self) -> watch::Receiver<usize> {
-        self.activity.subscribe()
-    }
-
     pub(crate) async fn insert(
         &self,
         actor: &ActorKey,
         connection: ActorSocketConnection,
         outbound: SocketSender,
-        _trigger_id: Option<String>,
     ) -> bool {
         let mut entries = self.entries.write().await;
         let connections = entries.entry(actor.clone()).or_default();
-        if connections.len() >= MAX_CONNECTIONS_PER_ACTOR {
+        if connections.len() >= self.max_connections {
             return false;
         }
         connections.insert(
@@ -94,8 +146,6 @@ impl SocketRegistry {
                 state_ready: false,
             },
         );
-        self.activity
-            .send_replace(entries.values().map(HashMap::len).sum());
         true
     }
 
@@ -106,33 +156,57 @@ impl SocketRegistry {
     ) -> Option<ActorSocketConnection> {
         let mut entries = self.entries.write().await;
         let connections = entries.get_mut(actor)?;
-        let removed = connections
-            .remove(connection_id)
-            .map(|entry| entry.connection);
-        if connections.is_empty() {
+        let removed = connections.remove(connection_id).map(|entry| {
+            if entry.open {
+                connections.active -= 1;
+            }
+            entry.connection
+        });
+        if connections.is_empty() && connections.auto_response.is_none() {
             entries.remove(actor);
-        }
-        self.activity
-            .send_replace(entries.values().map(HashMap::len).sum());
-        if removed.is_some() {
-            self.inventory_changes.send_replace(());
         }
         removed
     }
 
-    pub(crate) async fn connections(&self, actor: &ActorKey) -> Vec<ActorSocketConnection> {
+    pub(crate) async fn connections_with_tag(
+        &self,
+        actor: &ActorKey,
+        tag: Option<&str>,
+    ) -> Vec<ActorSocketConnection> {
         self.entries
             .read()
             .await
             .get(actor)
-            .map(|entries| {
-                entries
-                    .values()
-                    .filter(|entry| entry.open)
+            .map(|room| {
+                room.values()
+                    .filter(|entry| {
+                        entry.open
+                            && tag.is_none_or(|tag| {
+                                entry.connection.tags.iter().any(|value| value == tag)
+                            })
+                    })
                     .map(|entry| entry.connection.clone())
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub(crate) async fn count(&self, actor: &ActorKey) -> usize {
+        self.entries
+            .read()
+            .await
+            .get(actor)
+            .map_or(0, |room| room.active)
+    }
+
+    pub(crate) async fn auto_response(&self, actor: &ActorKey, message: &str) -> Option<String> {
+        self.entries
+            .read()
+            .await
+            .get(actor)
+            .and_then(|room| room.auto_response.as_ref())
+            .filter(|(request, _)| request == message)
+            .map(|(_, response)| response.clone())
     }
 
     pub(crate) async fn prepare_event(
@@ -142,20 +216,30 @@ impl SocketRegistry {
     ) -> (ActorSocketEvent, Vec<ActorSocketConnection>) {
         match event {
             ActorSocketEvent::Connect { connection } => {
-                let mut connections = self.connections(actor).await;
-                connections.push(connection.clone());
+                let connections = vec![connection.clone()];
                 (ActorSocketEvent::Connect { connection }, connections)
             }
             ActorSocketEvent::Message {
                 connection_id,
                 message,
-            } => (
-                ActorSocketEvent::Message {
-                    connection_id,
-                    message,
-                },
-                self.connections(actor).await,
-            ),
+            } => {
+                let connections = self
+                    .entries
+                    .read()
+                    .await
+                    .get(actor)
+                    .and_then(|entries| entries.get(&connection_id))
+                    .map(|entry| entry.connection.clone())
+                    .into_iter()
+                    .collect();
+                (
+                    ActorSocketEvent::Message {
+                        connection_id,
+                        message,
+                    },
+                    connections,
+                )
+            }
             ActorSocketEvent::Disconnect {
                 connection,
                 code,
@@ -173,7 +257,7 @@ impl SocketRegistry {
                         reason,
                         was_clean,
                     },
-                    self.connections(actor).await,
+                    vec![],
                 )
             }
         }
@@ -187,6 +271,14 @@ impl SocketRegistry {
 
     async fn apply_one(&self, actor: &ActorKey, effect: ActorSocketEffect) {
         match effect {
+            ActorSocketEffect::SetAutoResponse { request, response } => {
+                self.entries
+                    .write()
+                    .await
+                    .entry(actor.clone())
+                    .or_default()
+                    .auto_response = request.zip(response);
+            }
             ActorSocketEffect::StateSnapshot {
                 connection_id,
                 state,
@@ -215,6 +307,7 @@ impl SocketRegistry {
                 let Some(version) = version else {
                     return;
                 };
+                let except_connection_ids: HashSet<_> = except_connection_ids.into_iter().collect();
                 let entries = self.entries.read().await;
                 if let Some(connections) = entries.get(actor) {
                     let value = serde_json::json!({ "type":"state_update", "changes":changes, "removed":removed, "version":version });
@@ -231,6 +324,7 @@ impl SocketRegistry {
                 tags,
                 tag_match,
             } => {
+                let except_connection_ids: HashSet<_> = except_connection_ids.into_iter().collect();
                 let recipients = self
                     .entries
                     .read()
@@ -272,7 +366,6 @@ impl SocketRegistry {
                     .and_then(|connections| connections.get_mut(&connection_id))
                 {
                     entry.connection.metadata = metadata;
-                    self.inventory_changes.send_replace(());
                 }
             }
             ActorSocketEffect::SetTags {
@@ -324,63 +417,23 @@ impl SocketRegistry {
     }
 
     pub(crate) async fn activate(&self, actor: &ActorKey, connection_id: &str) {
-        if let Some(entry) = self
-            .entries
-            .write()
-            .await
-            .get_mut(actor)
-            .and_then(|connections| connections.get_mut(connection_id))
-        {
-            entry.open = true;
-            self.inventory_changes.send_replace(());
+        let mut entries = self.entries.write().await;
+        if let Some(room) = entries.get_mut(actor) {
+            if let Some(entry) = room.get_mut(connection_id) {
+                if !entry.open {
+                    entry.open = true;
+                    room.active += 1;
+                }
+            }
         }
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct SocketSender {
-    sender: mpsc::Sender<OutboundMessage>,
-    overflow: CancellationToken,
-}
-
-pub(crate) struct SocketReceiver {
-    receiver: mpsc::Receiver<OutboundMessage>,
-    overflow: CancellationToken,
-}
+pub(crate) type SocketSender = mpsc::UnboundedSender<OutboundMessage>;
+pub(crate) type SocketReceiver = mpsc::UnboundedReceiver<OutboundMessage>;
 
 pub(crate) fn socket_channel() -> (SocketSender, SocketReceiver) {
-    let (sender, receiver) = mpsc::channel(32);
-    let overflow = CancellationToken::new();
-    (
-        SocketSender {
-            sender,
-            overflow: overflow.clone(),
-        },
-        SocketReceiver { receiver, overflow },
-    )
-}
-
-impl SocketSender {
-    pub(crate) fn send(&self, message: OutboundMessage) -> Result<(), ()> {
-        self.sender
-            .try_send(message)
-            .map_err(|_| self.overflow.cancel())
-    }
-}
-
-impl SocketReceiver {
-    pub(crate) async fn recv(&mut self) -> Option<OutboundMessage> {
-        tokio::select! {
-            biased;
-            _ = self.overflow.cancelled() => Some(OutboundMessage::Close { code: 1013, reason: "socket output queue is full".into() }),
-            message = self.receiver.recv() => message,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn try_recv(&mut self) -> Result<OutboundMessage, mpsc::error::TryRecvError> {
-        self.receiver.try_recv()
-    }
+    mpsc::unbounded_channel()
 }
 
 #[cfg(test)]

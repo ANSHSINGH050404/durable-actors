@@ -11,6 +11,7 @@ const { ActorObserver, HttpObserverClient } = await import("../src/index.js")
 afterEach(cleanup)
 
 const inventory = {
+    connectionsComplete: true,
     actors: [
         {
             actorName: "Room",
@@ -111,7 +112,7 @@ test("switching clients cancels the old request and never displays its late inve
             })
         }
     }
-    const second = { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) }
+    const second = { checkConnection: async () => {}, listActors: async () => ({ connectionsComplete: true, actors: [] }) }
     const view = render(<ActorObserver client={first} />)
     view.rerender(<ActorObserver client={second} />)
     await waitFor(() => assert.match(view.container.textContent!, /No actors yet/u))
@@ -197,6 +198,7 @@ test("an exact actor class search keeps its keyboard navigation option", async (
 
 test("actor search finds instance IDs and opens their requests and WebSockets directly", async () => {
     const searchable = {
+        connectionsComplete: true,
         actors: [inventory.actors[0]!, { ...inventory.actors[1]!, live: 1, instances: [{ actorId: "general", status: "live" as const, connections: [] }] }]
     }
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => searchable }} />)
@@ -379,7 +381,7 @@ test("an initial actor opens its page with class-specific totals and handles rem
     await view.findByRole("heading", { name: "Counter", level: 1 })
     assert.equal(view.getByLabelText("Total instances").textContent, "0")
     assert.equal(view.queryByRole("table", { name: "Actor instance counts" }), null)
-    await act(async () => publish({ actors: [inventory.actors[0]!] }))
+    await act(async () => publish({ connectionsComplete: true, actors: [inventory.actors[0]!] }))
     assert.ok(view.getByText("Actor class unavailable"))
     fireEvent.click(view.getByRole("button", { name: "Back to actors" }))
     assert.ok(view.getByRole("button", { name: "Room" }))
@@ -388,7 +390,7 @@ test("an initial actor opens its page with class-specific totals and handles rem
 test("live actors and instances come first and the entire row opens inspection", async () => {
     const client = {
         checkConnection: async () => {},
-        listActors: async () => ({ actors: [inventory.actors[1]!, { ...inventory.actors[0]!, instances: [...inventory.actors[0]!.instances].reverse() }] })
+        listActors: async () => ({ connectionsComplete: true, actors: [inventory.actors[1]!, { ...inventory.actors[0]!, instances: [...inventory.actors[0]!.instances].reverse() }] })
     }
     const view = render(<ActorObserver client={client} />)
     await view.findByRole("button", { name: "Room" })
@@ -403,7 +405,10 @@ test("live actors and instances come first and the entire row opens inspection",
 
 test("instance queues show operation bubbles and update while inspecting an instance", async () => {
     const waiting = ["sendMessage", "save", "sendMessage", "close"].map((operation, i) => ({ id: String(i), operation }))
-    const current = { actors: [{ actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live" as const, connections: [], waiting }] }] }
+    const current = {
+        connectionsComplete: true,
+        actors: [{ actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live" as const, connections: [], waiting }] }]
+    }
     let update: (inventory: typeof current) => void = () => {}
     const client = {
         checkConnection: async () => {},
@@ -422,7 +427,7 @@ test("instance queues show operation bubbles and update while inspecting an inst
     fireEvent.click(view.getByRole("button", { name: "general" }))
     assert.match(view.getByRole("region", { name: "Waiting requests" }).textContent!, /Waiting 4/u)
     assert.ok(view.getByText("close"))
-    await act(async () => update({ actors: [{ ...current.actors[0]!, instances: [{ ...current.actors[0]!.instances[0]!, waiting: [] }] }] }))
+    await act(async () => update({ connectionsComplete: true, actors: [{ ...current.actors[0]!, instances: [{ ...current.actors[0]!.instances[0]!, waiting: [] }] }] }))
     assert.ok(view.getByText("No requests waiting."))
     assert.equal(view.queryByText("sendMessage"), null)
 })

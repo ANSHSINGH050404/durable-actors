@@ -1,4 +1,6 @@
 import sqlite3
+from threading import Event, Thread
+from time import sleep
 
 import pytest
 
@@ -58,3 +60,40 @@ async def test_replication_failure_fences_later_writes(tmp_path):
             storage.persist_fields({"count": 2})
     finally:
         storage.close()
+
+
+@pytest.mark.asyncio
+async def test_fields_wait_for_a_competing_sqlite_writer(tmp_path):
+    path = tmp_path / "actor.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            "PRAGMA journal_mode=WAL; CREATE TABLE __terse_fields(name TEXT PRIMARY KEY, value TEXT)"
+        )
+
+    async def sync(state):
+        return 2
+
+    storage = SqliteStorage(sync)
+    storage.restore({"path": str(path), "socket": "/tmp/test.sock", "txid": 1})
+    locked, release = Event(), Event()
+
+    def hold_write_lock():
+        with sqlite3.connect(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            locked.set()
+            release.wait(5)
+            sleep(0.1)
+            connection.commit()
+
+    writer = Thread(target=hold_write_lock)
+    writer.start()
+    try:
+        assert locked.wait(5)
+        release.set()
+        storage.persist_fields({"count": 1})
+        assert await storage.snapshot() == {"txid": 2}
+        assert storage.fields() == {"count": 1}
+    finally:
+        release.set()
+        storage.close()
+        writer.join()

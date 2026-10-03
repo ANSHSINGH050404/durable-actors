@@ -272,7 +272,7 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
-async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> Result<()> {
+async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> Result<()> {
     let fixture = Fixture::start().await?;
     let actor = fixture.actor("unsaved");
     let request = HostLeaseRequest {
@@ -299,14 +299,6 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
             operation: "sendMessage".into(),
         }],
     }];
-    let mut sockets = vec![crate::host_leases::ActorSocketInventory {
-        actor: actor.clone(),
-        connections: vec![crate::actor::ActorSocketConnection {
-            id: "socket-one".into(),
-            metadata: json!({"userId":"ada"}),
-            tags: vec![],
-        }],
-    }];
     fixture
         .store
         .renew_activation(
@@ -314,7 +306,6 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
             &request,
             crate::host_leases::ActivationInventory {
                 resident: Some(true),
-                connections: sockets[0].connections.clone(),
                 waiting: Some(queues[0].waiting.clone()),
             },
         )
@@ -325,29 +316,6 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     assert_eq!(
         connected["actors"][0]["instances"][0]["waiting"][0]["operation"],
         "sendMessage"
-    );
-    assert_eq!(
-        connected["actors"][0]["instances"][0]["connections"],
-        json!([{"id":"socket-one", "metadata":{"userId":"ada"}}])
-    );
-    sockets[0].connections[0].metadata = json!({"userId":"grace"});
-    fixture
-        .store
-        .renew_activation(
-            &actor,
-            &request,
-            crate::host_leases::ActivationInventory {
-                resident: Some(true),
-                connections: sockets[0].connections.clone(),
-                waiting: Some(queues[0].waiting.clone()),
-            },
-        )
-        .await?;
-    fixture.changes.notify().await;
-    let updated = stream_inventory(&mut stream).await?;
-    assert_eq!(
-        updated["actors"][0]["instances"][0]["connections"][0]["metadata"]["userId"],
-        "grace"
     );
     fixture
         .store

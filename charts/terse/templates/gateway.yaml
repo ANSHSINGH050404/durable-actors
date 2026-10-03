@@ -35,14 +35,28 @@ spec:
   hostnames:
     - {{ (urlParse .Values.publicUrl).hostname | quote }}
   rules:
+    {{- if .Values.sockets.dedicatedGateway }}
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/socket
+      backendRefs:
+        - name: {{ include "terse.socketGatewayName" . }}
+          port: 7100
+    {{- end }}
     - backendRefs:
         - name: {{ include "terse.name" . }}
           port: 7100
+{{- $services := list (include "terse.name" .) }}
+{{- if .Values.sockets.dedicatedGateway }}
+{{- $services = append $services (include "terse.socketGatewayName" .) }}
+{{- end }}
+{{- range $service := $services }}
 ---
 apiVersion: networking.gke.io/v1
 kind: HealthCheckPolicy
 metadata:
-  name: {{ include "terse.name" . }}
+  name: {{ $service }}
 spec:
   default:
     config:
@@ -53,17 +67,18 @@ spec:
   targetRef:
     group: ""
     kind: Service
-    name: {{ include "terse.name" . }}
+    name: {{ $service }}
 ---
 apiVersion: networking.gke.io/v1
 kind: GCPBackendPolicy
 metadata:
-  name: {{ include "terse.name" . }}
+  name: {{ $service }}
 spec:
   default:
     timeoutSec: 86400
   targetRef:
     group: ""
     kind: Service
-    name: {{ include "terse.name" . }}
+    name: {{ $service }}
+{{- end }}
 {{- end }}

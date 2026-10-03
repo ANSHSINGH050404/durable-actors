@@ -92,16 +92,7 @@ fn startup_timings_begin_with_only_configuration_loaded() {
 }
 
 #[tokio::test]
-async fn closing_the_last_socket_after_idle_does_not_restart_the_timer() -> Result<()> {
-    assert_activity_prevents_idle_shutdown(true).await
-}
-
-#[tokio::test]
 async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
-    assert_activity_prevents_idle_shutdown(false).await
-}
-
-async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
     let mut server = Box::pin(std::future::pending::<Result<()>>());
     let mut executor = Box::pin(std::future::pending::<Result<()>>());
     let mut shutdown = Box::pin(std::future::pending::<()>());
@@ -111,54 +102,34 @@ async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
     let (requests, mut activity) = tokio::sync::watch::channel(ActorActivity {
-        active: usize::from(!socket),
-        resident: true,
+        active: 1,
         ..Default::default()
     });
-    let evictions = std::cell::Cell::new(0);
     let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
-    let (sockets, mut socket_activity) = tokio::sync::watch::channel(usize::from(socket));
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
         executor.as_mut(),
         &mut javascript,
         shutdown.as_mut(),
         &mut lease,
-        (&mut activity, &mut socket_activity, &mut actor_stopped),
+        (&mut activity, &mut actor_stopped),
         Duration::from_millis(100),
-        |_| {
-            evictions.set(evictions.get() + 1);
-            requests.send_modify(|activity| activity.resident = false);
-            std::future::ready(Ok(()))
-        },
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(150), stopped.as_mut())
             .await
             .is_err()
     );
-    assert_eq!(evictions.get(), usize::from(socket));
-    if socket {
-        sockets.send_replace(0);
-    } else {
-        requests.send_modify(|activity| {
-            activity.active = 0;
-            activity.last_active = tokio::time::Instant::now();
-        });
-    }
-    let remaining = if socket {
-        Duration::from_millis(50)
-    } else {
-        Duration::from_secs(1)
-    };
-    tokio::time::timeout(remaining, stopped.as_mut()).await??;
-    drop(stopped);
-    javascript.kill().await?;
+    requests.send_modify(|activity| {
+        activity.active = 0;
+        activity.last_active = tokio::time::Instant::now();
+    });
+    tokio::time::timeout(Duration::from_secs(1), stopped).await??;
     Ok(())
 }
 
 #[tokio::test]
-async fn failed_activation_stops_host_during_idle_eviction() -> Result<()> {
+async fn failed_activation_stops_a_busy_host() -> Result<()> {
     let mut server = Box::pin(std::future::pending::<Result<()>>());
     let mut executor = Box::pin(std::future::pending::<Result<()>>());
     let mut shutdown = Box::pin(std::future::pending::<()>());
@@ -168,31 +139,24 @@ async fn failed_activation_stops_host_during_idle_eviction() -> Result<()> {
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
     let (_activity_sender, mut activity) = tokio::sync::watch::channel(ActorActivity {
-        resident: true,
+        active: 1,
         ..Default::default()
     });
     let (stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
-    let (_sockets, mut socket_activity) = tokio::sync::watch::channel(1);
-    let evicting = std::cell::Cell::new(false);
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
         executor.as_mut(),
         &mut javascript,
         shutdown.as_mut(),
         &mut lease,
-        (&mut activity, &mut socket_activity, &mut actor_stopped),
+        (&mut activity, &mut actor_stopped),
         Duration::from_millis(10),
-        |_| {
-            evicting.set(true);
-            std::future::pending::<Result<()>>()
-        },
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(50), stopped.as_mut())
             .await
             .is_err()
     );
-    assert!(evicting.get());
     stopped_sender.send_replace(true);
     let error = tokio::time::timeout(Duration::from_secs(1), stopped.as_mut())
         .await?

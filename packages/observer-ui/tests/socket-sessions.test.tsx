@@ -6,6 +6,7 @@ import { formatDuration, metadataSummary, sessionDuration, sessionRows, sessionS
 
 test("live inventory decides whether unfinished sessions are open or lost and adds unrecorded connections", () => {
     const inventory: ActorInventory = {
+        connectionsComplete: true,
         actors: [
             {
                 actorName: "Room",
@@ -31,6 +32,7 @@ test("live inventory decides whether unfinished sessions are open or lost and ad
         { connectionId: "c0", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: 100, closedAtMs: null, lastSeenMs: 300, messages: 1, failures: 0 }
     ]
     const sessions = socketSessions(rows, inventory)
+    assert.equal(socketSessions(rows, { ...inventory, connectionsComplete: false }).find(session => session.connectionId === "c0")?.status, "unknown")
     assert.deepEqual(
         sessions.map(session => [session.connectionId, session.status, session.metadata]),
         [
@@ -56,8 +58,8 @@ test("live inventory decides whether unfinished sessions are open or lost and ad
         ["lost", "closed", "lost"]
     )
     const summary = sessionSummary(sessions, 10_000)
-    assert.deepEqual(summary, { total: 4, open: 2, lost: 1, median: 3000, p95: 4000, messages: 3, messagesPerSession: 0.75 })
-    assert.deepEqual(sessionSummary([], 10_000), { total: 0, open: 0, lost: 0, median: null, p95: null, messages: 0, messagesPerSession: null })
+    assert.deepEqual(summary, { total: 4, open: 2, lost: 1, closed: 1, median: 3000, p95: 4000, messages: 3, messagesPerSession: 0.75 })
+    assert.deepEqual(sessionSummary([], 10_000), { total: 0, open: 0, lost: 0, closed: 0, median: null, p95: null, messages: 0, messagesPerSession: null })
 })
 
 test("invalid session rows are rejected and durations format by magnitude", () => {

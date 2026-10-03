@@ -90,7 +90,6 @@ async fn run_activation(
         "DURABLE_ACTORS_HOST_ID": host_id.as_str(), "DURABLE_ACTORS_SESSION_ID": session,
         "DURABLE_ACTORS_HOST_ROUTE": route, "DURABLE_ACTORS_JWT_ISSUER": "issuer",
         "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": "invocation",
-        "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE": "authority:websocket",
         "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
         "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),

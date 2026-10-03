@@ -29,6 +29,23 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn socket_operation(
+        &self,
+        actor: &ActorKey,
+        operation: super::socket_gateway::SocketOperation,
+    ) -> Result<super::socket_gateway::SocketOperationReply> {
+        match self
+            .execute(ControlPlaneCommand::SocketOperation {
+                actor: actor.clone(),
+                operation,
+            })
+            .await?
+        {
+            ControlPlaneCommandReply::SocketOperation { reply } => Ok(reply),
+            _ => anyhow::bail!("unexpected socket operation reply"),
+        }
+    }
+
     pub(crate) async fn report_traces(
         &self,
         traces: Vec<crate::request_traces::RequestTrace>,
@@ -44,16 +61,6 @@ impl ControlPlaneClient {
             ControlPlaneCommandReply::Unit => Ok(()),
             _ => anyhow::bail!("unexpected inventory notification response"),
         }
-    }
-
-    pub(crate) async fn notify_socket_message(
-        &self,
-        actor: ActorKey,
-        event: crate::actor::ActorSocketEvent,
-    ) -> Result<()> {
-        self.execute(ControlPlaneCommand::SocketMessage { actor, event })
-            .await?;
-        Ok(())
     }
 
     pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
@@ -227,3 +234,14 @@ mod lease_fence_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/client_refresh_tests.rs"]
 mod refresh_tests;
+
+#[async_trait::async_trait]
+impl crate::sockets::operations::SocketOperations for ControlPlaneClient {
+    async fn execute(
+        &self,
+        actor: &ActorKey,
+        operation: crate::sockets::operations::SocketOperation,
+    ) -> Result<crate::sockets::operations::SocketOperationReply> {
+        self.socket_operation(actor, operation).await
+    }
+}

@@ -103,6 +103,49 @@ const chatDefinition = registerActorClass(ChatRoom, {
 })
 const rejectingDefinition = registerActorClass(RejectingRoom, { actorName: "RejectingRoom", fields: [] })
 
+test("socket handlers load the full connection list only when requested", async () => {
+    class LookupRoom extends Actor<null, boolean> {
+        async onMessage(socket: ActorSocket, enumerate: boolean) {
+            socket.send({ id: socket.id, peers: enumerate ? (await this.getConnections()).length : 0 })
+        }
+    }
+    const connections = ["sender", "other"].map(id => ({ id, metadata: null, tags: [] }))
+    let lookups = 0
+    const runtime = new ActorRuntime(
+        registerActorClass(LookupRoom, { actorName: "LookupRoom", fields: [] }),
+        () => {},
+        undefined,
+        async () => {
+            lookups++
+            return connections
+        }
+    )
+    for (const enumerate of [false, true]) {
+        const reply = await runtime.handle({
+            type: "websocket_event",
+            request_id: "lookup",
+            actor: { ...actorIdentity, actor_name: "LookupRoom" },
+            event: {
+                type: "message",
+                connection_id: "sender",
+                message: { type: "text", data: JSON.stringify(enumerate) }
+            },
+            connections: [connections[0]!],
+            sqlite: await seed(null)
+        })
+        assert.equal(reply.type, "websocket_handled")
+        if (reply.type !== "websocket_handled") return
+        assert.deepEqual(reply.effects, [
+            {
+                type: "send",
+                connection_id: "sender",
+                message: { type: "text", data: JSON.stringify({ id: "sender", peers: enumerate ? 2 : 0 }) }
+            }
+        ])
+        assert.equal(lookups, enumerate ? 1 : 0)
+    }
+})
+
 test("invocation does not enforce deployment JSON schemas at runtime", async () => {
     const runtime = new ActorRuntime(
         {
@@ -552,7 +595,12 @@ test("does not expose actor properties to a rejected connection", async () => {
 })
 
 test("runs the full socket lifecycle and exposes live actor connections", async () => {
-    const runtime = new ActorRuntime(chatDefinition, () => {})
+    const runtime = new ActorRuntime(
+        chatDefinition,
+        () => {},
+        undefined,
+        async () => []
+    )
     const actor = { ...actorIdentity, actor_name: "ChatRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: { userId: "user-1", connectedAt: 1 }, tags: [] }
 

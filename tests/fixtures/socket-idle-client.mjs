@@ -16,7 +16,12 @@ async function message() {
     return reply
 }
 try {
-    const first = await inspect()
+    const deadline = Date.now() + 5000
+    let first = await inspect()
+    while ((first.count === 0 || first.sockets.length === 0) && Date.now() < deadline) {
+        await setTimeout(10)
+        first = await inspect()
+    }
     assert.equal(first.count, 1)
     assert.equal(first.sockets.length, 1)
     assert.deepEqual(first.sockets[0].metadata, { user: "restored" })
@@ -30,7 +35,7 @@ try {
     assert.equal(socket.readyState, 1)
     const second = await message()
     assert.notEqual(second.instance, first.instance, "an open WebSocket must not pin the actor instance")
-    assert.equal(second.pid, first.pid, "the socket host stays alive")
+    assert.notEqual(second.pid, first.pid, "the actor sandbox shuts down while the gateway keeps sockets alive")
     assert.equal(second.count, 2)
     assert.deepEqual(second.sockets, first.sockets)
     for (let i = 0; i < 4; i++) {

@@ -22,6 +22,9 @@ const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 
 pub struct ControlPlaneProcessConfig {
     pub bind: SocketAddr,
+    pub gateway_route: String,
+    pub gateway_accept_connections: bool,
+    pub max_socket_connections: usize,
     pub jwt_signing_key: String,
     pub jwt_key_id: String,
     pub jwt_issuer: String,
@@ -165,8 +168,21 @@ async fn control_plane_routes(
         ),
     );
     let placements = storage.clone();
-    let gateway =
-        super::gateway::Gateway::new(&issuer, config.sandbox_provider.gke.public_origin.clone())?;
+    let socket_gateway = super::socket_gateway::SocketGateway::start(
+        config.gateway_route.clone(),
+        Arc::new(super::socket_directory::PostgresSocketDirectory::new(
+            database.clone(),
+        )),
+        config.max_socket_connections,
+        config.gateway_accept_connections,
+        stop.child_token(),
+    )
+    .await?;
+    let gateway = super::gateway::Gateway::new(
+        &issuer,
+        config.sandbox_provider.gke.public_origin.clone(),
+        socket_gateway,
+    )?;
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
@@ -196,13 +212,15 @@ async fn control_plane_routes(
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
+        storage.clone(),
+        service.gateway.as_ref().unwrap().connections.clone(),
+        config.api_key.clone(),
+    ));
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
-    let inspector = super::inspection::ActorInspector::new(
-        storage.clone(),
-        storage.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(service.traces.clone());
+    let inspector =
+        super::inspection::ActorInspector::new(inventory, storage.clone(), service.changes.clone())
+            .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin));
     let internal_api = service.into_internal_service();
@@ -313,8 +331,19 @@ impl ControlPlaneProcessConfig {
             "default region has no configured GKE zone"
         );
         let socket_event_sink = socket_event_sink_config(&mut get)?;
+        let gateway_route = validated_http_url(
+            &required(&mut get, "DURABLE_ACTORS_GATEWAY_ROUTE")?,
+            "DURABLE_ACTORS_GATEWAY_ROUTE",
+        )?;
         Ok(Self {
             bind,
+            gateway_route,
+            max_socket_connections: crate::sockets::max_connections(&mut get)?,
+            gateway_accept_connections: get("DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS")
+                .map(|value| value.parse())
+                .transpose()
+                .context("DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS must be boolean")?
+                .unwrap_or(true),
             jwt_signing_key,
             jwt_key_id,
             jwt_issuer,

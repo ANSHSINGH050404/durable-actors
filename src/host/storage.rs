@@ -320,15 +320,13 @@ impl HostLeaseRegistry for HostStorage {
         request: &HostLeaseRequest,
         residents: Option<&[crate::actor::ActorKey]>,
     ) -> Result<HostLease> {
-        self.register_with_inventory(request, residents, &[], None)
-            .await
+        self.register_with_inventory(request, residents, None).await
     }
 
     async fn register_with_inventory(
         &self,
         request: &HostLeaseRequest,
         residents: Option<&[crate::actor::ActorKey]>,
-        sockets: &[crate::host_leases::ActorSocketInventory],
         queues: Option<&[crate::host_leases::ActorQueueInventory]>,
     ) -> Result<HostLease> {
         ensure!(
@@ -346,16 +344,11 @@ impl HostLeaseRegistry for HostStorage {
             "resident actor scope mismatch"
         );
         ensure!(
-            sockets.iter().all(|entry| entry.actor == *actor)
-                && queues.is_none_or(|entries| entries.iter().all(|entry| entry.actor == *actor)),
+            queues.is_none_or(|entries| entries.iter().all(|entry| entry.actor == *actor)),
             "inventory actor scope mismatch"
         );
         let inventory = crate::host_leases::ActivationInventory {
             resident: residents.map(|actors| actors.contains(actor)),
-            connections: sockets
-                .iter()
-                .flat_map(|entry| entry.connections.clone())
-                .collect(),
             waiting: queues.map(|entries| {
                 entries
                     .iter()

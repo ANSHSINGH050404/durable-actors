@@ -1,6 +1,6 @@
 {
     "name": "durable-actors-observer",
-    "version": "0.7.9",
+    "version": "0.7.10",
     "description": "Embeddable React observer for Durable Actors",
     "type": "module",
     "license": "MIT",

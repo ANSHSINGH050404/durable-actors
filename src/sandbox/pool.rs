@@ -85,12 +85,12 @@ impl SparePool {
                 match row.as_ref().map(|row| row.get::<_, &str>(0)) {
                     Some("active") => return Ok(()),
                     Some("claimed") => tokio::time::sleep(Duration::from_millis(20)).await,
-                    _ => anyhow::bail!("actor sandbox did not become ready"),
+                    _ => return Err(super::HostNotReady.into()),
                 }
             }
         })
         .await
-        .context("actor sandbox readiness timed out")?
+        .map_err(|_| super::HostNotReady)?
     }
 
     pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
@@ -101,18 +101,6 @@ impl SparePool {
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
         Ok(())
-    }
-
-    pub async fn host(&self, host: &str) -> Result<Option<SpareHandle>> {
-        self.store
-            .0
-            .query_opt(
-                "SELECT handle FROM durable_actors_spares WHERE host_id = $1 AND status = 'active'",
-                &[&host],
-            )
-            .await?
-            .map(|row| serde_json::from_str(row.get::<_, &str>(0)).map_err(Into::into))
-            .transpose()
     }
 
     pub async fn failed(&self, host: &str) -> Result<()> {

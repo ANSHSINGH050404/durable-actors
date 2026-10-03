@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url"
 import { z } from "zod"
 
 import type { ActorIdentity } from "../actor/identity.js"
-import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
 import { parseActorSessionServerMessage } from "./protocol.js"
@@ -97,7 +97,7 @@ class ActorSessionConnection {
     private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
     private readonly loadingConnections = new Map<
         number,
-        { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void }
+        { resolve: (connections: SocketLookup) => void; reject: (error: Error) => void }
     >()
 
     static async open(
@@ -115,7 +115,7 @@ class ActorSessionConnection {
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
         connection.send({
             type: "attach",
-            protocol: 21,
+            protocol: 23,
             actor_names: actorNames
         })
         await connection.waitUntilAttached(timeoutMs)
@@ -209,7 +209,7 @@ class ActorSessionConnection {
                             message.command,
                             () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
                             effects => this.publish(message.message_id, effects),
-                            () => this.getConnections(message.message_id)
+                            query => this.getConnections(message.message_id, query)
                         )
                     )
                     break
@@ -253,13 +253,13 @@ class ActorSessionConnection {
         })
     }
 
-    private getConnections(messageId: number): Promise<readonly SocketConnection[]> {
+    private getConnections(messageId: number, query?: SocketQuery): Promise<SocketLookup> {
         return new Promise((resolve, reject) => {
             if (this.loadingConnections.has(messageId))
                 throw new ActorProtocolError("actor connections are already being loaded")
             this.loadingConnections.set(messageId, { resolve, reject })
             try {
-                this.send({ type: "get_connections", message_id: messageId })
+                this.send({ type: "get_connections", message_id: messageId, query })
             } catch (error) {
                 this.loadingConnections.delete(messageId)
                 reject(sessionError(error))

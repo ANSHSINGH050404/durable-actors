@@ -14,6 +14,12 @@ pub fn owner(object: &ActorStorageKey) -> Result<String> {
     Ok(format!("{ROOT}owners/{}.json", actor_path(&actor)))
 }
 
+pub fn owner_in_project(key: &str, project: &str) -> bool {
+    key.strip_prefix(&format!("{ROOT}owners/"))
+        .and_then(|path| path.split('/').nth(1))
+        .is_some_and(|encoded| encoded == component(project))
+}
+
 pub fn host(host: &HostId) -> String {
     format!("{ROOT}hosts/{}/", component(host.as_str()))
 }

@@ -519,20 +519,40 @@ async fn delayed_renewal_cannot_overwrite_a_completed_takeover() -> Result<()> {
 }
 
 #[tokio::test]
+async fn inventory_reads_ownership_records_only_for_the_requested_project() -> Result<()> {
+    let f = Fixture::new()?;
+    f.runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let other = ActorKey {
+        project_id: "other-project".into(),
+        ..f.actor.clone()
+    };
+    f.runtime
+        .register_activation(&other, &request("other"), "us-east", true, None)
+        .await?;
+    f.bucket.reads.store(0, Ordering::SeqCst);
+    let inventory = f.runtime.actor_inventory(&f.actor.project_id).await?.actors;
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].instances[0].actor_id, f.actor.actor_id);
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn inventory_follows_activation_lease_without_separate_host_records() -> Result<()> {
     let f = Fixture::new()?;
     let first = request("first");
     f.runtime
         .register_activation(&f.actor, &first, "us-east", true, None)
         .await?;
-    let initial = f.runtime.actor_inventory(&f.actor.project_id).await?;
+    let initial = f.runtime.actor_inventory(&f.actor.project_id).await?.actors;
     assert!(matches!(
         initial[0].instances[0].status,
         ActorResidency::Unknown
     ));
     let inventory = crate::host_leases::ActivationInventory {
         resident: Some(true),
-        connections: vec![],
         waiting: Some(vec![crate::host_leases::WaitingOperation {
             id: "queued".into(),
             operation: "increment".into(),
@@ -541,7 +561,7 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     f.runtime
         .renew_activation(&f.actor, &first, inventory)
         .await?;
-    let live = f.runtime.actor_inventory(&f.actor.project_id).await?;
+    let live = f.runtime.actor_inventory(&f.actor.project_id).await?.actors;
     assert_eq!(live[0].live, 1);
     assert_eq!(
         live[0].instances[0].waiting.as_ref().unwrap()[0].operation,
@@ -554,7 +574,7 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     f.runtime
         .release_activation(&f.actor, &first.id, &first.session_id)
         .await?;
-    let dormant = f.runtime.actor_inventory(&f.actor.project_id).await?;
+    let dormant = f.runtime.actor_inventory(&f.actor.project_id).await?.actors;
     assert_eq!(dormant[0].dormant, 1);
     assert!(dormant[0].instances[0].waiting.as_ref().unwrap().is_empty());
     Ok(())

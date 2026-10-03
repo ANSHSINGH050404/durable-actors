@@ -10,9 +10,9 @@ const specPath = fileURLToPath(new URL("../../docs/reference/openapi.yaml", impo
 test("OpenAPI validates and covers the public HTTP routes", async () => {
     const spec = await SwaggerParser.validate(specPath)
     const paths = new Set()
-    for (const file of ["control_plane/public_api.rs", "control_plane/contract_api.rs", "control_plane/inspection.rs", "sockets/browser.rs", "host/http.rs"]) {
+    for (const file of ["control_plane/public_api.rs", "control_plane/contract_api.rs", "control_plane/inspection.rs", "control_plane/gateway.rs"]) {
         const source = await readFile(new URL(`../../src/${file}`, import.meta.url), "utf8")
-        for (const match of source.matchAll(/\.route\(\s*"([^"]+)"/gu)) paths.add(match[1])
+        for (const match of source.matchAll(/\.route\(\s*"([^"]+)"/gu)) if (!match[1].startsWith("/internal/")) paths.add(match[1])
     }
     assert.deepEqual(Object.keys(spec.paths).sort(), [...paths].sort())
     const operations = Object.values(spec.paths).flatMap(path => ["get", "post", "put", "delete"].filter(method => path[method]).map(method => path[method]))

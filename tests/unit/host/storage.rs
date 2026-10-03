@@ -298,7 +298,10 @@ async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePl
 async fn socket_authorization_checks_persisted_ownership_without_reading_snapshots() -> Result<()> {
     let (bucket, storage, _, _) = pending_write().await?;
     let actor = storage.actor.as_ref().unwrap();
-    let sockets = crate::host::sockets::HostSockets::new(storage.clone());
+    let sockets = crate::host::sockets::HostSockets::new(
+        storage.clone(),
+        Arc::new(crate::sockets::SocketRegistry::default()),
+    );
     bucket
         .reject_snapshot_reads
         .store(true, std::sync::atomic::Ordering::SeqCst);

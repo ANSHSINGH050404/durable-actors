@@ -6,9 +6,6 @@ impl SandboxProvider for UnusedSandboxProvider {
     async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
         anyhow::bail!("unexpected spare inspection")
     }
-    async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
-        anyhow::bail!("unexpected socket lookup")
-    }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("unexpected host assignment")
     }

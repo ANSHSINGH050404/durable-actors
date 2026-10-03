@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     control_plane::{ActorTokenPurpose, admin::LocalAdminRegistry},
     placement::testing::LocalObjectPlacementStore,
-    sandbox::{ActorHostHandle, SocketCredentials, SocketCredentialsRequest},
+    sandbox::ActorHostHandle,
 };
 use std::sync::Mutex;
 
@@ -326,9 +326,6 @@ impl SandboxProvider for Provider {
     }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("no actor invocation in deployment test")
-    }
-    async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
-        anyhow::bail!("no socket in deployment test")
     }
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination> {
         self.retired

@@ -42,6 +42,10 @@ impl ActorHostHttpService {
     pub(crate) fn router(self) -> Router {
         Router::new()
             .route(
+                "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-events",
+                post(socket_event),
+            )
+            .route(
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
                 post(invoke),
             )
@@ -123,6 +127,53 @@ impl ActorHostHttpService {
             }
         }
     }
+}
+
+async fn socket_event(
+    State(service): State<Arc<ActorHostHttpService>>,
+    Path(actor): Path<ActorKey>,
+    headers: HeaderMap,
+    Json(request): Json<crate::control_plane::socket_gateway::SocketEventRequest>,
+) -> Result<Json<crate::control_plane::socket_gateway::SocketEventReply>, HttpError> {
+    use crate::control_plane::socket_gateway::SocketEventReply;
+    let principal = service.authenticate(&headers)?;
+    service.authorize(&principal, &actor, request.owner_epoch)?;
+    authorize_grant(
+        principal
+            .invocation
+            .as_ref()
+            .and_then(|capability| capability.grant.as_ref()),
+        None,
+    )?;
+    if request.invocation.actor != actor {
+        return Err(HttpError(
+            StatusCode::FORBIDDEN,
+            "socket event actor mismatch".into(),
+        ));
+    }
+    let result = service
+        .host
+        .handle_socket_event_since(
+            request.invocation,
+            request.owner_epoch,
+            std::time::Instant::now(),
+        )
+        .await;
+    let reply = match result {
+        Ok(ActorExecutionResult::Completed { effects, .. }) => {
+            SocketEventReply::Completed { effects }
+        }
+        Ok(ActorExecutionResult::Reroute | ActorExecutionResult::HostUnavailable) => {
+            SocketEventReply::NotExecuted
+        }
+        Ok(ActorExecutionResult::Failed { failure }) => SocketEventReply::Failed {
+            message: failure.message,
+        },
+        Err(error) => SocketEventReply::Failed {
+            message: format!("{error:#}"),
+        },
+    };
+    Ok(Json(reply))
 }
 
 async fn invoke(

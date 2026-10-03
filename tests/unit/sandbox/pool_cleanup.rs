@@ -32,9 +32,6 @@ impl SandboxProvider for Provider {
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("unexpected assignment")
     }
-    async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
-        anyhow::bail!("unexpected credentials")
-    }
     async fn terminate_hosts(&self, _: &TerminateHostsRequest) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")
     }

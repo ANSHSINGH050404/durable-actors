@@ -201,12 +201,12 @@ impl AdminService {
         Ok(Some(self.sessions.authenticate(authorization, project_id)?))
     }
 
-    pub(super) fn issue_direct_socket(
+    pub(super) fn issue_socket(
         &self,
         grant: super::socket_ticket::SocketGrant,
-        credentials: crate::sandbox::SocketCredentials,
+        origin: &str,
     ) -> Result<serde_json::Value> {
-        let mut url = reqwest::Url::parse(&credentials.url)?;
+        let mut url = reqwest::Url::parse(origin)?;
         ensure!(
             matches!(url.scheme(), "http" | "https")
                 && url.host_str().is_some()

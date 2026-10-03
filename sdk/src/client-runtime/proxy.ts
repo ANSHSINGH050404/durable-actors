@@ -144,8 +144,8 @@ function socketMetadata(value: unknown): unknown {
     } catch (error) {
         throw new ActorSerializationError("socket metadata must be a JSON value", { cause: error })
     }
-    if (new TextEncoder().encode(encoded).length > 64 * 1024)
-        throw new ActorValidationError("socket metadata exceeds 65536 bytes")
+    if (new TextEncoder().encode(encoded).length > 16 * 1024)
+        throw new ActorValidationError("socket metadata exceeds 16384 bytes")
     return value
 }
 

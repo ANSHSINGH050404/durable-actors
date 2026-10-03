@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 
 import { RefreshCw, Search } from "lucide-react"
 
+import { ConnectionInventoryNotice } from "./ConnectionInventoryNotice.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInventory, ObserverClient, RequestTracePage } from "./client.js"
 import { Button } from "./components/ui/button.js"
@@ -81,6 +82,7 @@ export function Overview({ client, onSelectActor, timeRange, onTimeRangeChange }
                 </p>
             )}
             <SummaryCards inventory={actors.inventory} metrics={metrics} range={range} />
+            <ConnectionInventoryNotice inventory={actors.inventory} />
             <ClassTable inventory={actors.inventory} metrics={metrics} failed={actors.failed} onSelectActor={onSelectActor} />
             <DataScope page={saved.supported ? undefined : requests.page} range={range} saved={saved.supported} />
         </section>

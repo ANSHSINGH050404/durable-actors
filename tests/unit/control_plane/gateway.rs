@@ -1,7 +1,7 @@
 use super::*;
 
-#[test]
-fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
+#[tokio::test]
+async fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
     use base64::Engine;
     let key = aws_lc_rs::signature::Ed25519KeyPair::generate_pkcs8(
         &aws_lc_rs::rand::SystemRandom::new(),
@@ -14,7 +14,12 @@ fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
         "invoke",
         std::time::Duration::from_secs(60),
     )?;
-    let gateway = Gateway::new(&issuer, "https://actors.example.com".into())?;
+    let gateway = test_gateway(
+        &issuer,
+        "http://127.0.0.1:7100".into(),
+        std::sync::Arc::new(super::super::socket_directory::MemorySocketDirectory::default()),
+    )
+    .await?;
     let actor = crate::actor::ActorKey {
         project_id: "test".into(),
         actor_name: "Counter".into(),
@@ -49,50 +54,111 @@ fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
     Ok(())
 }
 
+async fn test_gateway(
+    issuer: &ActorJwtIssuer,
+    origin: String,
+    directory: std::sync::Arc<dyn super::super::socket_directory::SocketDirectory>,
+) -> Result<Gateway> {
+    let sockets = super::super::socket_gateway::SocketGateway::start(
+        origin.clone(),
+        directory,
+        32768,
+        true,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await?;
+    Gateway::new(issuer, origin, sockets)
+}
+
 #[tokio::test]
-async fn websocket_grant_defers_activation_and_gateway_preserves_frames_and_close() -> Result<()> {
+async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() -> Result<()> {
+    use super::super::socket_directory::SocketDirectory;
     use super::super::{
         ActorTokenPurpose,
         admin::{AdminRegistry, AdminService, HostLaunchSpec, LocalAdminRegistry},
-        service::ControlPlaneService,
+        socket_gateway::{SocketEventReply, SocketEventRequest},
     };
-    use std::sync::Arc;
+    use crate::actor::{ActorKey, ActorSocketEffect, ActorSocketEvent, ActorSocketMessage};
+    use axum::response::IntoResponse;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     let issuer = super::super::service::tests::test_issuer()?;
-    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let upstream_route = format!("http://{}", upstream.local_addr()?);
-    let (accepted, receipt) = tokio::sync::oneshot::channel();
-    let verifier = issuer.socket_verifier()?;
-    let backend_ticket = std::sync::Mutex::new(None);
-    let backend = tokio::spawn(async move {
-        let (stream, _) = upstream.accept().await?;
-        let mut socket = tokio_tungstenite::accept_hdr_async(
-            stream,
-            |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                let url = reqwest::Url::parse(&format!("http://host{}", request.uri())).unwrap();
-                let key = url.query_pairs().find(|(name, _)| name == "key").unwrap().1;
-                *backend_ticket.lock().unwrap() = Some(verifier.verify(&key).unwrap());
-                Ok(response)
-            },
-        )
-        .await?;
-        assert!(
-            accepted
-                .send(backend_ticket.into_inner().unwrap().unwrap())
-                .is_ok()
+    let retiring = Arc::new(AtomicBool::new(false));
+    let rejections = Arc::new(AtomicUsize::new(4));
+    let uncertain_executions = Arc::new(AtomicUsize::new(0));
+    let mut hosts = Vec::new();
+    let mut host_routes = Vec::new();
+    for instance in [1, 2] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        host_routes.push(format!("http://{}", listener.local_addr()?));
+        let retiring = retiring.clone();
+        let rejections = rejections.clone();
+        let uncertain_executions = uncertain_executions.clone();
+        let handler = move |axum::Json(request): axum::Json<SocketEventRequest>| {
+            let retiring = retiring.clone();
+            let rejections = rejections.clone();
+            let uncertain_executions = uncertain_executions.clone();
+            async move {
+                if instance == 2
+                    && rejections
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                            value.checked_sub(1)
+                        })
+                        .is_ok()
+                {
+                    return axum::Json(SocketEventReply::NotExecuted).into_response();
+                }
+                if instance == 1 && retiring.load(Ordering::SeqCst) {
+                    return axum::Json(SocketEventReply::NotExecuted).into_response();
+                }
+                if matches!(&request.invocation.event, ActorSocketEvent::Message {
+                    message: ActorSocketMessage::Text { data }, ..
+                } if data == "uncertain")
+                {
+                    uncertain_executions.fetch_add(1, Ordering::SeqCst);
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let effects = match request.invocation.event {
+                    ActorSocketEvent::Connect { connection } => vec![
+                        ActorSocketEffect::SetMetadata {
+                            connection_id: connection.id.clone(),
+                            metadata: serde_json::json!({"retained":true}),
+                        },
+                        ActorSocketEffect::Send {
+                            connection_id: connection.id,
+                            message: ActorSocketMessage::Text {
+                                data: "ready".into(),
+                            },
+                        },
+                    ],
+                    ActorSocketEvent::Message { connection_id, .. } => {
+                        assert_eq!(request.invocation.connections.len(), 1);
+                        assert_eq!(
+                            request.invocation.connections[0].metadata,
+                            serde_json::json!({"retained":true})
+                        );
+                        vec![ActorSocketEffect::Send {
+                            connection_id,
+                            message: ActorSocketMessage::Text {
+                                data: instance.to_string(),
+                            },
+                        }]
+                    }
+                    ActorSocketEvent::Disconnect { .. } => vec![],
+                };
+                axum::Json(SocketEventReply::Completed { effects }).into_response()
+            }
+        };
+        let routes = Router::new().route(
+            "/v1/projects/default/actors/Counter/one/socket-events",
+            axum::routing::post(handler),
         );
-        while let Some(message) = socket.next().await.transpose()? {
-            if message.is_close() {
-                socket.flush().await?;
-                break;
-            }
-            if message.is_text() || message.is_binary() {
-                socket.send(message).await?;
-            }
-        }
-        anyhow::Ok(())
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
+        hosts.push(tokio::spawn(
+            async move { axum::serve(listener, routes).await },
+        ));
+    }
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
@@ -114,11 +180,12 @@ async fn websocket_grant_defers_activation_and_gateway_preserves_frames_and_clos
         })
         .await?;
     let provisioner = Arc::new(PausedProvisioner {
-        route: upstream_route.clone(),
+        route: std::sync::Mutex::new(host_routes[0].clone()),
         started: tokio::sync::Semaphore::new(0),
         ready: tokio::sync::Semaphore::new(0),
+        unavailable: AtomicUsize::new(0),
     });
-    let mut service = ControlPlaneService::new(
+    let service = ControlPlaneService::new(
         Arc::new(crate::placement::testing::LocalObjectPlacementStore::default()),
         ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -131,112 +198,182 @@ async fn websocket_grant_defers_activation_and_gateway_preserves_frames_and_clos
         issuer.clone(),
         provisioner.clone(),
     );
-    service.region = Some("north-america-west".into());
-    service.gateway = Some(Gateway::new(&issuer, format!("http://{address}"))?);
-    let admin = AdminService::new(Some("api-key".into()), registry, issuer.clone())?;
-    let routes = super::super::public_api::router(service, admin);
-    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+    let directory = Arc::new(super::super::socket_directory::MemorySocketDirectory::default());
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let mut servers = Vec::new();
+    let mut gateways = Vec::new();
+    for _ in 0..2 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let gateway = test_gateway(&issuer, origin, directory.clone()).await?;
+        if gateways.is_empty() {
+            gateway.connections.owner(&actor).await?;
+        }
+        let mut service = service.clone();
+        service.gateway = Some(gateway.clone());
+        let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
+        let routes = super::super::public_api::router(service, admin);
+        servers.push(tokio::spawn(
+            async move { axum::serve(listener, routes).await },
+        ));
+        gateways.push(gateway);
+    }
     let result = async {
-        let invalid =
-            tokio_tungstenite::connect_async(format!("ws://{address}/v1/socket?key=invalid"))
-                .await
-                .unwrap_err();
-        assert!(
-            matches!(invalid, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == StatusCode::UNAUTHORIZED)
-        );
-        assert_eq!(provisioner.started.available_permits(), 0);
         let client = reqwest::Client::new();
-        let constrained: serde_json::Value = client
-            .post(format!(
-                "http://{address}/v1/projects/default/actors/Counter/one/find-websocket"
-            ))
-            .bearer_auth("api-key")
-            .json(&serde_json::json!({"metadata":{},"homeRegion":"north-america-west"}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let rejected =
-            tokio_tungstenite::connect_async(constrained["websocketUrl"].as_str().unwrap())
-                .await
-                .unwrap_err();
-        assert!(
-            matches!(rejected, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == StatusCode::BAD_GATEWAY)
-        );
-        assert_eq!(provisioner.started.available_permits(), 0);
-        let request = client
-            .post(format!(
-                "http://{address}/v1/projects/default/actors/Counter/one/find-websocket"
-            ))
-            .bearer_auth("api-key")
-            .json(&serde_json::json!({"metadata":{"userId":"alice"}}));
-        let response = tokio::select! {
-            response = request.send() => response?,
-            _ = provisioner.started.acquire() => anyhow::bail!("issuing a socket URL started the actor"),
-        };
-        let grant: serde_json::Value = response.error_for_status()?.json().await?;
-        assert_eq!(provisioner.started.available_permits(), 0);
-        let url = grant["websocketUrl"]
-            .as_str()
-            .context("socket URL")?
-            .to_owned();
-        let parsed = reqwest::Url::parse(&url)?;
-        assert_eq!(parsed.port(), Some(address.port()));
-        let key = parsed
-            .query_pairs()
-            .find(|(name, _)| name == "key")
-            .unwrap()
-            .1;
-        let unbound = issuer.verify_socket(&key)?;
-        assert!(unbound.target.is_none());
-        let connecting = tokio::spawn(async move { tokio_tungstenite::connect_async(url).await });
+        let mut sockets = Vec::new();
+        for gateway in &gateways {
+            let grant: serde_json::Value = client
+                .post(format!(
+                    "{}/v1/projects/default/actors/Counter/one/find-websocket",
+                    gateway.origin
+                ))
+                .bearer_auth("api-key")
+                .json(&serde_json::json!({"metadata":{}}))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let (socket, _) =
+                tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+            sockets.push(socket);
+        }
         provisioner.started.acquire().await?.forget();
-        assert!(
-            !connecting.is_finished(),
-            "the upgrade must await host readiness"
+        assert_eq!(
+            provisioner.started.available_permits(),
+            0,
+            "one coordinated actor activation"
         );
         provisioner.ready.add_permits(1);
-        let (mut socket, _) = connecting.await??;
-        let bound = receipt.await?;
-        assert_eq!(bound.actor, unbound.actor);
-        assert_eq!(bound.metadata, serde_json::json!({"userId":"alice"}));
-        assert_eq!(bound.authorized_until_ms, unbound.authorized_until_ms);
-        assert_eq!(bound.region, "north-america-east");
-        let target = bound.target.context("host binding")?;
-        assert_eq!(target.route, upstream_route);
-        assert_eq!(target.host_id, crate::host::HostId::new("host"));
-        assert_eq!(target.session_id, "session");
-        assert_eq!(target.owner_epoch, 7);
-        for message in [
-            UpstreamMessage::Text("hello".into()),
-            UpstreamMessage::Binary(vec![0, 1, 255].into()),
-        ] {
-            socket.send(message.clone()).await?;
-            assert_eq!(socket.next().await.transpose()?, Some(message));
+        for socket in &mut sockets {
+            assert_eq!(
+                socket.next().await.transpose()?,
+                Some(UpstreamMessage::Text("ready".into()))
+            );
         }
-        socket
-            .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                code: 1000.into(),
-                reason: "done".into(),
-            }))
-            .await?;
+        assert_eq!(gateways[0].connections.registry.count(&actor).await, 2);
+        assert_eq!(gateways[1].connections.registry.count(&actor).await, 0);
+        struct EmptyInventory;
+        #[async_trait::async_trait]
+        impl crate::placement::ActorInventoryReader for EmptyInventory {
+            async fn actor_inventory(
+                &self,
+                _: &str,
+            ) -> Result<crate::placement::ActorInventorySnapshot> {
+                Ok(crate::placement::ActorInventorySnapshot {
+                    actors: vec![],
+                    connections_complete: true,
+                })
+            }
+        }
+        let reader = super::super::socket_inventory::GatewayInventoryReader::new(
+            Arc::new(EmptyInventory),
+            gateways[1].connections.clone(),
+            Some("api-key".into()),
+        );
+        let overview =
+            crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
+        assert!(overview.connections_complete);
+        let overview = overview.actors;
+        assert_eq!(overview.len(), 1);
+        assert_eq!(overview[0].dormant, 1);
+        assert_eq!(overview[0].instances[0].connections.len(), 2);
+        assert_eq!(
+            overview[0].instances[0].connections[0].metadata,
+            serde_json::json!({"retained":true})
+        );
         assert!(
-            matches!(socket.next().await.transpose()?, Some(UpstreamMessage::Close(Some(frame))) if frame.code == 1000.into())
+            gateways[1]
+                .connections
+                .inventory("default", "Bearer wrong")
+                .await
+                .is_err()
+        );
+        assert!(
+            gateways[1]
+                .connections
+                .inventory("unrelated", "Bearer api-key")
+                .await?
+                .rooms
+                .is_empty()
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let unavailable = super::super::socket_directory::GatewayOwner {
+            id: "unavailable".into(),
+            route: format!("http://{}", listener.local_addr()?),
+        };
+        drop(listener);
+        directory.register(&unavailable, true).await?;
+        directory
+            .claim(
+                &ActorKey {
+                    actor_id: "unavailable".into(),
+                    ..actor.clone()
+                },
+                &unavailable,
+            )
+            .await?;
+        let partial =
+            crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
+        assert!(!partial.connections_complete);
+        assert_eq!(partial.actors[0].instances[0].connections.len(), 2);
+        retiring.store(true, Ordering::SeqCst);
+        *provisioner.route.lock().unwrap() = host_routes[1].clone();
+        provisioner.unavailable.store(2, Ordering::SeqCst);
+        provisioner.ready.add_permits(5);
+        for socket in &mut sockets {
+            socket.send(UpstreamMessage::Text("message".into())).await?;
+            assert_eq!(
+                socket.next().await.transpose()?,
+                Some(UpstreamMessage::Text("2".into()))
+            );
+        }
+        assert_eq!(
+            provisioner.started.available_permits(),
+            5,
+            "known non-execution may retry through the handoff"
+        );
+        assert_eq!(provisioner.unavailable.load(Ordering::SeqCst), 0);
+        sockets[0]
+            .send(UpstreamMessage::Text("uncertain".into()))
+            .await?;
+        assert!(matches!(
+            sockets[0].next().await.transpose()?,
+            Some(UpstreamMessage::Close(_))
+        ));
+        assert_eq!(uncertain_executions.load(Ordering::SeqCst), 1);
+        for socket in &mut sockets[1..] {
+            socket.close(None).await?;
+        }
+        let health = format!("{}/healthz", gateways[0].origin);
+        assert_eq!(client.get(&health).send().await?.status(), StatusCode::OK);
+        gateways[0].connections.stop.cancel();
+        assert_eq!(
+            client.get(&health).send().await?.status(),
+            StatusCode::SERVICE_UNAVAILABLE
         );
         anyhow::Ok(())
     };
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), result).await;
-    server.abort();
-    backend.abort();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), result).await;
+    for gateway in gateways {
+        gateway.connections.stop.cancel();
+    }
+    for server in servers.into_iter().chain(hosts) {
+        server.abort();
+    }
     result??;
     Ok(())
 }
 
 struct PausedProvisioner {
-    route: String,
+    route: std::sync::Mutex<String>,
     started: tokio::sync::Semaphore,
     ready: tokio::sync::Semaphore,
+    unavailable: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -268,13 +405,24 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
         assert_eq!(region, "north-america-east");
         assert_eq!(actor.actor_id, "one");
         assert!(new_actor);
+        if self
+            .unavailable
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |value| value.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(crate::sandbox::HostNotReady.into());
+        }
         self.started.add_permits(1);
         self.ready.acquire().await?.forget();
         Ok((
             crate::host_leases::HostLease {
                 id: crate::host::HostId::new("host"),
                 session_id: "session".into(),
-                route: self.route.clone(),
+                route: self.route.lock().unwrap().clone(),
                 expires_at_ms: u64::MAX,
             },
             7,
@@ -288,4 +436,70 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
     ) -> Result<crate::sandbox::HostTermination> {
         unreachable!()
     }
+}
+
+#[tokio::test]
+async fn gateway_accepts_32_mib_and_closes_oversize_with_1009() -> Result<()> {
+    let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let backend_address = backend.local_addr()?;
+    let echo = tokio::spawn(async move {
+        let (stream, _) = backend.accept().await?;
+        let config = WebSocketConfig::default()
+            .max_frame_size(None)
+            .max_message_size(None);
+        let mut socket = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_text() {
+                socket.send(message).await?;
+            }
+        }
+        anyhow::Ok(())
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let router = Router::new().route(
+        "/",
+        get(move |upgrade: WebSocketUpgrade| async move {
+            let (upstream, _) = connect_async_with_config(
+                format!("ws://{backend_address}"),
+                Some(
+                    WebSocketConfig::default()
+                        .max_frame_size(None)
+                        .max_message_size(None),
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+            upgrade
+                .max_frame_size(crate::sockets::MAX_MESSAGE_BYTES)
+                .max_message_size(crate::sockets::MAX_MESSAGE_BYTES)
+                .on_upgrade(|socket| bridge(socket, upstream))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let result = async {
+        let config = WebSocketConfig::default()
+            .max_frame_size(None)
+            .max_message_size(None);
+        let (mut socket, _) =
+            connect_async_with_config(format!("ws://{address}"), Some(config), false).await?;
+        let message = UpstreamMessage::Text("x".repeat(32 * 1024 * 1024).into());
+        socket.send(message.clone()).await?;
+        assert_eq!(socket.next().await.transpose()?, Some(message));
+        let _ = socket
+            .send(UpstreamMessage::Text(
+                "x".repeat(32 * 1024 * 1024 + 1).into(),
+            ))
+            .await;
+        assert!(
+            matches!(socket.next().await.transpose()?, Some(UpstreamMessage::Close(Some(frame))) if frame.code == 1009.into())
+        );
+        anyhow::Ok(())
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), result).await;
+    server.abort();
+    echo.abort();
+    result??;
+    Ok(())
 }

@@ -5,7 +5,7 @@ import { Actor, findActorDefinition, registerActorClass } from "../actor/actor.j
 import type { ActorClass } from "../actor/actor.js"
 import { ACTOR_ARTIFACT_VERSION } from "../actor/schema.js"
 import type { ActorSchema } from "../actor/schema.js"
-import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorDefinitionError, errorMessage } from "../errors.js"
 
 import { ActorRuntime } from "./actor-runtime.js"
@@ -28,7 +28,7 @@ const invocation = new AsyncLocalStorage<number>()
 const publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
 const loadingConnections = new Map<
     number,
-    { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void }
+    { resolve: (connections: SocketLookup) => void; reject: (error: Error) => void }
 >()
 if (workerData !== undefined && workerData !== null) void initialize(workerData as ActorWorkerData)
 else {
@@ -112,13 +112,13 @@ function publish(effects: readonly SocketEffect[]): Promise<void> {
     })
 }
 
-function getConnections(): Promise<readonly SocketConnection[]> {
+function getConnections(query?: SocketQuery): Promise<SocketLookup> {
     return new Promise((resolve, reject) => {
         const messageId = invocation.getStore()
         if (messageId === undefined) throw new Error("connection lookup has no active invocation")
         if (loadingConnections.has(messageId)) throw new Error("actor connections are already being loaded")
         loadingConnections.set(messageId, { resolve, reject })
-        post({ type: "get_connections", messageId })
+        post({ type: "get_connections", messageId, query })
     })
 }
 

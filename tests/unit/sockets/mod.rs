@@ -4,78 +4,98 @@ use super::*;
 use crate::actor::validate_socket_effects;
 
 #[tokio::test]
-async fn inventory_notifies_on_activation_metadata_and_disconnect() -> anyhow::Result<()> {
+async fn admission_enforces_connection_limit_and_reopens_after_disconnect() {
     let registry = SocketRegistry::default();
-    let mut changes = registry.inventory_changes();
     let actor = ActorKey {
         project_id: "default".into(),
         actor_name: "Room".into(),
-        actor_id: "one".into(),
+        actor_id: "large".into(),
     };
     let (sender, _receiver) = socket_channel();
-    registry
-        .insert(
-            &actor,
-            ActorSocketConnection {
-                id: "socket".into(),
-                metadata: json!({"name":"Ada"}),
-                tags: vec![],
-            },
-            sender,
-            None,
-        )
-        .await;
-    assert!(registry.inventory().await.is_empty());
-    assert!(!changes.has_changed()?);
-    registry.activate(&actor, "socket").await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert_eq!(
-        registry.inventory().await[0].connections[0].metadata,
-        json!({"name":"Ada"})
+    for index in 0..32768 {
+        assert!(
+            registry
+                .insert(
+                    &actor,
+                    ActorSocketConnection {
+                        id: index.to_string(),
+                        metadata: Value::Null,
+                        tags: vec![]
+                    },
+                    sender.clone(),
+                )
+                .await,
+            "connection {index}"
+        );
+    }
+    let connection = ActorSocketConnection {
+        id: "next".into(),
+        metadata: Value::Null,
+        tags: vec![],
+    };
+    assert!(
+        !registry
+            .insert(&actor, connection.clone(), sender.clone())
+            .await
     );
-    registry
-        .apply(
-            &actor,
-            vec![ActorSocketEffect::SetMetadata {
-                connection_id: "socket".into(),
-                metadata: json!({"name":"Grace"}),
-            }],
-        )
-        .await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert_eq!(
-        registry.inventory().await[0].connections[0].metadata,
-        json!({"name":"Grace"})
-    );
-    registry.remove(&actor, "socket").await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert!(registry.inventory().await.is_empty());
-    Ok(())
+    registry.remove(&actor, "0").await;
+    assert!(registry.insert(&actor, connection, sender).await);
+}
+
+#[test]
+fn metadata_and_tags_enforce_size_limits() {
+    assert!(crate::actor::validate_socket_metadata(&json!("x".repeat(16382))).is_ok());
+    assert!(crate::actor::validate_socket_metadata(&json!("x".repeat(16383))).is_err());
+    for (count, valid) in [(10, true), (11, false)] {
+        let effect = ActorSocketEffect::SetTags {
+            connection_id: "socket".into(),
+            tags: (0..count)
+                .map(|i| format!("{i:02}{}", "x".repeat(254)))
+                .collect(),
+        };
+        assert_eq!(validate_socket_effects(&[effect]).is_ok(), valid);
+    }
 }
 
 #[tokio::test]
-async fn slow_consumers_close_without_blocking_actor_output() {
-    let (sender, mut receiver) = socket_channel();
-    for _ in 0..32 {
-        sender
-            .send(OutboundMessage::Close {
-                code: 1000,
-                reason: String::new(),
-            })
-            .unwrap();
+async fn message_preparation_copies_only_the_originating_connection() {
+    let registry = SocketRegistry::default();
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Room".into(),
+        actor_id: "large".into(),
+    };
+    for id in ["sender", "other"] {
+        let (outbound, _receiver) = socket_channel();
+        assert!(
+            registry
+                .insert(
+                    &actor,
+                    ActorSocketConnection {
+                        id: id.into(),
+                        metadata: json!({"id":id}),
+                        tags: vec![]
+                    },
+                    outbound,
+                )
+                .await
+        );
+        registry.activate(&actor, id).await;
     }
-    assert!(
-        sender
-            .send(OutboundMessage::Close {
-                code: 1000,
-                reason: String::new()
-            })
-            .is_err()
-    );
-    assert!(matches!(
-        receiver.recv().await,
-        Some(OutboundMessage::Close { code: 1013, .. })
-    ));
+    let (_, connections) = registry
+        .prepare_event(
+            &actor,
+            ActorSocketEvent::Message {
+                connection_id: "sender".into(),
+                message: ActorSocketMessage::Text {
+                    data: "null".into(),
+                },
+            },
+        )
+        .await;
+    assert_eq!(connections.len(), 1);
+    assert_eq!(connections[0].id, "sender");
+    assert_eq!(registry.connections_with_tag(&actor, None).await.len(), 2);
 }
 
 #[tokio::test]
@@ -106,7 +126,6 @@ async fn broadcast_matches_all_or_any_tags_and_preserves_exclusions() {
                         tags: Vec::new(),
                     },
                     outbound,
-                    None
                 )
                 .await
         );
@@ -236,7 +255,6 @@ async fn registry_retains_metadata_tags_and_outbound_messages() {
                     tags: Vec::new(),
                 },
                 outbound,
-                None,
             )
             .await
     );
@@ -273,7 +291,7 @@ async fn registry_retains_metadata_tags_and_outbound_messages() {
         .await;
 
     assert_eq!(
-        registry.connections(&actor).await,
+        registry.connections_with_tag(&actor, None).await,
         vec![ActorSocketConnection {
             id: "socket-1".into(),
             metadata: json!({ "userId": "user-1", "ready": true }),
@@ -288,4 +306,86 @@ async fn registry_retains_metadata_tags_and_outbound_messages() {
         messages.recv().await,
         Some(OutboundMessage::Message(ActorSocketMessage::Text { data })) if data == "everyone"
     ));
+}
+
+#[tokio::test]
+async fn connection_queries_count_active_sockets_and_filter_tags() {
+    let registry = SocketRegistry::default();
+    let actor = ActorKey {
+        project_id: "p".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let (sender, _receiver) = socket_channel();
+    for (id, tags) in [("a", vec!["blue".into()]), ("b", vec!["red".into()])] {
+        assert!(
+            registry
+                .insert(
+                    &actor,
+                    ActorSocketConnection {
+                        id: id.into(),
+                        metadata: Value::Null,
+                        tags
+                    },
+                    sender.clone(),
+                )
+                .await
+        );
+    }
+    assert_eq!(registry.count(&actor).await, 0);
+    registry.activate(&actor, "a").await;
+    assert_eq!(registry.count(&actor).await, 1);
+    registry.activate(&actor, "a").await;
+    assert_eq!(registry.count(&actor).await, 1);
+    registry.activate(&actor, "b").await;
+    assert_eq!(
+        registry
+            .connections_with_tag(&actor, Some("blue"))
+            .await
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a"]
+    );
+    registry.remove(&actor, "a").await;
+    assert_eq!(registry.count(&actor).await, 1);
+}
+
+#[tokio::test]
+async fn automatic_responses_are_scoped_to_the_actor_and_can_be_cleared() {
+    let registry = SocketRegistry::default();
+    let actor = ActorKey {
+        project_id: "p".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let other = ActorKey {
+        actor_id: "other".into(),
+        ..actor.clone()
+    };
+    registry
+        .apply(
+            &actor,
+            vec![ActorSocketEffect::SetAutoResponse {
+                request: Some("ping".into()),
+                response: Some("pong".into()),
+            }],
+        )
+        .await;
+    assert_eq!(
+        registry.auto_response(&actor, "ping").await.as_deref(),
+        Some("pong")
+    );
+    assert_eq!(registry.auto_response(&other, "ping").await, None);
+    assert_eq!(registry.auto_response(&actor, "other").await, None);
+    registry
+        .apply(
+            &actor,
+            vec![ActorSocketEffect::SetAutoResponse {
+                request: None,
+                response: None,
+            }],
+        )
+        .await;
+    assert_eq!(registry.auto_response(&actor, "ping").await, None);
 }

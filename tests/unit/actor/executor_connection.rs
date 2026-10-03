@@ -7,13 +7,13 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":21})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":23})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         assert_eq!(load["environment"]["CUSTOMER_KEY"], "value");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":21,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":23,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -67,7 +67,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":21, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":23, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -104,14 +104,23 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
     }
     #[async_trait]
     impl ActorSocketSource for Source {
-        async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>> {
+        async fn query(
+            &self,
+            actor: &ActorKey,
+            query: crate::actor::SocketQuery,
+        ) -> Result<crate::actor::SocketLookup> {
             self.requested.send(actor.clone())?;
             self.release.acquire().await?.forget();
-            Ok(vec![ActorSocketConnection {
-                id: actor.actor_id.clone(),
-                metadata: json!({}),
-                tags: vec![],
-            }])
+            if query.count_only {
+                return Ok(crate::actor::SocketLookup::Count(1));
+            }
+            Ok(crate::actor::SocketLookup::Connections(vec![
+                ActorSocketConnection {
+                    id: actor.actor_id.clone(),
+                    metadata: json!({}),
+                    tags: vec![],
+                },
+            ]))
         }
     }
     let (host, customer) = UnixStream::pair()?;
@@ -301,7 +310,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":21, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":23, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -548,11 +557,11 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":21,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":23,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 21, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 23, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;

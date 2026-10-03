@@ -16,6 +16,7 @@ afterEach(cleanup)
 
 const now = Date.now()
 const inventory: ActorInventory = {
+    connectionsComplete: true,
     actors: [
         { actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live", connections: [{ id: "open-connection-1234567890", metadata: { name: "Ada" } }] }] }
     ]
@@ -194,6 +195,7 @@ test("a connection reported by a host before its connect trace is saved starts w
     const before = queries.length
     await act(async () =>
         publish({
+            connectionsComplete: true,
             actors: [
                 {
                     ...inventory.actors[0]!,

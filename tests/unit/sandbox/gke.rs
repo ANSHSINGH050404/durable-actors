@@ -64,7 +64,6 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
     let provider = GkeSandboxProvider {
         cluster: cluster.clone(),
         assignment: Arc::new(Assign),
-        public_origin: "https://actors.example.com".into(),
     };
     let request = request()?;
     let result = provider.ensure_host(&request).await?;
@@ -112,7 +111,6 @@ fn request() -> Result<EnsureHostRequest> {
         control_plane_url: "http://control:7100".into(),
         jwt_issuer: "issuer".into(),
         invocation_jwt_audience: "invoke".into(),
-        socket_jwt_audience: "socket".into(),
         image_ref: "registry/runtime@sha256:abc".into(),
         working_directory: "/customer".into(),
         actor_entrypoint: Some("/customer/actors.mjs".into()),
@@ -159,7 +157,6 @@ async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Res
             creates: AtomicUsize::new(0),
         }),
         assignment: Arc::new(ExpiredAssignment),
-        public_origin: "https://actors.example.com".into(),
     };
     assert!(provider.ensure_host(&request()?).await.is_err());
     Ok(())

@@ -233,7 +233,7 @@ function tickLabel(tick: number, step: number) {
 }
 
 export function statusLabel(status: SocketSession["status"]) {
-    return status === "open" ? "Open" : status === "closed" ? "Closed" : "Lost"
+    return status === "open" ? "Open" : status === "closed" ? "Closed" : status === "unknown" ? "Unknown" : "Lost"
 }
 
 export function durationLabel(session: SocketSession, now: number) {

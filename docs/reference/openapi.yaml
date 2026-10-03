@@ -1086,8 +1086,11 @@ components:
                 authorizedUntilMs: { type: integer, format: int64, description: Connection expires at this time. }
         Inventory:
             type: object
-            required: [actors]
+            required: [actors, connectionsComplete]
             properties:
+                connectionsComplete:
+                    type: boolean
+                    description: False when a gateway could not be queried; connection lists and counts may be incomplete.
                 actors:
                     type: array
                     items:

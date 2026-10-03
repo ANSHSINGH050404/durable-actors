@@ -133,3 +133,45 @@ test("invalid actor messages fail before queuing socket output", async () => {
     })
     assert.deepEqual(result.effects, [])
 })
+
+test("metadata and tags enforce size limits", async () => {
+    await runWithActorSockets({}, [{ id: "socket", metadata: null, tags: [] }], async scope => {
+        const socket = scope.connection("socket")
+        socket.metadata = "x".repeat(16382)
+        assert.throws(() => {
+            socket.metadata = "x".repeat(16383)
+        })
+        socket.setTags(...Array.from({ length: 10 }, (_, i) => String(i)))
+        assert.throws(() => socket.setTags(...Array.from({ length: 11 }, (_, i) => String(i))))
+    })
+})
+
+test("count and tagged lookup query the gateway without loading the full list", async () => {
+    const queries: unknown[] = []
+    const source = async (query?: { tag?: string; countOnly?: boolean }) => {
+        queries.push(query)
+        if (query?.countOnly) return 32768
+        assert.equal(query?.tag, "blue")
+        return [{ id: "blue-one", metadata: null, tags: ["blue"] }]
+    }
+    await runWithActorSockets({}, source, async scope => {
+        assert.equal(await scope.getConnectionCount(), 32768)
+        assert.deepEqual(
+            (await scope.getConnections("blue")).map(socket => socket.id),
+            ["blue-one"]
+        )
+    })
+    assert.deepEqual(queries, [{ countOnly: true }, { tag: "blue" }])
+})
+
+test("automatic heartbeat responses are transported and can be cleared", async () => {
+    const result = await runWithActorSockets({}, [], async scope => {
+        scope.setWebSocketAutoResponse({ request: "ping", response: "pong" })
+        scope.setWebSocketAutoResponse()
+        assert.throws(() => scope.setWebSocketAutoResponse({ request: "x".repeat(2049), response: "pong" }), /2048/)
+    })
+    assert.deepEqual(parseSocketEffects(result.effects), [
+        { type: "set_auto_response", request: "ping", response: "pong" },
+        { type: "set_auto_response", request: null, response: null }
+    ])
+})

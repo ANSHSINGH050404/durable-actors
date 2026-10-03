@@ -165,7 +165,6 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
             &self,
             request: &HostLeaseRequest,
             _: Option<&[crate::actor::ActorKey]>,
-            _: &[crate::host_leases::ActorSocketInventory],
             queues: Option<&[ActorQueueInventory]>,
         ) -> Result<HostLease> {
             self.0.send_replace(queues.map(<[_]>::to_vec));

@@ -10,7 +10,6 @@ use crate::{
 pub(crate) struct SocketGrant {
     pub actor: ActorKey,
     pub region: String,
-    pub target: Option<SocketTarget>,
     pub home_region: Option<String>,
     pub metadata: Value,
     pub authorization_lifetime_ms: i64,
@@ -42,9 +41,7 @@ pub(crate) struct SocketTicket {
     pub nbf: i64,
     pub exp: i64,
     pub actor: ActorKey,
-    // Until host binding, region is a hint and home_region is an explicit placement constraint.
     pub region: String,
-    pub target: Option<SocketTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_region: Option<String>,
     pub metadata: Value,
@@ -80,15 +77,6 @@ impl SocketTicket {
         );
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct SocketTarget {
-    pub route: String,
-    pub host_id: crate::host::HostId,
-    pub session_id: String,
-    pub owner_epoch: u64,
 }
 
 #[derive(Clone)]

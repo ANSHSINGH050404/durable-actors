@@ -46,7 +46,7 @@ const stateMessageSchema = z.discriminatedUnion("type", [
 ])
 
 function socketMetadata(value: unknown, schemas: ActorSchemas = {}): JsonValue {
-    return validateValue(value, "socket metadata", schemas.metadata, 64 * 1024)
+    return validateValue(value, "socket metadata", schemas.metadata, 16 * 1024)
 }
 
 function incomingMessage(value: unknown, schemas: ActorSchemas = {}): JsonValue {

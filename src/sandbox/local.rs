@@ -77,35 +77,13 @@ impl SandboxProvider for LocalSandboxProvider {
                 .store
                 .host(host.as_str())
                 .await?
-                .context("local host missing")?;
+                .ok_or(super::HostNotReady)?;
             match record.status.as_str() {
                 "ready" => return Ok(()),
                 "starting" => self.runtime.changed(&mut changes).await?,
-                _ => anyhow::bail!("local actor is not ready"),
+                _ => return Err(super::HostNotReady.into()),
             }
         }
-    }
-
-    async fn socket_credentials(
-        &self,
-        request: &super::SocketCredentialsRequest,
-    ) -> Result<super::SocketCredentials> {
-        let record = self
-            .runtime
-            .store
-            .host(request.host_id.as_str())
-            .await?
-            .context("local host missing")?;
-        ensure!(record.status == "ready", "local actor is not ready");
-        let lease = self
-            .active_lease(&record)
-            .await?
-            .context("socket host lease expired")?;
-        ensure!(
-            lease.session_id == request.session_id,
-            "socket host session replaced"
-        );
-        Ok(super::SocketCredentials { url: lease.route })
     }
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -438,10 +416,6 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             request.control_plane_url.clone(),
         ),
         ("DURABLE_ACTORS_JWT_ISSUER", request.jwt_issuer.clone()),
-        (
-            "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE",
-            request.socket_jwt_audience.clone(),
-        ),
         (
             "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE",
             request.invocation_jwt_audience.clone(),

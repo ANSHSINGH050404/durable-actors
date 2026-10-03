@@ -30,7 +30,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
     let gateway = invocations
         .gateway
         .clone()
-        .map(|gateway| gateway.router(invocations.clone()))
+        .map(|gateway| gateway.router(invocations.clone(), admin.clone()))
         .unwrap_or_default();
     let hosts = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -39,7 +39,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .expect("actor invocation HTTP client");
     Router::new()
         .route("/openapi.yaml", get(openapi))
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(health))
         .route("/v1/projects/{project_id}/sessions", post(issue_session))
         .route(
             "/v1/projects/{project_id}/deployment",
@@ -71,6 +71,21 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         })
         .merge(contracts)
         .merge(gateway)
+}
+
+async fn health(State(state): State<PublicApiState>) -> (StatusCode, &'static str) {
+    if state
+        .invocations
+        .gateway
+        .as_ref()
+        .is_some_and(|gateway| gateway.connections.ensure_authority().is_err())
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "socket gateway lease expired",
+        );
+    }
+    (StatusCode::OK, "ok")
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -140,36 +155,24 @@ async fn find_websocket(
         .invocations
         .validate_home_region(request.home_region.as_deref())
         .map_err(ApiError::assignment)?;
-    let mut grant = super::socket_ticket::SocketGrant {
+    let grant = super::socket_ticket::SocketGrant {
         actor: path.into_actor(),
         region: request
             .home_region
             .clone()
             .unwrap_or_else(|| state.invocations.default_region().into()),
-        target: None,
         home_region: request.home_region.clone(),
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
     grant.validate().map_err(ApiError::bad_request)?;
-    let credentials = if let Some(gateway) = &state.invocations.gateway {
-        crate::sandbox::SocketCredentials {
-            url: gateway.origin.clone(),
-        }
-    } else {
-        let (region, target, credentials) = state
-            .invocations
-            .socket_destination(&grant.actor, &grant.region, request.home_region.as_deref())
-            .await
-            .map_err(ApiError::routing)?;
-        grant.region = region;
-        grant.target = Some(target);
-        grant.home_region = None;
-        credentials
-    };
+    let gateway =
+        state.invocations.gateway.as_ref().ok_or_else(|| {
+            ApiError::internal(anyhow::anyhow!("socket gateway is not configured"))
+        })?;
     let issued = state
         .admin
-        .issue_direct_socket(grant, credentials)
+        .issue_socket(grant, &gateway.origin)
         .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response())
 }

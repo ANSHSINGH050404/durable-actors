@@ -111,22 +111,16 @@ async fn actor_inventory(
         .await
         .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
         .map_err(ApiError::internal)?;
-    Ok((
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({ "actors": inventory })),
-    )
-        .into_response())
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(inventory)).into_response())
 }
 
 async fn read_inventory(
     state: &InspectionApi,
     project: &str,
-) -> Result<Vec<crate::placement::ActorInventory>> {
-    let mut rows: std::collections::BTreeMap<_, _> = state
-        .inspector
-        .inventory
-        .actor_inventory(project)
-        .await?
+) -> Result<crate::placement::ActorInventorySnapshot> {
+    let mut inventory = state.inspector.inventory.actor_inventory(project).await?;
+    let mut rows: std::collections::BTreeMap<_, _> = inventory
+        .actors
         .into_iter()
         .map(|row| (row.actor_name.clone(), row))
         .collect();
@@ -144,7 +138,8 @@ async fn read_inventory(
             }
         }
     }
-    Ok(rows.into_values().collect())
+    inventory.actors = rows.into_values().collect();
+    Ok(inventory)
 }
 
 async fn actor_events(
@@ -166,7 +161,9 @@ async fn actor_events(
                 result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &project)) => result,
             };
             let data = match result {
-                Ok(Ok(actors)) => serde_json::json!({"actors": actors}).to_string(),
+                Ok(Ok(inventory)) => {
+                    serde_json::to_string(&inventory).expect("serializable inventory")
+                }
                 _ => {
                     let _ = sender
                         .send(Ok(Event::default()

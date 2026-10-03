@@ -87,7 +87,6 @@ pub struct EnsureHostRequest {
     pub control_plane_url: String,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
-    pub socket_jwt_audience: String,
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
@@ -145,19 +144,16 @@ pub struct HostTermination {
     pub resource_ids: Vec<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SocketCredentialsRequest {
-    pub resource_id: Option<String>,
-    pub canonical_region: String,
-    pub host_id: HostId,
-    pub session_id: String,
+#[derive(Debug)]
+pub(crate) struct HostNotReady;
+
+impl std::fmt::Display for HostNotReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("actor host is not ready")
+    }
 }
 
-#[derive(Deserialize)]
-pub struct SocketCredentials {
-    pub url: String,
-}
+impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
@@ -173,10 +169,6 @@ pub trait SandboxProvider: Send + Sync {
     }
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
 
-    async fn socket_credentials(
-        &self,
-        request: &SocketCredentialsRequest,
-    ) -> Result<SocketCredentials>;
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;
 }

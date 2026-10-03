@@ -37,7 +37,7 @@ class Counter(Actor):
                     if generic:
                         assert json.loads(await reader.readline()) == {
                             "type": "warm",
-                            "protocol": 21,
+                            "protocol": 23,
                         }
                         writer.write(
                             (
@@ -54,10 +54,10 @@ class Counter(Actor):
                     attached = json.loads(await reader.readline())
                     assert attached == {
                         "type": "attach",
-                        "protocol": 21,
+                        "protocol": 23,
                         "actor_names": ["Counter"],
                     }
-                    writer.write(b'{"type":"attached","protocol":21}\n')
+                    writer.write(b'{"type":"attached","protocol":23}\n')
                     writer.write(
                         (
                             json.dumps(
@@ -162,7 +162,7 @@ class Counter(Actor):
                     writer.write((json.dumps(message) + "\n").encode())
 
                 assert (await receive())["type"] == "attach"
-                send({"type": "attached", "protocol": 21})
+                send({"type": "attached", "protocol": 23})
                 actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
                 invocation = {
                     "type": "invoke",

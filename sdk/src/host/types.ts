@@ -1,5 +1,5 @@
 import type { ActorIdentity } from "../actor/identity.js"
-import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketEffect, SocketSource } from "../actor/socketProtocol.js"
 
 import type {
     ActorExecutorCommand,
@@ -18,7 +18,6 @@ interface ActorHostSettings {
 }
 
 type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
-type SocketSource = () => Promise<readonly SocketConnection[]>
 
 type ActorCommandHandler = (
     command: ActorExecutorCommand,

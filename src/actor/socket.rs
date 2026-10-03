@@ -1,22 +1,37 @@
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::executor_connection::{ActorSocketEffect, ActorSocketMessage};
 use super::{ActorKey, ActorSocketConnection};
 
-#[async_trait]
-pub(crate) trait ActorSocketSource: Send + Sync {
-    async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>>;
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SocketQuery {
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub count_only: bool,
 }
 
-pub(crate) const MAX_SOCKET_METADATA_BYTES: usize = 64 * 1024;
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SocketLookup {
+    Connections(Vec<ActorSocketConnection>),
+    Count(usize),
+}
+
+#[async_trait]
+pub(crate) trait ActorSocketSource: Send + Sync {
+    async fn query(&self, actor: &ActorKey, query: SocketQuery) -> Result<SocketLookup>;
+}
+
+pub(crate) const MAX_SOCKET_METADATA_BYTES: usize = 16 * 1024;
 
 const MAX_SOCKET_CONNECTION_ID_BYTES: usize = 128;
-const MAX_SOCKET_TAGS: usize = 128;
+const MAX_SOCKET_TAGS: usize = 10;
 const MAX_SOCKET_TAG_CHARACTERS: usize = 256;
-const MAX_SOCKET_TAG_BYTES: usize = 8 * 1024;
 const MAX_SOCKET_CLOSE_REASON_BYTES: usize = 123;
 
 pub(crate) fn validate_socket_metadata(metadata: &Value) -> Result<()> {
@@ -36,6 +51,20 @@ pub(crate) fn validate_socket_effects(effects: &[ActorSocketEffect]) -> Result<(
 
 fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
     match effect {
+        ActorSocketEffect::SetAutoResponse { request, response } => {
+            ensure!(
+                request.is_some() == response.is_some(),
+                "automatic response requires both request and response"
+            );
+            ensure!(
+                request
+                    .iter()
+                    .chain(response.iter())
+                    .all(|value| value.chars().count() <= 2048),
+                "automatic response exceeds 2048 characters"
+            );
+            Ok(())
+        }
         ActorSocketEffect::StateSnapshot {
             connection_id,
             state,
@@ -73,10 +102,6 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
             tags,
             ..
         } => {
-            ensure!(
-                except_connection_ids.len() <= MAX_SOCKET_TAGS,
-                "socket broadcast exclusions exceed {MAX_SOCKET_TAGS} entries"
-            );
             for connection_id in except_connection_ids {
                 validate_connection_id(connection_id)?;
             }
@@ -141,19 +166,13 @@ fn validate_socket_tags(tags: &[String]) -> Result<()> {
         tags.len() <= MAX_SOCKET_TAGS,
         "socket tags exceed {MAX_SOCKET_TAGS} entries"
     );
-    let mut total_bytes = 0usize;
     for tag in tags {
         ensure!(!tag.is_empty(), "socket tag is empty");
         ensure!(
             tag.chars().count() <= MAX_SOCKET_TAG_CHARACTERS,
             "socket tag exceeds {MAX_SOCKET_TAG_CHARACTERS} characters"
         );
-        total_bytes = total_bytes.saturating_add(tag.len());
     }
-    ensure!(
-        total_bytes <= MAX_SOCKET_TAG_BYTES,
-        "socket tags exceed {MAX_SOCKET_TAG_BYTES} bytes"
-    );
     Ok(())
 }
 

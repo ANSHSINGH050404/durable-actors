@@ -32,7 +32,7 @@ class Session(Channel):
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 21})
+                await self.send({"type": "warm", "protocol": 23})
                 assignment = await self.read()
                 if (
                     assignment.get("type") != "load"
@@ -49,10 +49,10 @@ class Session(Channel):
             actors = load_artifact(path)
             self.runtimes = {actor.__name__: ActorRuntime(actor, self) for actor in actors}
             await self.send(
-                {"type": "attach", "protocol": 21, "actor_names": sorted(self.runtimes)}
+                {"type": "attach", "protocol": 23, "actor_names": sorted(self.runtimes)}
             )
             attached = await self.read()
-            if attached.get("type") != "attached" or attached.get("protocol") != 21:
+            if attached.get("type") != "attached" or attached.get("protocol") != 23:
                 raise ValueError("unsupported executor protocol")
             if attached.get("supports_residency"):
                 self.residency = asyncio.create_task(self.report_residency())
@@ -106,8 +106,15 @@ class Session(Channel):
     async def publish(self, effects: list[Document]) -> None:
         await self.exchange("socket_effects", "socket_effects_published", effects=effects)
 
-    async def get_connections(self) -> list[Document]:
-        return cast(list[Document], await self.exchange("get_connections", "socket_connections"))
+    async def get_connections(
+        self, tag: str | None = None, count_only: bool = False
+    ) -> list[Document] | int:
+        return cast(
+            list[Document] | int,
+            await self.exchange(
+                "get_connections", "socket_connections", query={"tag": tag, "countOnly": count_only}
+            ),
+        )
 
     def admit(self) -> None:
         data = serialize({"type": "ready_for_invocation", "message_id": message_id.get()})

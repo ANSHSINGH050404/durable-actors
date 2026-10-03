@@ -2,6 +2,7 @@ import { Worker } from "node:worker_threads"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorKey } from "../actor/identity.js"
+import type { SocketQuery } from "../actor/socketProtocol.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import { errorMessage } from "../errors.js"
 
@@ -345,7 +346,7 @@ class ActorWorker implements ActorWorkerHandle {
             return
         }
         if (message.type === "get_connections") {
-            void this.loadConnections(message.messageId)
+            void this.loadConnections(message.messageId, message.query)
             return
         }
         if (message.type === "socket_effects") {
@@ -384,11 +385,11 @@ class ActorWorker implements ActorWorkerHandle {
         }
     }
 
-    private async loadConnections(messageId: number): Promise<void> {
+    private async loadConnections(messageId: number, query?: SocketQuery): Promise<void> {
         try {
             const source = this.pending.get(messageId)?.connections
             if (source === undefined) throw new Error("actor connection lookup is unavailable")
-            const connections = await source()
+            const connections = await source(query)
             this.post({ type: "socket_connections", messageId, connections })
         } catch (error) {
             this.post({ type: "socket_connections", messageId, connections: [], error: errorMessage(error) })

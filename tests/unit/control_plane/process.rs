@@ -6,6 +6,21 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use super::*;
 use std::collections::HashMap;
 
+#[test]
+fn configures_gateway_connection_limit() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(parse(&values)?.max_socket_connections, 32768);
+    values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "4096");
+    let config = parse(&values)?;
+    assert_eq!(config.max_socket_connections, 4096);
+    values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "0");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -242,6 +257,7 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
+        ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
         (
             "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
             "test@project.iam.gserviceaccount.com",

@@ -41,6 +41,7 @@ function client(): ObserverClient {
     return {
         checkConnection: async () => {},
         listActors: async () => ({
+            connectionsComplete: true,
             actors: [{ actorName: "Room", live: 0, dormant: 1, unknown: 0, instances: [{ actorId: "general", status: "dormant", connections: [{ id: "socket-one", metadata: null }], waiting: [] }] }]
         }),
         listQueueWaits: async () => [{ actorName: "Room", actorId: "general", admitted: 2, averageMs: 10, maxMs: 15 }],

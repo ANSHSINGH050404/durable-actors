@@ -98,7 +98,10 @@ impl HttpHost {
     async fn start(grant: Option<InvocationGrant>) -> Result<Self> {
         let (started_tx, started) = mpsc::unbounded_channel();
         let storage = Arc::new(FakeAuthority::default());
-        let sockets = Arc::new(HostSockets::new(storage.clone()));
+        let sockets = Arc::new(HostSockets::new(
+            storage.clone(),
+            Arc::new(crate::sockets::SocketRegistry::default()),
+        ));
         let host = Arc::new(ActorHost::new(
             HostEndpoint {
                 id: crate::host::HostId::new("host.v3.revision-1.host-1"),

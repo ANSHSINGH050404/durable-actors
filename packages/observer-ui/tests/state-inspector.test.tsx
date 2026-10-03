@@ -18,7 +18,7 @@ const snapshots = [1, 2].map(stateVersion => ({
     attribution: { operation: "onMessage", connectionId: "socket-a", committedAtMs: 1000 + stateVersion, interleaved: false }
 }))
 const client = {
-    listActors: async () => ({ actors: [] }),
+    listActors: async () => ({ connectionsComplete: true, actors: [] }),
     checkConnection: async () => {},
     getState: async (query: { version?: number }) => ({ snapshot: snapshots[(query.version ?? 2) - 1]!, schema: null }),
     listStateHistory: async () => ({ records: snapshots.toReversed().map(({ state, ...record }) => record), nextBefore: null })

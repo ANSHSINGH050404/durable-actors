@@ -5,26 +5,32 @@ metadata:
   name: {{ include "terse.name" . }}
   annotations:
     iam.gke.io/gcp-service-account: {{ required "serviceAccount.googleServiceAccount is required" .Values.serviceAccount.googleServiceAccount | quote }}
+{{- $workloads := list (dict "name" (include "terse.name" .) "component" "control-plane" "replicas" .Values.replicaCount "config" .Values.controlPlane) }}
+{{- if .Values.sockets.dedicatedGateway }}
+{{- $workloads = append $workloads (dict "name" (include "terse.socketGatewayName" .) "component" "socket-gateway" "replicas" .Values.sockets.replicaCount "config" .Values.sockets) }}
+{{- end }}
+{{- range $workload := $workloads }}
+{{- $name := $workload.name }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "terse.name" . }}
+  name: {{ $name }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ $workload.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "terse.name" . }}
-      app.kubernetes.io/component: control-plane
+      app.kubernetes.io/name: {{ include "terse.name" $ }}
+      app.kubernetes.io/component: {{ $workload.component }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "terse.name" . }}
-        app.kubernetes.io/component: control-plane
+        app.kubernetes.io/name: {{ include "terse.name" $ }}
+        app.kubernetes.io/component: {{ $workload.component }}
     spec:
-      serviceAccountName: {{ include "terse.name" . }}
+      serviceAccountName: {{ include "terse.name" $ }}
       terminationGracePeriodSeconds: 60
-      {{- with .Values.controlPlane.nodeSelector }}
+      {{- with $workload.config.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -40,22 +46,22 @@ spec:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: DoNotSchedule
-          {{- if ne .Values.storage.durability "zonal" }}
+          {{- if ne $.Values.storage.durability "zonal" }}
           minDomains: 2
           {{- end }}
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ include "terse.name" . }}
-              app.kubernetes.io/component: control-plane
+              app.kubernetes.io/name: {{ include "terse.name" $ }}
+              app.kubernetes.io/component: {{ $workload.component }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
-      {{- if .Values.cloudSql.instanceConnectionName }}
+      {{- if $.Values.cloudSql.instanceConnectionName }}
       initContainers:
         - name: cloud-sql-proxy
-          image: {{ .Values.cloudSql.image | quote }}
+          image: {{ $.Values.cloudSql.image | quote }}
           restartPolicy: Always
           args:
             - --address=127.0.0.1
@@ -65,7 +71,7 @@ spec:
             - --health-check
             - --http-address=0.0.0.0
             - --http-port=9090
-            - {{ .Values.cloudSql.instanceConnectionName | quote }}
+            - {{ $.Values.cloudSql.instanceConnectionName | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -83,7 +89,7 @@ spec:
       {{- end }}
       containers:
         - name: control-plane
-          image: {{ include "terse.image" . | quote }}
+          image: {{ include "terse.image" $ | quote }}
           ports:
             - name: http
               containerPort: 7100
@@ -93,7 +99,7 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
-            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+            {{- toYaml $workload.config.resources | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -110,37 +116,43 @@ spec:
           env:
             - {name: DURABLE_ACTORS_PROCESS_ROLE, value: control_plane}
             - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
+            - {name: DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS, value: {{ or (not $.Values.sockets.dedicatedGateway) (eq $workload.component "socket-gateway") | quote }}}
+            - name: DURABLE_ACTORS_GATEWAY_IP
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - {name: DURABLE_ACTORS_GATEWAY_ROUTE, value: "http://$(DURABLE_ACTORS_GATEWAY_IP):7100"}
             - name: DURABLE_ACTORS_CONTROL_PLANE_URL
-              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "terse.name" .) .Release.Namespace | quote }}
-            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
-            - {name: DURABLE_ACTORS_REGION, value: {{ .Values.region | quote }}}
-            - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "terse.image" . | quote }}}
-            - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ .Values.sandboxNamespace | quote }}}
-            - {name: DURABLE_ACTORS_GKE_ZONES, value: {{ .Values.zones | toJson | quote }}}
-            - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" .Values.storage.authorityBucket | quote }}}
-            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" .Values.storage.artifactBucket | quote }}}
-            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ .Values.storage.rapid.buckets | toJson | quote }}}
-            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: {{ .Values.storage.rapid.archiveBatchBytes | int64 | quote }}}
-            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: {{ .Values.storage.rapid.archiveBatchIntervalMs | int64 | quote }}}
-            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
+              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "terse.name" $) $.Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ $.Values.publicUrl | quote }}}
+            - {name: DURABLE_ACTORS_REGION, value: {{ $.Values.region | quote }}}
+            - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "terse.image" $ | quote }}}
+            - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ $.Values.sandboxNamespace | quote }}}
+            - {name: DURABLE_ACTORS_GKE_ZONES, value: {{ $.Values.zones | toJson | quote }}}
+            - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" $.Values.storage.authorityBucket | quote }}}
+            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" $.Values.storage.artifactBucket | quote }}}
+            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ $.Values.storage.rapid.buckets | toJson | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: {{ $.Values.storage.rapid.archiveBatchBytes | int64 | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: {{ $.Values.storage.rapid.archiveBatchIntervalMs | int64 | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" $.Values.storage.archiveBucket | quote }}}
             - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
-              value: {{ .Values.serviceAccount.googleServiceAccount | quote }}
-            - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.pool.idle | quote }}}
-            - {name: DURABLE_ACTORS_SPARE_FLEET_MAX, value: {{ .Values.pool.fleetMaximum | quote }}}
-            - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ .Values.pool.maxStarting | quote }}}
-            - {name: DURABLE_ACTORS_SPARE_TTL_SECONDS, value: {{ .Values.pool.idleTtlSeconds | quote }}}
-            - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.pool.cpuMillis | quote }}}
-            - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ .Values.pool.memoryMiB | quote }}}
-            - {name: DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS, value: {{ .Values.hostIdleTimeoutMs | quote }}}
+              value: {{ $.Values.serviceAccount.googleServiceAccount | quote }}
+            - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ $.Values.pool.idle | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_FLEET_MAX, value: {{ $.Values.pool.fleetMaximum | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_MAX_STARTING, value: {{ $.Values.pool.maxStarting | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_TTL_SECONDS, value: {{ $.Values.pool.idleTtlSeconds | quote }}}
+            - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ $.Values.pool.cpuMillis | quote }}}
+            - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ $.Values.pool.memoryMiB | quote }}}
+            - {name: DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS, value: {{ $.Values.hostIdleTimeoutMs | quote }}}
+            - {name: DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS, value: {{ $.Values.sockets.maxConnectionsPerActor | quote }}}
             - name: DURABLE_ACTORS_POSTGRES_URL
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: postgres-url}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: postgres-url}
             - name: DURABLE_ACTORS_JWT_SIGNING_KEY
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: jwt-signing-key}
             - name: DURABLE_ACTORS_SECRET
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: api-key}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -148,11 +160,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "terse.name" . }}
+  name: {{ $name }}
 spec:
   selector:
-    app.kubernetes.io/name: {{ include "terse.name" . }}
-    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/name: {{ include "terse.name" $ }}
+    app.kubernetes.io/component: {{ $workload.component }}
   ports:
     - name: http
       port: 7100
@@ -161,10 +173,11 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "terse.name" . }}
+  name: {{ $name }}
 spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "terse.name" . }}
-      app.kubernetes.io/component: control-plane
+      app.kubernetes.io/name: {{ include "terse.name" $ }}
+      app.kubernetes.io/component: {{ $workload.component }}
+{{- end }}

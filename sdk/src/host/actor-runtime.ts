@@ -147,7 +147,7 @@ class ActorRuntime {
             this.admitNext(methodName)
             const operation = await runWithActorSockets(
                 instance,
-                command.connections,
+                this.connections,
                 async scope => {
                     const args = lifecycleArguments(command, scope, this.schemas)
                     if (method === undefined) return
@@ -161,7 +161,8 @@ class ActorRuntime {
                     )
                 },
                 command.event.type === "connect" ? undefined : this.publish,
-                this.schemas
+                this.schemas,
+                command.connections
             )
             return await this.complete(async () => {
                 const state = snapshotActorState(instance, this.definition.state)

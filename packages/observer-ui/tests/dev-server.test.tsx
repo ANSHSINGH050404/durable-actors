@@ -11,7 +11,7 @@ test("the Vite proxy preserves the observer's loopback host validation", async t
     const upstream = createHttpServer((request, response) => {
         const expected = `127.0.0.1:${(upstream.address() as AddressInfo).port}`
         response.writeHead(request.headers.host === expected ? 200 : 403)
-        response.end(JSON.stringify({ actors: [] }))
+        response.end(JSON.stringify({ connectionsComplete: true, actors: [] }))
     })
     await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve))
     t.after(() => new Promise<void>(resolve => upstream.close(() => resolve())))
@@ -26,5 +26,5 @@ test("the Vite proxy preserves the observer's loopback host validation", async t
     await server.listen()
     const response = await fetch(`http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}/api/observe/actors`)
     assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), { actors: [] })
+    assert.deepEqual(await response.json(), { connectionsComplete: true, actors: [] })
 })

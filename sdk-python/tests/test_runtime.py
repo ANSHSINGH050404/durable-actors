@@ -31,6 +31,45 @@ class Counter(Actor):
 ACTOR = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
 
 
+async def test_socket_handlers_load_connections_only_on_demand():
+    from durable_actors import ActorSocket
+
+    class LookupEffects(Effects):
+        lookups = 0
+
+        async def get_connections(self, tag=None, count_only=False):
+            self.lookups += 1
+            return await super().get_connections(tag, count_only)
+
+    class Room(Actor[None, bool, int]):
+        def on_message(self, socket: ActorSocket[None, int], enumerate: bool) -> None:
+            socket.send(len(self.get_connections()) if enumerate else 0)
+
+    effects = LookupEffects()
+    effects.connections = [
+        {"id": name, "metadata": None, "tags": []} for name in ["sender", "other"]
+    ]
+    runtime = ActorRuntime(Room, effects)
+    for enumerate in [False, True]:
+        reply = await runtime.handle(
+            {
+                "type": "websocket_event",
+                "request_id": "lookup",
+                "actor": {**ACTOR, "actor_name": "Room"},
+                "sqlite": seed(),
+                "connections": effects.connections[:1],
+                "event": {
+                    "type": "message",
+                    "connection_id": "sender",
+                    "message": {"type": "text", "data": "true" if enumerate else "false"},
+                },
+            }
+        )
+        assert reply["type"] == "websocket_handled"
+        assert effects.published[-1]["message"]["data"] == ("2" if enumerate else "0")
+        assert effects.lookups == int(enumerate)
+
+
 def command(method="increment", args=None, **extra):
     return {
         "type": "invoke",
@@ -200,7 +239,7 @@ async def test_eviction_unblocks_sync_socket_queries():
     entered = asyncio.Event()
 
     class WaitingEffects(Effects):
-        async def get_connections(self):
+        async def get_connections(self, tag=None, count_only=False):
             entered.set()
             await asyncio.Event().wait()
 

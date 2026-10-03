@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::public_api::{
-    ActorPath, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
+    ActorPath, ActorTargetReply, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
 use crate::actor::ActorInvocation;
 
@@ -40,28 +40,49 @@ pub(super) async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(ApiError::bad_request)?;
-    let target = resolve_actor_target(
-        &state,
-        &invocation.actor,
-        &headers,
-        Ok(Json(FindActorRequest {
-            home_region: request.home_region,
-        })),
-    )
-    .await?;
-    let outcome = dispatch(
-        &state.hosts,
-        &target.backend_route,
-        &target.token,
-        target.owner_epoch,
-        &invocation,
-    )
-    .await?;
+    let (target, outcome) =
+        resolve_and_dispatch(&state, &headers, request.home_region, &invocation).await?;
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(json!({"target": target, "outcome": outcome})),
     )
         .into_response())
+}
+
+async fn resolve_and_dispatch(
+    state: &PublicApiState,
+    headers: &HeaderMap,
+    home_region: Option<String>,
+    invocation: &ActorInvocation,
+) -> Result<(ActorTargetReply, Value), ApiError> {
+    let deadline = tokio::time::Instant::now() + super::CONTROL_PLANE_REQUEST_TIMEOUT;
+    loop {
+        let target = resolve_actor_target(
+            state,
+            &invocation.actor,
+            headers,
+            Ok(Json(FindActorRequest {
+                home_region: home_region.clone(),
+            })),
+        )
+        .await?;
+        let outcome = dispatch(
+            &state.hosts,
+            &target.backend_route,
+            &target.token,
+            target.owner_epoch,
+            invocation,
+        )
+        .await?;
+        if !matches!(
+            outcome["type"].as_str(),
+            Some("not_executed" | "unauthenticated")
+        ) || tokio::time::Instant::now() >= deadline
+        {
+            return Ok((target, outcome));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 async fn invoke_cached(

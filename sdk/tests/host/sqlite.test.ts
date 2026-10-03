@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { fork } from "node:child_process"
+import { once } from "node:events"
 import { afterEach, test } from "node:test"
 
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
@@ -83,6 +85,28 @@ async function invoke(runtime: ActorRuntime, method: string, args: string[] = []
         ...saved
     } as InvokeCommand)
 }
+
+test("field writes wait for a competing SQLite writer", async () => {
+    const state = await seed({ count: 0 })
+    const database = new SqliteActorDatabase()
+    database.restore(state)
+    const writer = fork(new URL("../fixtures/sqlite-writer.js", import.meta.url), [state.path!], {
+        stdio: ["ignore", "ignore", "inherit", "ipc"]
+    })
+    const exited = once(writer, "exit")
+    try {
+        assert.deepEqual(await once(writer, "message"), ["locked", undefined])
+        writer.send("release")
+        database.persistFields({ count: 1 })
+        await database.snapshot()
+        assert.deepEqual(fields(state), { count: 1 })
+        assert.deepEqual(await exited, [0, null])
+    } finally {
+        database.close()
+        writer.kill()
+        await exited
+    }
+})
 
 test("SQL data and schema changes persist alongside unchanged JSON fields", async () => {
     const runtime = createRuntime()

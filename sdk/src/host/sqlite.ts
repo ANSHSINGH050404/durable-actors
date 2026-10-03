@@ -40,7 +40,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         const database = this.open()
         validateSingleStatement(database, sql)
         const statement = database.prepare(sql)
-        if (!database.isTransaction) database.exec("BEGIN")
+        if (!database.isTransaction) database.exec("BEGIN IMMEDIATE")
         return statement.all(...bindings) as Row[]
     }
 
@@ -116,7 +116,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
 
     private fieldDatabase(): SqliteConnection {
         const database = this.open()
-        if (!database.isTransaction) database.exec("BEGIN")
+        if (!database.isTransaction) database.exec("BEGIN IMMEDIATE")
         database.exec(
             "CREATE TABLE IF NOT EXISTS __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))"
         )
@@ -129,7 +129,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         if (this.seed === undefined) throw new Error("actor SQLite database has not been restored")
         const database = (this.connection = this.connect(this.seed.path))
         database.exec(
-            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL"
+            "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL"
         )
         if (database.prepare("PRAGMA quick_check").get()!.quick_check !== "ok")
             throw new Error("invalid actor SQLite database")

@@ -26,7 +26,6 @@ pub(crate) struct HostLeaseMaintainer {
 
 #[derive(Clone, Default)]
 struct HostObservation {
-    sockets: Option<crate::sockets::SocketRegistry>,
     queues: Option<super::queues::ActorQueues>,
     executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
 }
@@ -69,12 +68,10 @@ impl HostLeaseMaintainer {
     pub(crate) fn observe(
         &self,
         executor: Arc<dyn crate::actor::ActorExecutor>,
-        sockets: crate::sockets::SocketRegistry,
         queues: super::queues::ActorQueues,
     ) {
         self.observation.send_replace(HostObservation {
             executor: Some(executor),
-            sockets: Some(sockets),
             queues: Some(queues),
         });
     }
@@ -86,10 +83,6 @@ impl HostLeaseMaintainer {
             .executor
             .as_ref()
             .and_then(|executor| executor.residency_changes());
-        let socket_changes = observation
-            .sockets
-            .as_ref()
-            .map(|sockets| sockets.inventory_changes());
         let queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
         let initial = self.renew_once_with_deadline().await?;
         info!(
@@ -107,7 +100,6 @@ impl HostLeaseMaintainer {
             task_shutdown,
             lease_lost_tx,
             changes,
-            socket_changes,
             queue_changes,
             observation_changes,
         ));
@@ -133,7 +125,6 @@ impl HostLeaseMaintainer {
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
         mut changes: Option<watch::Receiver<()>>,
-        mut socket_changes: Option<watch::Receiver<()>>,
         mut queue_changes: Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
         mut observation_changes: watch::Receiver<HostObservation>,
     ) {
@@ -144,7 +135,6 @@ impl HostLeaseMaintainer {
                     &shutdown,
                     &lease_lost,
                     &mut changes,
-                    &mut socket_changes,
                     &mut queue_changes,
                     &mut observation_changes,
                 )
@@ -157,10 +147,6 @@ impl HostLeaseMaintainer {
                 .executor
                 .as_ref()
                 .and_then(|executor| executor.residency_changes());
-            socket_changes = observation
-                .sockets
-                .as_ref()
-                .map(|sockets| sockets.inventory_changes());
             queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
             let Some(deadline) = self
                 .renew_before_deadline(local_deadline, &shutdown, &lease_lost)
@@ -178,7 +164,6 @@ impl HostLeaseMaintainer {
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
         changes: &mut Option<watch::Receiver<()>>,
-        socket_changes: &mut Option<watch::Receiver<()>>,
         queue_changes: &mut Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
         observation_changes: &mut watch::Receiver<HostObservation>,
     ) -> bool {
@@ -196,7 +181,6 @@ impl HostLeaseMaintainer {
             }
             _ = tokio::time::sleep(self.renew_every) => true,
             _ = residency_changed(changes) => true,
-            _ = residency_changed(socket_changes) => true,
             _ = async {
                 residency_changed(queue_changes).await;
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -259,14 +243,10 @@ impl HostLeaseMaintainer {
             .executor
             .as_ref()
             .and_then(|executor| executor.resident_actors());
-        let sockets = match &observation.sockets {
-            Some(sockets) => sockets.inventory().await,
-            None => vec![],
-        };
         let queues = observation.queues.as_ref().map(|queues| queues.inventory());
         let lease = self
             .store
-            .register_with_inventory(&request, residents.as_deref(), &sockets, queues.as_deref())
+            .register_with_inventory(&request, residents.as_deref(), queues.as_deref())
             .await?;
         debug!(
             host_id = %lease.id,

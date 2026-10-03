@@ -41,7 +41,7 @@ pub struct ControlPlaneService {
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
-    auth: ActorJwtVerifier,
+    pub(super) auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
     registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
@@ -256,43 +256,6 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    pub(super) async fn bind_socket(
-        &self,
-        mut ticket: super::socket_ticket::SocketTicket,
-    ) -> Result<(super::socket_ticket::SocketTarget, String)> {
-        let routed = self
-            .route_actor(
-                &ticket.actor,
-                &ticket.region,
-                ticket.home_region.as_deref(),
-                None,
-            )
-            .await?;
-        let target = routed.socket_target();
-        ticket.region = routed.placement.home_region;
-        ticket.target = Some(target.clone());
-        Ok((target, self.host_token_issuer.bind_socket(ticket)?))
-    }
-
-    pub(super) async fn socket_destination(
-        &self,
-        actor: &ActorKey,
-        region: &str,
-        home_region: Option<&str>,
-    ) -> Result<(
-        String,
-        super::socket_ticket::SocketTarget,
-        crate::sandbox::SocketCredentials,
-    )> {
-        let routed = self.route_actor(actor, region, home_region, None).await?;
-        let credentials = self
-            .provisioner
-            .socket_credentials(&routed.spec, &routed.placement.home_region, &routed.lease)
-            .await?;
-        let target = routed.socket_target();
-        Ok((routed.placement.home_region, target, credentials))
-    }
-
     pub(super) fn deliver_socket_message_event(
         &self,
         actor: &ActorKey,
@@ -332,7 +295,7 @@ impl ControlPlaneService {
         );
     }
 
-    async fn resolve_actor_route(
+    pub(super) async fn resolve_actor_route(
         &self,
         actor: &ActorKey,
         home_region: Option<&str>,
@@ -340,7 +303,6 @@ impl ControlPlaneService {
         grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
-        let requested_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
         let target = self
             .route_actor(
                 actor,
@@ -349,7 +311,8 @@ impl ControlPlaneService {
                 timings.as_deref_mut(),
             )
             .await?;
-        let idle_expires_at_ms = requested_at_ms.saturating_add(
+        let resolved_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
+        let idle_expires_at_ms = resolved_at_ms.saturating_add(
             target
                 .spec
                 .sandboxes
@@ -387,6 +350,7 @@ impl ControlPlaneService {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct ActorTarget {
     pub home_region: String,
     pub route: String,
@@ -436,12 +400,35 @@ impl ActorControlPlaneService for ControlPlaneService {
         request: Request<ControlPlaneRequest>,
     ) -> std::result::Result<Response<ControlPlaneReply>, Status> {
         let principal = self.auth.authenticate(&request).await?;
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         let command = decode_command(request.into_inner())
             .map_err(|error| Status::invalid_argument(format!("invalid command: {error:#}")))?;
-        let reply = self
-            .execute_command(&principal, command)
-            .await
-            .map_err(failed_precondition)?;
+        let reply = match command {
+            ControlPlaneCommand::SocketOperation { actor, operation } => {
+                self.authorize_socket_host(&principal, &actor)
+                    .await
+                    .map_err(failed_precondition)?;
+                let gateway = self
+                    .gateway
+                    .as_ref()
+                    .ok_or_else(|| Status::unavailable("socket gateway is unavailable"))?;
+                let reply = gateway
+                    .connections
+                    .operation(&actor, operation, &authorization)
+                    .await
+                    .map_err(failed_precondition)?;
+                ControlPlaneCommandReply::SocketOperation { reply }
+            }
+            command => self
+                .execute_command(&principal, command)
+                .await
+                .map_err(failed_precondition)?,
+        };
         Ok(Response::new(encode_reply(reply).map_err(internal)?))
     }
 }
@@ -453,6 +440,9 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::SocketOperation { .. } => {
+                anyhow::bail!("socket operation requires authenticated routing")
+            }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {
                 self.require_active_host(principal).await?;
                 ensure!(
@@ -484,11 +474,6 @@ impl ControlPlaneService {
                     "host session does not match"
                 );
                 self.changes.notify().await;
-                Ok(ControlPlaneCommandReply::Unit)
-            }
-            ControlPlaneCommand::SocketMessage { actor, event } => {
-                self.authorize_socket_host(principal, &actor).await?;
-                self.deliver_socket_message_event(&actor, None, &event);
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::RefreshStorageAccess => {
@@ -529,25 +514,15 @@ impl ControlPlaneService {
         }
     }
 
-    async fn authorize_socket_host(
+    pub(super) async fn authorize_socket_host(
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
     ) -> Result<()> {
         actor.validate()?;
         ensure!(&principal.actor == actor, "host actor scope mismatch");
-        let lease = self.require_active_host(principal).await?;
-        let placement = self.current_placement(actor).await?;
-        ensure!(
-            placement.lease == lease && placement.owner == lease.id,
-            "actor ownership belongs to another session"
-        );
-        validate_state_owner(
-            principal,
-            &principal.host_id,
-            placement.owner_epoch,
-            &placement,
-        )
+        self.require_active_host(principal).await?;
+        Ok(())
     }
 
     async fn route_actor(
@@ -809,15 +784,6 @@ pub(crate) trait HostProvisioner: Send + Sync {
         Ok(())
     }
 
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        _lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        anyhow::bail!("host provider does not support direct sockets")
-    }
-
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -909,28 +875,6 @@ impl HostProvisioner for SandboxHostProvisioner {
             Some(pool) => pool.wait_ready(host.as_str()).await,
             None => self.provider.wait_ready(host).await,
         }
-    }
-
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        region: &str,
-        lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        self.provider
-            .socket_credentials(&crate::sandbox::SocketCredentialsRequest {
-                resource_id: match &self.pool {
-                    Some(pool) => pool
-                        .host(lease.id.as_str())
-                        .await?
-                        .map(|spare| spare.resource_id),
-                    None => None,
-                },
-                canonical_region: region.into(),
-                host_id: lease.id.clone(),
-                session_id: lease.session_id.clone(),
-            })
-            .await
     }
 
     async fn ensure_actor_host(
@@ -1157,7 +1101,6 @@ impl SandboxHostProvisioner {
             control_plane_url: self.runtime.control_plane_url.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
-            socket_jwt_audience: self.issuer.socket_audience(),
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec
@@ -1208,37 +1151,8 @@ struct RoutedActor {
     spec: HostLaunchSpec,
 }
 
-impl RoutedActor {
-    fn socket_target(&self) -> super::socket_ticket::SocketTarget {
-        super::socket_ticket::SocketTarget {
-            route: self.lease.route.clone(),
-            host_id: self.lease.id.clone(),
-            session_id: self.lease.session_id.clone(),
-            owner_epoch: self.placement.owner_epoch,
-        }
-    }
-}
-
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1_000.0
-}
-
-fn validate_state_owner(
-    principal: &ActorPrincipal,
-    host_id: &HostId,
-    owner_epoch: u64,
-    placement: &ObjectPlacement,
-) -> Result<()> {
-    ensure!(placement.owner == *host_id, "host does not own this actor");
-    ensure!(
-        placement.owner_epoch == owner_epoch,
-        "actor owner epoch is stale"
-    );
-    ensure!(
-        placement.home_region == principal.region,
-        "host is outside the actor home region"
-    );
-    Ok(())
 }
 
 fn host_matches_config(host: &HostId, config_key: &str) -> bool {

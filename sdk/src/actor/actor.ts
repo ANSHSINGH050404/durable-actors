@@ -6,7 +6,7 @@ import { actorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 import type { ActorSchema } from "./schema.js"
-import { actorConnections, broadcastActor } from "./socket.js"
+import { actorConnectionCount, actorConnections, broadcastActor, setActorAutoResponse } from "./socket.js"
 import type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage } from "./socket.js"
 import { outgoingMessage, socketMetadata } from "./socketValidation.js"
 import type { ActorSchemas } from "./socketValidation.js"
@@ -70,8 +70,17 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /**
      * Lists connections during an actor call. Includes a joining socket; excludes a disconnected one.
      */
-    protected getConnections(): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
-        return actorConnections<Metadata, Outgoing, Tag>(this)
+    protected getConnections(tag?: Tag): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
+        return actorConnections<Metadata, Outgoing, Tag>(this, tag)
+    }
+
+    protected getConnectionCount(): Promise<number> {
+        return actorConnectionCount(this)
+    }
+
+    /** Matches raw text frames and responds without waking the actor. Omit to clear. */
+    protected setWebSocketAutoResponse(pair?: { readonly request: string; readonly response: string }): void {
+        setActorAutoResponse(this, pair)
     }
 
     /** Sends JSON to matching connections, including the sender by default. Messages are not saved. */

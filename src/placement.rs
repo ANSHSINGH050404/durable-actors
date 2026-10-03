@@ -87,5 +87,12 @@ pub struct ActorInventory {
 
 #[async_trait]
 pub trait ActorInventoryReader: Send + Sync {
-    async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>>;
+    async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot>;
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorInventorySnapshot {
+    pub actors: Vec<ActorInventory>,
+    pub connections_complete: bool,
 }

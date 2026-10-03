@@ -1,6 +1,6 @@
 {
     "name": "durable-actors",
-    "version": "0.7.9",
+    "version": "0.7.10",
     "description": "Provider-neutral actors for sandbox compute",
     "type": "module",
     "license": "MIT",

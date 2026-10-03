@@ -55,10 +55,11 @@ async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_
     struct UnavailableConnections(std::sync::atomic::AtomicUsize);
     #[async_trait]
     impl ActorSocketSource for UnavailableConnections {
-        async fn connections(
+        async fn query(
             &self,
             actor: &ActorKey,
-        ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
+            _: crate::actor::SocketQuery,
+        ) -> Result<crate::actor::SocketLookup> {
             assert_eq!(actor.actor_id, "counter-1");
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             anyhow::bail!("gateway unavailable")
@@ -85,10 +86,10 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
         .grant(serde_json::json!({"user":"one"}), 5_000)
         .await?;
     let url = grant["websocketUrl"].as_str().context("socket URL")?;
-    assert_ne!(
+    assert_eq!(
         reqwest::Url::parse(url)?.port_or_known_default(),
         reqwest::Url::parse(&stack.gateway)?.port_or_known_default(),
-        "browser sockets must connect to the actor host"
+        "browser sockets connect to the connection gateway"
     );
     assert_eq!(
         reqwest::Url::parse(url)?
@@ -131,6 +132,13 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), socket.next())
+            .await
+            .is_err(),
+        "releasing a sandbox must preserve its sockets"
+    );
+    stack.sockets.stop.cancel();
     let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
         .await?
         .context("close")??;
@@ -160,46 +168,6 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
             .unwrap_err();
         assert!(
             matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 401)
-        );
-    }
-    let original = stack.issuer.verify_socket(&socket_key(&grant)?)?;
-    for mismatch in [
-        "project",
-        "actor",
-        "actor_name",
-        "host",
-        "session",
-        "epoch",
-        "unbound",
-    ] {
-        let mut ticket = original.clone();
-        match mismatch {
-            "project" => ticket.actor.project_id = "other-project".into(),
-            "actor" => ticket.actor.actor_id = "other-actor".into(),
-            "actor_name" => ticket.actor.actor_name = "OtherActor".into(),
-            "host" => ticket.target.as_mut().unwrap().host_id = HostId::new("other-host"),
-            "session" => ticket.target.as_mut().unwrap().session_id = "replacement-session".into(),
-            "epoch" => ticket.target.as_mut().unwrap().owner_epoch += 1,
-            _ => ticket.target = None,
-        }
-        let (key, _, _) = stack
-            .issuer
-            .issue_socket(super::super::socket_ticket::SocketGrant {
-                actor: ticket.actor,
-                region: ticket.region,
-                target: ticket.target,
-                home_region: None,
-                metadata: serde_json::json!({}),
-                authorization_lifetime_ms: 3_000,
-            })?;
-        url.set_query(None);
-        url.query_pairs_mut().append_pair("key", &key);
-        let error = tokio_tungstenite::connect_async(url.as_str())
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 401),
-            "{mismatch}"
         );
     }
     assert_eq!(
@@ -244,6 +212,49 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
         .await?
         .context("close")??;
     assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4400));
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let grant = stack.grant(serde_json::json!({}), 30_000).await?;
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+    receive(&mut socket).await?;
+    socket
+        .send(Message::Text(r#"{"type":"start"}"#.into()))
+        .await?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"delta":"first"})
+    );
+    for _ in 0..64 {
+        socket
+            .send(Message::Text(
+                serde_json::json!({"type":"start", "padding":"x".repeat(80 * 1024)})
+                    .to_string()
+                    .into(),
+            ))
+            .await?;
+    }
+    std::fs::write(stack.directory.path().join("release"), "")?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"delta":"last"})
+    );
+    for _ in 0..64 {
+        assert_eq!(
+            receive(&mut socket).await?,
+            serde_json::json!({"delta":"first"})
+        );
+        assert_eq!(
+            receive(&mut socket).await?,
+            serde_json::json!({"delta":"last"})
+        );
+    }
     stack.child.kill().await?;
     Ok(())
 }
@@ -400,7 +411,13 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     assert_eq!(clients[0]["tags"], serde_json::json!(["member"]));
     let mut outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
-    assert!(stack.publisher.connections(&outside).await?.is_empty());
+    assert!(
+        stack
+            .publisher
+            .query(&outside, Default::default())
+            .await
+            .is_err()
+    );
     stack
         .invoke("notifyClient", vec![clients[0]["id"].clone()])
         .await?;
@@ -426,7 +443,13 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
-    assert!(stack.publisher.connections(&stack.actor).await.is_err());
+    assert!(
+        stack
+            .publisher
+            .query(&stack.actor, Default::default())
+            .await
+            .is_err()
+    );
     assert!(stack.invoke("clients", vec![]).await.is_err());
     stack.child.kill().await?;
     Ok(())
@@ -468,7 +491,13 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
 
     let mut outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
-    assert!(stack.publisher.connections(&outside).await?.is_empty());
+    assert!(
+        stack
+            .publisher
+            .query(&outside, Default::default())
+            .await
+            .is_err()
+    );
     stack
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
@@ -482,15 +511,12 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn socket_lease_fencing_is_not_postponed_by_incoming_control_frames() -> Result<()> {
+async fn gateway_shutdown_is_not_postponed_by_incoming_control_frames() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut socket = stack.connect().await?;
     receive(&mut socket).await?;
     let (mut outgoing, mut incoming) = socket.split();
-    stack
-        .storage
-        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
-        .await?;
+    stack.sockets.stop.cancel();
     let mut pongs = tokio::time::interval(Duration::from_millis(20));
     let frame = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -512,6 +538,8 @@ struct Stack {
     tasks: JoinSet<()>,
     child: tokio::process::Child,
     gateway: String,
+    host_route: String,
+    sockets: Arc<super::super::socket_gateway::SocketGateway>,
     host_token: String,
     actor: ActorKey,
     host_id: HostId,
@@ -577,20 +605,68 @@ impl Stack {
             ActorTokenPurpose::ControlPlane,
             Duration::from_secs(60),
         )?;
-        let service = ControlPlaneService::new(
+        let mut service = ControlPlaneService::new(
             runtime.runtime.clone(),
             auth,
             registry.clone(),
             issuer.clone(),
             Arc::new(SocketTestProvisioner),
         );
-        let control_plane = serve_control_plane(&mut tasks, service.clone()).await?;
-        let gateway = serve_gateway(
-            &mut tasks,
-            service,
-            AdminService::new(Some("test-api-key".into()), registry, issuer.clone())?,
+        let gateway_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let gateway = format!("http://{}", gateway_listener.local_addr()?);
+        let directory_service =
+            Arc::new(super::super::socket_directory::MemorySocketDirectory::default());
+        let sockets = super::super::socket_gateway::SocketGateway::start(
+            gateway.clone(),
+            directory_service.clone(),
+            32768,
+            true,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await?;
+        service.gateway = Some(super::super::gateway::Gateway::new(
+            &issuer,
+            gateway.clone(),
+            sockets.clone(),
+        )?);
+        sockets.owner(&actor).await?;
+        let second_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let second_origin = format!("http://{}", second_listener.local_addr()?);
+        let second_sockets = super::super::socket_gateway::SocketGateway::start(
+            second_origin.clone(),
+            directory_service,
+            32768,
+            true,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await?;
+        let mut second_service = service.clone();
+        second_service.gateway = Some(super::super::gateway::Gateway::new(
+            &issuer,
+            second_origin,
+            second_sockets,
+        )?);
+        let control_plane = serve_control_plane(&mut tasks, second_service.clone()).await?;
+        let second_admin = AdminService::new(
+            Some("test-api-key".into()),
+            registry.clone(),
+            issuer.clone(),
+        )?;
+        tasks.spawn(async move {
+            let _ = axum::serve(
+                second_listener,
+                super::super::public_api::router(second_service, second_admin),
+            )
+            .await;
+        });
+        let admin = AdminService::new(Some("test-api-key".into()), registry, issuer.clone())?;
+        tasks.spawn(async move {
+            let _ = axum::serve(
+                gateway_listener,
+                super::super::public_api::router(service, admin),
+            )
+            .await;
+        });
         let token = issuer
             .issue_host(
                 &host_id,
@@ -630,7 +706,10 @@ impl Stack {
             })
             .await?;
 
-        let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(storage.clone()));
+        let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
+            storage.clone(),
+            publisher,
+        ));
         let (child, connection) = start_worker(directory.path()).await?;
         connection
             .mark_ready(
@@ -641,7 +720,7 @@ impl Stack {
         let host = Arc::new(ActorHost::new(
             HostEndpoint {
                 id: host_id.clone(),
-                route: host_route,
+                route: host_route.clone(),
             },
             connection.executor(),
             storage.clone(),
@@ -663,28 +742,15 @@ impl Stack {
             Duration::from_secs(60),
         )?;
         let serving_host = host.clone();
-        let socket_routes =
-            crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
-                registry: local_sockets.registry.clone(),
-                verifier: issuer.socket_verifier()?,
-                dispatcher: Arc::new(crate::host::sockets::HostSocketDispatcher::new(
-                    host.clone(),
-                    local_sockets.clone(),
-                    "00000000-0000-4000-8000-000000000001".into(),
-                )),
-                stop: tokio_util::sync::CancellationToken::new(),
-            });
         let http_sockets = local_sockets.clone();
         tasks.spawn(async move {
-            let routes = socket_routes.merge(
-                crate::host::http::ActorHostHttpService::new(
-                    serving_host,
-                    "00000000-0000-4000-8000-000000000001".into(),
-                    auth,
-                    http_sockets,
-                )
-                .router(),
-            );
+            let routes = crate::host::http::ActorHostHttpService::new(
+                serving_host,
+                "00000000-0000-4000-8000-000000000001".into(),
+                auth,
+                http_sockets,
+            )
+            .router();
             let _ = axum::serve(host_listener, routes).await;
         });
         Ok(Self {
@@ -694,6 +760,8 @@ impl Stack {
             tasks,
             child,
             gateway,
+            host_route,
+            sockets,
             host_token: token,
             actor,
             host_id,
@@ -737,6 +805,7 @@ impl Stack {
 
 impl Drop for Stack {
     fn drop(&mut self) {
+        self.sockets.stop.cancel();
         self.tasks.abort_all();
     }
 }
@@ -752,19 +821,6 @@ async fn serve_control_plane(
             .add_service(service.into_internal_service())
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
-    });
-    Ok(url)
-}
-
-async fn serve_gateway(
-    tasks: &mut JoinSet<()>,
-    service: ControlPlaneService,
-    admin: AdminService,
-) -> Result<String> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let url = format!("http://{}", listener.local_addr()?);
-    tasks.spawn(async move {
-        let _ = axum::serve(listener, super::super::public_api::router(service, admin)).await;
     });
     Ok(url)
 }
@@ -785,7 +841,7 @@ async fn start_worker(
 import {{ Actor, Persisted, Emittable, type ActorSocket }} from {};
 import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
-export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"}}, {{delta:string}} | {{text:string}}> {{
+export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"; padding?:string}}, {{delta:string}} | {{text:string}}> {{
     @Persisted history = '';
     @Persisted @Emittable count = 0;
     @Persisted private secret = 'private';
@@ -807,6 +863,10 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     async notifyFiles(tagMatch: "all" | "any") {{
         this.broadcast({{ text: 'matched' }}, {{ tags: ['file:a', 'file:b'], tagMatch }});
         this.broadcast({{ text: 'done' }});
+    }}
+    async burstClient(id: string) {{
+        const socket = (await this.getConnections()).find(socket => socket.id === id)!;
+        for (let index = 0; index < 64; index++) socket.send({{ text: 'x'.repeat(256 * 1024) }});
     }}
     async notifyClient(id: string) {{
         const socket = (await this.getConnections()).find(socket => socket.id === id)!;
@@ -902,16 +962,6 @@ impl HostProvisioner for SocketTestProvisioner {
         Ok((source.clone(), None))
     }
 
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        Ok(crate::sandbox::SocketCredentials {
-            url: lease.route.clone(),
-        })
-    }
     async fn ensure_actor_host(
         &self,
         _spec: &HostLaunchSpec,
@@ -962,7 +1012,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    let route = target["route"].as_str().context("route missing")?;
+    let route = &stack.host_route;
     let token = target["token"].as_str().context("token missing")?;
     let epoch = target["ownerEpoch"].as_u64().context("epoch missing")?;
     let url = format!("{route}/v1/projects/default/actors/Counter/counter-1");
@@ -1079,7 +1129,7 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
         .await?;
     let url = format!(
         "{}/v1/projects/default/actors/Counter/counter-1",
-        target["route"].as_str().unwrap()
+        stack.host_route
     );
     let epoch = target["ownerEpoch"].as_u64().unwrap();
     let expiry = crate::control_plane::auth::unix_seconds()? + 60;
@@ -1165,6 +1215,37 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
         warm,
         serde_json::json!({"type":"completed", "result":"saved"})
     );
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn a_slow_reader_can_resume_after_queued_output_waits() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let mut socket = stack.connect().await?;
+    receive(&mut socket).await?;
+    let clients = stack.invoke("clients", vec![]).await?;
+    stack
+        .invoke("burstClient", vec![clients[0]["id"].clone()])
+        .await?;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    for _ in 0..64 {
+        assert_eq!(
+            receive(&mut socket).await?["text"].as_str().unwrap().len(),
+            256 * 1024
+        );
+    }
+    assert_eq!(
+        stack
+            .invoke("clients", vec![])
+            .await?
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    socket.close(None).await?;
     stack.child.kill().await?;
     Ok(())
 }

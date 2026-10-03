@@ -76,7 +76,6 @@ fn request(id: &str) -> EnsureHostRequest {
         control_plane_url: "http://127.0.0.1:7100".into(),
         jwt_issuer: "local".into(),
         invocation_jwt_audience: "local".into(),
-        socket_jwt_audience: "local:websocket".into(),
         image_ref: "local".into(),
         working_directory: "/project".into(),
         actor_entrypoint: None,

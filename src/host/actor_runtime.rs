@@ -141,7 +141,11 @@ impl ActorRuntime {
         replay: bool,
         timings: &mut InvocationTimings,
     ) -> Result<PreparedInvocation> {
-        self.storage.ensure_authority()?;
+        if self.storage.ensure_authority().is_err() {
+            return Ok(PreparedInvocation::Completed(
+                ActorExecutionResult::HostUnavailable,
+            ));
+        }
         timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
         let mut cached = self
             .take_or_load_state(&invocation.actor, owner_epoch, timings)
@@ -163,6 +167,11 @@ impl ActorRuntime {
         };
         let state = cached.state();
         self.cached_state = Some(cached);
+        if self.storage.ensure_authority().is_err() {
+            return Ok(PreparedInvocation::Completed(
+                ActorExecutionResult::HostUnavailable,
+            ));
+        }
         Ok(match result {
             Some(result) => PreparedInvocation::Completed(ActorExecutionResult::Completed {
                 result,
@@ -295,7 +304,6 @@ impl ActorRuntime {
         owner_epoch: u64,
         mut timings: InvocationTimings,
     ) -> Result<ActorExecutionResult> {
-        self.storage.ensure_authority()?;
         let persistence = ActorInvocation {
             request_id: invocation.request_id.clone(),
             actor: invocation.actor.clone(),
@@ -306,7 +314,9 @@ impl ActorRuntime {
             .handle_socket_event_once(invocation, owner_epoch, &persistence, &mut timings)
             .await;
         Self::log_invocation(&self.endpoint, &persistence, &timings, &outcome);
-        self.storage.ensure_authority()?;
+        if !matches!(outcome, Ok(ActorExecutionResult::HostUnavailable)) {
+            self.storage.ensure_authority()?;
+        }
         outcome
     }
 
@@ -317,24 +327,14 @@ impl ActorRuntime {
         persistence: &ActorInvocation,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
-        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
-        let mut cached = self
-            .take_or_load_state(&invocation.actor, owner_epoch, timings)
-            .await?;
-        if self
-            .finish_pending_commit(persistence, &mut cached)
-            .await
-            .is_err()
+        let state = match self
+            .prepare_invocation(persistence, owner_epoch, false, timings)
+            .await?
         {
-            self.cached_state = Some(cached);
-            return Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            });
-        }
-        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
+            PreparedInvocation::Execute(state) => state,
+            PreparedInvocation::Completed(result) => return Ok(result),
+        };
         let origin = CommitOrigin::socket(&invocation.event);
-        let state = cached.state();
-        self.cached_state = Some(cached);
         let outcome = self.execute_socket_event(invocation, state).await;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (next_state, effects) = match outcome {

@@ -20,6 +20,8 @@ Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
 RESERVED = {
     "get_connections",
+    "get_connection_count",
+    "set_websocket_auto_response",
     "broadcast",
     "get",
     "connect",

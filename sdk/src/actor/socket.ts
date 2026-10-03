@@ -3,7 +3,14 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { ActorProtocolError } from "../errors.js"
 import type { JsonValue } from "../json.js"
 
-import type { SocketConnection, SocketEffect, SocketMessage } from "./socketProtocol.js"
+import type {
+    SocketConnection,
+    SocketEffect,
+    SocketLookup,
+    SocketMessage,
+    SocketQuery,
+    SocketSource
+} from "./socketProtocol.js"
 import { incomingMessage, outgoingMessage, socketMetadata, socketTags } from "./socketValidation.js"
 import type { ActorSchemas, ActorStateMessage, ActorStateUpdate } from "./socketValidation.js"
 
@@ -14,7 +21,7 @@ type ActorSocketMessage = JsonValue
 /** Actor-side socket. Metadata and tags last only for this connection. */
 interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends string = string> {
     readonly id: string
-    /** Assign the whole value to update it. Maximum: 64 KiB of JSON. */
+    /** Assign the whole value to update it. Maximum: 16 KiB of JSON. */
     metadata: Metadata
     readonly tags: readonly Tag[]
     readonly state: ActorSocketState
@@ -31,13 +38,13 @@ interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends st
      * @param reason - Defaults to "connection rejected"; at most 123 UTF-8 bytes.
      */
     reject(code?: number, reason?: string): void
-    /** Replaces tags. Maximum: 128 unique tags, 1–256 code units each, 8 KiB total UTF-8. */
+    /** Replaces tags. Maximum: 10 unique tags, 1–256 Unicode characters each. */
     setTags(...tags: Tag[]): void
 }
 
 /** Filters connections for a broadcast. */
 interface ActorBroadcastOptions<Tag extends string = string> {
-    /** Excludes up to 128 connections. */
+    /** Excludes the selected connections. */
     readonly except?: Pick<ActorSocket, "id"> | readonly Pick<ActorSocket, "id">[]
     /** Empty or omitted selects all connections. */
     readonly tags?: readonly Tag[]
@@ -85,9 +92,14 @@ interface ActorConnectionEventMap<Receive = JsonValue, State = JsonValue> {
 const scopes = new AsyncLocalStorage<{ instance: object; scope: ActorSocketScope; active: boolean }>()
 
 async function actorConnections<Metadata, Outgoing, Tag extends string>(
-    instance: object
+    instance: object,
+    tag?: string
 ): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
-    return (await socketScope(instance).getConnections()) as unknown as readonly ActorSocket<Metadata, Outgoing, Tag>[]
+    return (await socketScope(instance).getConnections(tag)) as unknown as readonly ActorSocket<
+        Metadata,
+        Outgoing,
+        Tag
+    >[]
 }
 
 function broadcastActor(instance: object, message: unknown, options?: ActorBroadcastOptions): void {
@@ -96,14 +108,15 @@ function broadcastActor(instance: object, message: unknown, options?: ActorBroad
 
 async function runWithActorSockets<T>(
     instance: object,
-    connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
+    connections: readonly SocketConnection[] | SocketSource,
     operation: (scope: ActorSocketScope) => Promise<T>,
     publish?: (effects: readonly SocketEffect[]) => Promise<void>,
-    schemas: ActorSchemas = {}
+    schemas: ActorSchemas = {},
+    eventConnections: readonly SocketConnection[] = []
 ): Promise<{ readonly value: T; readonly effects: readonly SocketEffect[] }> {
     const effects: SocketEffect[] = []
     const output = publish === undefined ? undefined : new SocketOutput(publish)
-    const scope = new ActorSocketScope(connections, output ?? effects, schemas)
+    const scope = new ActorSocketScope(connections, output ?? effects, schemas, eventConnections)
     const context = { instance, scope, active: true }
     return scopes.run(context, async () => {
         try {
@@ -118,26 +131,80 @@ async function runWithActorSockets<T>(
 
 class ActorSocketScope {
     private readonly byId = new Map<string, RuntimeActorSocket>()
-    private loading: Promise<readonly RuntimeActorSocket[]> | undefined
+    private readonly loading = new Map<string | undefined, Promise<readonly RuntimeActorSocket[]>>()
+    private querying: Promise<unknown> = Promise.resolve()
 
     constructor(
-        private readonly connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
+        private readonly connections: readonly SocketConnection[] | SocketSource,
         readonly effects: Pick<SocketEffect[], "push">,
-        private readonly schemas: ActorSchemas
+        private readonly schemas: ActorSchemas,
+        eventConnections: readonly SocketConnection[]
     ) {
-        if (typeof connections !== "function") this.loading = Promise.resolve(this.wrap(connections))
+        this.wrap(eventConnections)
+        if (typeof connections !== "function") this.loading.set(undefined, Promise.resolve(this.wrap(connections)))
     }
 
-    getConnections(): Promise<readonly RuntimeActorSocket[]> {
-        this.loading ??= Promise.resolve().then(async () => {
-            const connections = typeof this.connections === "function" ? await this.connections() : this.connections
-            return this.wrap(connections)
+    getConnections(tag?: string): Promise<readonly RuntimeActorSocket[]> {
+        if (tag !== undefined) socketTags([tag], this.schemas)
+        let loading = this.loading.get(tag)
+        if (loading !== undefined) return loading
+        loading = this.query(tag === undefined ? undefined : { tag }).then(connections => {
+            if (typeof connections === "number") throw new ActorProtocolError("expected socket list")
+            const sockets = this.wrap(connections)
+            const ids = new Set(sockets.map(socket => socket.id))
+            return [
+                ...sockets,
+                ...[...this.byId.values()].filter(
+                    socket =>
+                        socket.state === "connecting" &&
+                        !ids.has(socket.id) &&
+                        (tag === undefined || socket.tags.includes(tag))
+                )
+            ]
         })
-        return this.loading
+        this.loading.set(tag, loading)
+        return loading
+    }
+
+    async getConnectionCount(): Promise<number> {
+        const count = await this.query({ countOnly: true })
+        if (typeof count !== "number") throw new ActorProtocolError("expected socket count")
+        return count + [...this.byId.values()].filter(socket => socket.state === "connecting").length
+    }
+
+    setWebSocketAutoResponse(pair?: { readonly request: string; readonly response: string }): void {
+        if (
+            pair !== undefined &&
+            (typeof pair.request !== "string" ||
+                typeof pair.response !== "string" ||
+                [...pair.request].length > 2048 ||
+                [...pair.response].length > 2048)
+        )
+            throw new ActorProtocolError(
+                "automatic response request and response must be strings of at most 2048 characters"
+            )
+        this.effects.push({
+            type: "set_auto_response",
+            request: pair?.request ?? null,
+            response: pair?.response ?? null
+        })
     }
 
     async settle(): Promise<void> {
-        await this.loading?.catch(() => undefined)
+        await Promise.all([...this.loading.values()].map(promise => promise.catch(() => undefined)))
+        await this.querying.catch(() => undefined)
+    }
+
+    private query(query?: SocketQuery): Promise<SocketLookup> {
+        const next = this.querying.then(() => {
+            if (typeof this.connections === "function") return this.connections(query)
+            const connections = this.connections.filter(
+                connection => query?.tag === undefined || connection.tags.includes(query.tag)
+            )
+            return query?.countOnly ? connections.length : connections
+        })
+        this.querying = next.catch(() => undefined)
+        return next
     }
 
     eventSocket(connection: SocketConnection, state: ActorSocketState): RuntimeActorSocket {
@@ -146,7 +213,9 @@ class ActorSocketScope {
             socket.setState(state)
             return socket
         }
-        return new RuntimeActorSocket(connection, this.effects, this.schemas, state)
+        const created = new RuntimeActorSocket(connection, this.effects, this.schemas, state)
+        this.byId.set(connection.id, created)
+        return created
     }
 
     connection(connectionId: string): RuntimeActorSocket {
@@ -169,7 +238,9 @@ class ActorSocketScope {
     }
 
     private wrap(connections: readonly SocketConnection[]): readonly RuntimeActorSocket[] {
-        const sockets = connections.map(connection => new RuntimeActorSocket(connection, this.effects, this.schemas))
+        const sockets = connections.map(
+            connection => this.byId.get(connection.id) ?? new RuntimeActorSocket(connection, this.effects, this.schemas)
+        )
         for (const socket of sockets) this.byId.set(socket.id, socket)
         return sockets
     }
@@ -244,18 +315,13 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
 class SocketOutput {
     private pending: Promise<void> | undefined
     private queued: SocketEffect[] = []
-    private queuedBytes = 0
     private failure: unknown
 
     constructor(private readonly publish: (effects: readonly SocketEffect[]) => Promise<void>) {}
 
     push(...effects: SocketEffect[]): number {
         if (this.failure !== undefined) throw this.failure
-        const bytes = Buffer.byteLength(JSON.stringify(effects))
-        if (this.queued.length + effects.length > 512 || this.queuedBytes + bytes > 24 * 1024 * 1024)
-            throw new ActorProtocolError("actor socket output queue is full")
         this.queued.push(...effects)
-        this.queuedBytes += bytes
         this.pending ??= this.drain()
         void this.pending.catch(() => undefined)
         return this.queued.length
@@ -271,7 +337,6 @@ class SocketOutput {
             while (this.queued.length > 0) {
                 const batch = this.queued
                 this.queued = []
-                this.queuedBytes = 0
                 await this.publish(batch)
             }
         } catch (error) {
@@ -317,7 +382,22 @@ function excludedSocketIds(except: ActorBroadcastOptions["except"]): readonly st
     return Array.isArray(except) ? except.map(socket => socket.id) : [(except as ActorSocket).id]
 }
 
-export { actorConnections, broadcastActor, decodeSocketMessage, runWithActorSockets, socketMessage }
+function actorConnectionCount(instance: object): Promise<number> {
+    return socketScope(instance).getConnectionCount()
+}
+function setActorAutoResponse(instance: object, pair?: { readonly request: string; readonly response: string }): void {
+    socketScope(instance).setWebSocketAutoResponse(pair)
+}
+
+export {
+    actorConnectionCount,
+    setActorAutoResponse,
+    actorConnections,
+    broadcastActor,
+    decodeSocketMessage,
+    runWithActorSockets,
+    socketMessage
+}
 export type {
     ActorSocketScope,
     ActorBroadcastOptions,

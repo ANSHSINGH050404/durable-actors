@@ -14,17 +14,14 @@ function parseSocketEffects(value: unknown): readonly SocketEffect[] {
 
 const socketConnectionIdSchema = actorComponentSchema.max(128)
 const socketMetadataSchema = jsonValueSchema.refine(
-    value => Buffer.byteLength(JSON.stringify(value)) <= 64 * 1024,
-    "socket metadata must not exceed 64 KiB"
+    value => Buffer.byteLength(JSON.stringify(value)) <= 16 * 1024,
+    "socket metadata must not exceed 16 KiB"
 )
-const socketTagSchema = z.string().min(1).max(256)
-const socketTagsSchema = z
-    .array(socketTagSchema)
-    .max(128)
-    .refine(
-        tags => tags.reduce((bytes, tag) => bytes + Buffer.byteLength(tag), 0) <= 8 * 1024,
-        "socket tags must not exceed 8 KiB"
-    )
+const socketTagSchema = z
+    .string()
+    .min(1)
+    .refine(tag => [...tag].length <= 256, "socket tag must not exceed 256 characters")
+const socketTagsSchema = z.array(socketTagSchema).max(10)
 const socketTextSchema = z.string()
 const socketBinarySchema = z
     .string()
@@ -52,6 +49,7 @@ const socketMessageSchema = z.discriminatedUnion("type", [
 ])
 
 const socketEffectSchema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("set_auto_response"), request: z.string().nullable(), response: z.string().nullable() }),
     z.object({
         type: z.literal("state_snapshot"),
         connection_id: socketConnectionIdSchema,
@@ -69,7 +67,7 @@ const socketEffectSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("broadcast"),
         message: socketMessageSchema,
-        except_connection_ids: z.array(socketConnectionIdSchema).max(128),
+        except_connection_ids: z.array(socketConnectionIdSchema),
         tags: socketTagsSchema,
         tag_match: z.enum(["all", "any"]).optional()
     }),
@@ -110,7 +108,12 @@ const socketEventSchema = z.discriminatedUnion("type", [
 type SocketConnection = z.infer<typeof socketConnectionSchema>
 type SocketMessage = z.infer<typeof socketMessageSchema>
 type SocketEvent = z.infer<typeof socketEventSchema>
+type SocketQuery = { readonly tag?: string; readonly countOnly?: boolean }
+type SocketLookup = readonly SocketConnection[] | number
+type SocketSource = (query?: SocketQuery) => Promise<SocketLookup>
+
 type SocketEffect =
+    | { readonly type: "set_auto_response"; readonly request: string | null; readonly response: string | null }
     | {
           readonly type: "state_snapshot"
           readonly connection_id: string
@@ -143,3 +146,5 @@ type SocketEffect =
 
 export { parseSocketEffects, socketConnectionSchema, socketEventSchema, socketTagsSchema }
 export type { SocketConnection, SocketEffect, SocketEvent, SocketMessage }
+
+export type { SocketQuery, SocketLookup, SocketSource }
