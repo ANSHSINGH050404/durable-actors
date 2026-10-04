@@ -2,5 +2,5 @@ apiVersion: v2
 name: terse
 description: Rust actor control plane and prewarmed GKE Sandbox hosts with two-zone GCS Rapid append logs and Standard GCS archival
 type: application
-version: 0.7.11
-appVersion: "0.7.11"
+version: 0.7.12
+appVersion: "0.7.12"
