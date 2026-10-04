@@ -2339,6 +2339,24 @@
     max-height: 570px;
     overflow: auto;
 }
+.request-waterfall-zoom {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 11px;
+}
+.request-waterfall-zoom > div {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.request-waterfall-zoom > span:last-child {
+    margin-left: auto;
+}
 .request-waterfall-axis,
 .request-waterfall-row {
     display: grid;
@@ -2361,6 +2379,16 @@
 .request-waterfall-axis > div {
     position: relative;
     height: 100%;
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none;
+}
+.request-waterfall-selection {
+    position: absolute;
+    inset-block: 0;
+    border-inline: 1px solid var(--ring);
+    background: color-mix(in srgb, var(--ring) 18%, transparent);
+    pointer-events: none;
 }
 .request-waterfall-axis > div > span {
     position: absolute;
@@ -2440,7 +2468,7 @@
     position: absolute;
     top: calc(50% - 7px);
     height: 14px;
-    min-width: 3px;
+    min-width: 6px;
     max-width: 100%;
     border-radius: 4px;
     overflow: hidden;

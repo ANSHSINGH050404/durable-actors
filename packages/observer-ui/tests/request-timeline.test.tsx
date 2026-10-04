@@ -148,7 +148,7 @@ test("waterfall handles instant requests, unavailable queue timings and every ou
     const { client } = fixture(outcomes.map((outcome, sequence) => ({ ...trace, sequence, outcome, durationMs: 0, queueWaitMs: null })))
     const view = render(<RequestObserver client={client} />)
     const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
-    assert.equal(within(timeline).getAllByRole("button").length, 5)
+    assert.equal(within(timeline).getAllByRole("button", { name: /Inspect .* request/ }).length, 5)
     assert.doesNotMatch(timeline.innerHTML, /NaN|Infinity/)
     assert.equal(timeline.querySelectorAll(".request-waterfall-bar > .request-waterfall-queue").length, 0)
     for (const outcome of outcomes) assert.ok(within(timeline).getByRole("button", { name: new RegExp(`${outcome},`) }))

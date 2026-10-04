@@ -1,3 +1,5 @@
+import { TimelineAxis, TimelineZoomControls, timelineTicks, useTimelineZoom } from "./TimelineZoom.js"
+import type { TimelineWindow } from "./TimelineZoom.js"
 import type { RequestTrace } from "./client.js"
 import { duration, gapLabel, requestTimeline } from "./request-timeline.js"
 
@@ -7,35 +9,27 @@ export interface RequestTimelineProps {
     onSelect: (record: RequestTrace, trigger: HTMLButtonElement) => void
 }
 
-const ticks = [0, 0.25, 0.5, 0.75, 1]
-
 export function RequestTimeline({ records, selected, onSelect }: RequestTimelineProps) {
     const { start, span, rows } = requestTimeline(records)
-    const scale = Math.max(1, span)
+    const bounds = { start, end: start + Math.max(1, span) }
+    const { range, zoomed, setWindow } = useTimelineZoom(bounds)
+    const visible = rows.map(row => ({ ...row, calls: row.calls.filter(call => inWindow(call.record, range)) })).filter(row => row.calls.length > 0)
     return (
         <div className="request-waterfall" role="group" aria-label="Invocation waterfall">
             <TimelineHeading count={records.length} span={span} />
+            <TimelineZoomControls bounds={bounds} range={range} zoomed={zoomed} count={visible.reduce((total, row) => total + row.calls.length, 0)} onChange={setWindow} />
             <div className="request-waterfall-scroll" tabIndex={0} aria-label="Invocation timeline, scroll for more calls">
-                <div className="request-waterfall-axis" aria-hidden="true">
-                    <span>Operation / instance</span>
-                    <div>
-                        {ticks.map(tick => (
-                            <span key={tick} style={{ left: `${tick * 100}%` }}>
-                                {duration(scale * tick)}
-                            </span>
-                        ))}
-                    </div>
-                    <span>Calls / total</span>
-                </div>
-                {rows.map(row => (
-                    <TimelineRow key={row.key} row={row} scale={scale} selected={selected} onSelect={onSelect} />
+                <TimelineAxis start={start} range={range} onChange={setWindow} />
+                {visible.map(row => (
+                    <TimelineRow key={row.key} row={row} range={range} selected={selected} onSelect={onSelect} />
                 ))}
+                {!visible.length && <div className="la-request-empty">No calls in this time range. Pan or zoom out to find calls.</div>}
             </div>
             <div className="request-waterfall-caption">
                 <span>
                     Relative to <time dateTime={new Date(start).toISOString()}>{new Date(start).toLocaleString([], { hour12: false })}</time>
                 </span>
-                <span>Gaps use preceding calls on the same instance in this view.</span>
+                <span>Gaps use preceding loaded calls on the same instance.</span>
             </div>
         </div>
     )
@@ -78,12 +72,12 @@ function TimelineHeading({ count, span }: { count: number; span: number }) {
 
 function TimelineRow({
     row: { record, calls },
-    scale,
+    range,
     selected,
     onSelect
 }: {
     row: ReturnType<typeof requestTimeline>["rows"][number]
-    scale: number
+    range: TimelineWindow
     selected: RequestTimelineProps["selected"]
     onSelect: RequestTimelineProps["onSelect"]
 }) {
@@ -101,11 +95,11 @@ function TimelineRow({
                 </span>
             </span>
             <span className="request-waterfall-track">
-                {ticks.map(tick => (
+                {timelineTicks.map(tick => (
                     <i className="request-waterfall-gridline" aria-hidden="true" key={tick} style={{ left: `${tick * 100}%` }} />
                 ))}
                 {calls.map(call => (
-                    <TimelineCall key={call.record.eventId ?? call.record.sequence} call={call} scale={scale} selected={selected === call.record} onSelect={onSelect} />
+                    <TimelineCall key={call.record.eventId ?? call.record.sequence} call={call} range={range} selected={selected === call.record} onSelect={onSelect} />
                 ))}
             </span>
             <span className="request-waterfall-timing">
@@ -120,32 +114,42 @@ function TimelineRow({
 
 function TimelineCall({
     call: { record, offsetMs, gapMs },
-    scale,
+    range,
     selected,
     onSelect
 }: {
     call: ReturnType<typeof requestTimeline>["calls"][number]
-    scale: number
+    range: TimelineWindow
     selected: boolean
     onSelect: RequestTimelineProps["onSelect"]
 }) {
+    const scale = range.end - range.start
+    const start = Math.max(range.start, record.startedAtMs)
+    const end = Math.min(range.end, record.startedAtMs + record.durationMs)
+    const queue = Math.max(0, Math.min(end, record.startedAtMs + (record.queueWaitMs ?? 0)) - start)
+    const gapStart = Math.max(range.start, record.startedAtMs - (gapMs ?? 0))
+    const gapEnd = Math.min(range.end, record.startedAtMs)
     return (
         <>
-            {gapMs !== null && gapMs > 0 && (
-                <span className="request-waterfall-gap" aria-hidden="true" style={{ left: `${((offsetMs - gapMs) / scale) * 100}%`, width: `${(gapMs / scale) * 100}%` }} />
+            {gapEnd > gapStart && (
+                <span className="request-waterfall-gap" aria-hidden="true" style={{ left: `${((gapStart - range.start) / scale) * 100}%`, width: `${((gapEnd - gapStart) / scale) * 100}%` }} />
             )}
             <button
                 type="button"
                 className={`request-waterfall-bar request-waterfall-${record.kind} request-waterfall-${record.outcome}`}
-                style={{ left: `${(offsetMs / scale) * 100}%`, width: `${(record.durationMs / scale) * 100}%` }}
+                style={{ left: `${((start - range.start) / scale) * 100}%`, width: `${((end - start) / scale) * 100}%` }}
                 data-state={selected ? "selected" : undefined}
                 aria-label={`Inspect ${record.operation} request on ${record.actorName} / ${record.actorId}, ${record.outcome}, ${duration(record.durationMs)}, starts +${duration(offsetMs)}, ${gapLabel(gapMs)}`}
                 aria-haspopup="dialog"
                 title={`${record.actorName} / ${record.actorId}\n${record.operation} · ${record.outcome}\nStart: ${new Date(record.startedAtMs).toLocaleString()} (+${duration(offsetMs)})\nTotal: ${duration(record.durationMs)}\nQueue wait: ${record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs)}\n${gapLabel(gapMs)}${gapMs === null ? "" : " relative to preceding calls on this instance"}`}
                 onClick={event => onSelect(record, event.currentTarget)}
             >
-                {record.queueWaitMs !== null && record.queueWaitMs > 0 && <span className="request-waterfall-queue" style={{ width: `${(record.queueWaitMs / record.durationMs) * 100}%` }} />}
+                {queue > 0 && <span className="request-waterfall-queue" style={{ width: `${(queue / (end - start)) * 100}%` }} />}
             </button>
         </>
     )
+}
+
+function inWindow(record: RequestTrace, range: TimelineWindow) {
+    return record.durationMs === 0 ? record.startedAtMs >= range.start && record.startedAtMs <= range.end : record.startedAtMs < range.end && record.startedAtMs + record.durationMs > range.start
 }
