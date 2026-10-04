@@ -1,3 +1,4 @@
+import { TimelineScroll } from "./TimelineScroll.js"
 import { TimelineAxis, TimelineZoomControls, timelineTicks, useTimelineZoom } from "./TimelineZoom.js"
 import type { TimelineWindow } from "./TimelineZoom.js"
 import type { RequestTrace } from "./client.js"
@@ -18,13 +19,13 @@ export function RequestTimeline({ records, selected, onSelect }: RequestTimeline
         <div className="request-waterfall" role="group" aria-label="Invocation waterfall">
             <TimelineHeading count={records.length} span={span} />
             <TimelineZoomControls bounds={bounds} range={range} zoomed={zoomed} count={visible.reduce((total, row) => total + row.calls.length, 0)} onChange={setWindow} />
-            <div className="request-waterfall-scroll" tabIndex={0} aria-label="Invocation timeline, scroll for more calls">
+            <TimelineScroll bounds={bounds} range={range} onChange={setWindow}>
                 <TimelineAxis start={start} range={range} onChange={setWindow} />
                 {visible.map(row => (
                     <TimelineRow key={row.key} row={row} range={range} selected={selected} onSelect={onSelect} />
                 ))}
                 {!visible.length && <div className="la-request-empty">No calls in this time range. Pan or zoom out to find calls.</div>}
-            </div>
+            </TimelineScroll>
             <div className="request-waterfall-caption">
                 <span>
                     Relative to <time dateTime={new Date(start).toISOString()}>{new Date(start).toLocaleString([], { hour12: false })}</time>
