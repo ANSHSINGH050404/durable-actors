@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use std::sync::Arc;
 
 use axum::{
@@ -88,11 +89,19 @@ impl ActorHostHttpService {
         )
     }
 
-    async fn execute(&self, invocation: ActorInvocation, owner_epoch: u64) -> InvocationReply {
+    async fn execute(
+        &self,
+        invocation: ActorInvocation,
+        owner_epoch: u64,
+        host_state: HostState,
+    ) -> InvocationResponse {
         let actor = invocation.actor.clone();
         let request_id = invocation.request_id.clone();
-        let result = self.host.invoke_actor(invocation, owner_epoch).await;
-        match result {
+        let (result, metadata) = self
+            .host
+            .invoke_actor(invocation, owner_epoch, host_state)
+            .await;
+        let outcome = match result {
             Ok(ActorExecutionResult::Completed { result, effects }) => {
                 if !effects.is_empty()
                     && let Err(error) = self
@@ -104,7 +113,8 @@ impl ActorHostHttpService {
                     return InvocationReply::failed(
                         "outcome_unknown",
                         "actor completed but socket effects could not be delivered",
-                    );
+                    )
+                    .with_metadata(metadata);
                 }
                 InvocationReply::Completed { result }
             }
@@ -125,7 +135,8 @@ impl ActorHostHttpService {
                     "actor could not start because its state was unavailable",
                 )
             }
-        }
+        };
+        outcome.with_metadata(metadata)
     }
 }
 
@@ -157,6 +168,7 @@ async fn socket_event(
             request.invocation,
             request.owner_epoch,
             std::time::Instant::now(),
+            request.host_state,
         )
         .await;
     let reply = match result {
@@ -181,7 +193,7 @@ async fn invoke(
     Path(actor): Path<ActorKey>,
     headers: HeaderMap,
     body: Result<Json<InvokeRequest>, JsonRejection>,
-) -> Result<Json<InvocationReply>, HttpError> {
+) -> Result<Json<InvocationResponse>, HttpError> {
     let principal = service.authenticate(&headers)?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
@@ -190,7 +202,9 @@ async fn invoke(
         .as_ref()
         .and_then(|capability| capability.grant.as_ref());
     if let Err(error) = authorize_grant(grant, Some(&request.method)) {
-        return Ok(Json(InvocationReply::failed("forbidden", &error.1)));
+        return Ok(Json(
+            InvocationReply::failed("forbidden", &error.1).with_metadata(None),
+        ));
     }
     if let Some(grant) = grant {
         info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
@@ -202,7 +216,11 @@ async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(bad_request)?;
-    Ok(Json(service.execute(invocation, request.owner_epoch).await))
+    Ok(Json(
+        service
+            .execute(invocation, request.owner_epoch, request.host_state)
+            .await,
+    ))
 }
 
 async fn publish(
@@ -300,6 +318,8 @@ fn validate_host_request(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InvokeRequest {
+    #[serde(default)]
+    host_state: HostState,
     request_id: String,
     owner_epoch: u64,
     method: String,
@@ -311,6 +331,14 @@ struct InvokeRequest {
 struct PublishRequest {
     owner_epoch: u64,
     effects: Vec<ActorSocketEffect>,
+}
+
+#[derive(Serialize)]
+struct InvocationResponse {
+    #[serde(flatten)]
+    outcome: InvocationReply,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<crate::request_tracking::RequestMetadata>,
 }
 
 #[derive(Serialize)]
@@ -337,6 +365,16 @@ enum RejectionReason {
 }
 
 impl InvocationReply {
+    fn with_metadata(
+        self,
+        metadata: Option<crate::request_tracking::RequestMetadata>,
+    ) -> InvocationResponse {
+        InvocationResponse {
+            outcome: self,
+            metadata,
+        }
+    }
+
     fn failed(code: &str, message: &str) -> Self {
         Self::Failed {
             code: code.into(),

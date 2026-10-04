@@ -19,6 +19,7 @@ pub mod storage_paths;
 
 pub(crate) mod artifacts;
 mod request_traces;
+mod request_tracking;
 mod sockets;
 
 #[cfg(test)]

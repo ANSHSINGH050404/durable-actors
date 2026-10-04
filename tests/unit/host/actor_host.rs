@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use crate::{
     actor::{
         ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketOutcome,
@@ -809,9 +810,12 @@ async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<
             args: Vec::new(),
         },
         1,
+        HostState::Warm,
     );
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), other).await??,
+        tokio::time::timeout(Duration::from_secs(2), other)
+            .await?
+            .0?,
         ActorExecutionResult::Reroute
     );
     assert!(host.drain(Duration::from_millis(30)).await.is_err());
@@ -941,9 +945,19 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         method: "increment".into(),
         args: vec![],
     };
-    assert_eq!(host.invoke_actor(invoke("one"), 7).await?, completed(1));
+    assert_eq!(
+        host.invoke_actor(invoke("one"), 7, HostState::Warm)
+            .await
+            .0?,
+        completed(1)
+    );
     host.activate_actor(actor.clone()).await?;
-    assert_eq!(host.invoke_actor(invoke("two"), 7).await?, completed(2));
+    assert_eq!(
+        host.invoke_actor(invoke("two"), 7, HostState::Warm)
+            .await
+            .0?,
+        completed(2)
+    );
     assert_eq!(*authority.preparations.lock().unwrap(), vec![0]);
 
     authority.fenced.store(true, Ordering::SeqCst);
@@ -997,8 +1011,10 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
                 args: vec![],
             },
             7,
+            HostState::Warm,
         )
-        .await?;
+        .await
+        .0?;
     assert_eq!(result, completed(42));
     assert_eq!(authority.loads.load(Ordering::SeqCst), 0);
     assert_eq!(*authority.preparations.lock().unwrap(), vec![3]);
@@ -1635,8 +1651,10 @@ async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResu
             args: Vec::new(),
         },
         1,
+        HostState::Warm,
     )
     .await
+    .0
 }
 
 fn completed(count: u64) -> ActorExecutionResult {

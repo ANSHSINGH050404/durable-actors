@@ -26,6 +26,7 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     assert_eq!(reply["outcome"]["type"], "completed");
     assert!(reply["outcome"]["result"].is_null());
     assert_eq!(reply["target"]["ownerEpoch"], 1);
+    assert!(reply["target"].get("hostState").is_none());
     assert_eq!(reply["target"]["route"], fixture.origin);
     assert!(reply["target"]["expiresAtMs"].as_i64().unwrap() > 0);
     assert!(
@@ -38,7 +39,7 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     let requests = fixture.host.requests.lock().unwrap();
     assert_eq!(
         requests[0].1,
-        json!({"requestId":"call-1", "ownerEpoch":1, "method":"sendMessage", "args":["hello"]})
+        json!({"requestId":"call-1", "ownerEpoch":1, "method":"sendMessage", "args":["hello"], "hostState":"cold"})
     );
     let principal = fixture
         .verifier
@@ -47,6 +48,27 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     assert_eq!(
         requests[0].0,
         format!("Bearer {}", reply["target"]["token"].as_str().unwrap())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resolving_an_existing_host_marks_the_request_warm() -> Result<()> {
+    let fixture = Fixture::start_with_existing_host(
+        vec![(StatusCode::OK, json!({"type":"completed", "result":1}))],
+        true,
+    )
+    .await?;
+    fixture
+        .call(
+            "api-key",
+            json!({"requestId":"warm", "method":"clear", "args":[]}),
+        )
+        .await?
+        .error_for_status()?;
+    assert_eq!(
+        fixture.host.requests.lock().unwrap()[0].1["hostState"],
+        "warm"
     );
     Ok(())
 }
@@ -119,15 +141,9 @@ async fn combined_invocation_retries_known_non_execution_through_handoff() -> Re
             .await?;
         assert_eq!(reply["outcome"], json!({"type":"completed", "result":42}));
         assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 5);
-        assert!(
-            fixture
-                .host
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(_, request)| request["requestId"] == "same-id")
-        );
+        assert!(fixture.host.requests.lock().unwrap().iter().all(
+            |(_, request)| request["requestId"] == "same-id" && request["hostState"] == "cold"
+        ));
     }
     Ok(())
 }
@@ -284,6 +300,13 @@ struct Fixture {
 
 impl Fixture {
     async fn start(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        Self::start_with_existing_host(replies, false).await
+    }
+
+    async fn start_with_existing_host(
+        replies: Vec<(StatusCode, Value)>,
+        existing: bool,
+    ) -> Result<Self> {
         let host = Arc::new(HostFixture {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
@@ -338,12 +361,35 @@ impl Fixture {
                 Some(&contract),
             )
             .await?;
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        if existing {
+            let spec = registry.launch_spec("default").await?.unwrap();
+            let actor = ActorKey {
+                project_id: "default".into(),
+                actor_name: "ChatRoom".into(),
+                actor_id: "one".into(),
+            };
+            placements.set_owner(
+                &actor.storage_key(),
+                HostLease {
+                    route: host_origin.clone(),
+                    ..test_lease(&HostId::new(format!(
+                        "host.v3.{}.fixture",
+                        spec.host_config_key()
+                    )))
+                },
+                "north-america-east",
+            )?;
+        }
         let mut service = ControlPlaneService::new(
-            Arc::new(LocalObjectPlacementStore::default()),
+            placements.clone(),
             auth,
             registry,
             issuer.clone(),
-            Arc::new(InvocationProvisioner(host_origin)),
+            Arc::new(InvocationProvisioner {
+                route: host_origin,
+                placements,
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -417,7 +463,10 @@ async fn host_invoke(
     (status, Json(reply)).into_response()
 }
 
-struct InvocationProvisioner(String);
+struct InvocationProvisioner {
+    route: String,
+    placements: Arc<LocalObjectPlacementStore>,
+}
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
     fn host_idle_timeout_ms(&self) -> u64 {
@@ -438,21 +487,21 @@ impl HostProvisioner for InvocationProvisioner {
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
-        _: &str,
-        _: &ActorKey,
+        region: &str,
+        actor: &ActorKey,
         _: bool,
         _: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
-        Ok((
-            HostLease {
-                route: self.0.clone(),
-                ..test_lease(&HostId::new(format!(
-                    "host.v3.{}.fixture",
-                    spec.host_config_key()
-                )))
-            },
-            1,
-        ))
+        let lease = HostLease {
+            route: self.route.clone(),
+            ..test_lease(&HostId::new(format!(
+                "host.v3.{}.fixture",
+                spec.host_config_key()
+            )))
+        };
+        self.placements
+            .set_owner(&actor.storage_key(), lease.clone(), region)?;
+        Ok((lease, 1))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
         anyhow::bail!("unexpected termination")

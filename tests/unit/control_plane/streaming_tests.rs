@@ -1,5 +1,6 @@
 use super::tests::test_issuer;
 use super::*;
+use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
     control_plane::{ActorTokenPurpose, ControlPlaneClient, admin::LocalAdminRegistry},
@@ -788,8 +789,10 @@ impl Stack {
                     args,
                 },
                 1,
+                HostState::Warm,
             )
-            .await?;
+            .await
+            .0?;
         match result {
             crate::actor::ActorExecutionResult::Completed { result, .. } => Ok(result),
             other => anyhow::bail!("actor call failed: {other:?}"),
@@ -1036,10 +1039,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(
-        reply,
-        serde_json::json!({"type":"completed", "result":null})
-    );
+    assert_completed_invocation(reply, serde_json::Value::Null);
     let update = receive(&mut socket).await?;
     assert_eq!(update["changes"]["count"], 2);
     let command = serde_json::json!({"ownerEpoch":epoch, "effects":[{"type":"broadcast", "message":{"type":"text", "data":"{\"notice\":\"hello\"}"}, "except_connection_ids":[], "tags":[]}]});
@@ -1194,10 +1194,7 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(
-        reply["outcome"],
-        serde_json::json!({"type":"completed", "result":"saved"})
-    );
+    assert_completed_invocation(reply["outcome"].clone(), serde_json::json!("saved"));
     let warm: serde_json::Value = reqwest::Client::new()
         .post(format!(
             "{}/v1/projects/default/actors/Counter/counter-1/invoke",
@@ -1213,10 +1210,7 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(
-        warm,
-        serde_json::json!({"type":"completed", "result":"saved"})
-    );
+    assert_completed_invocation(warm, serde_json::json!("saved"));
     stack.child.kill().await?;
     Ok(())
 }
@@ -1250,4 +1244,17 @@ async fn a_slow_reader_can_resume_after_queued_output_waits() -> Result<()> {
     socket.close(None).await?;
     stack.child.kill().await?;
     Ok(())
+}
+
+fn assert_completed_invocation(mut reply: serde_json::Value, result: serde_json::Value) {
+    let metadata = reply.as_object_mut().unwrap().remove("metadata").unwrap();
+    assert_eq!(
+        reply,
+        serde_json::json!({"type":"completed", "result":result})
+    );
+    let duration = metadata["durationMs"].as_f64().unwrap();
+    let queue_wait = metadata["queueWaitMs"].as_f64().unwrap();
+    assert!(duration.is_finite() && duration >= 0.0);
+    assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
+    assert_eq!(metadata["hostState"], "warm");
 }

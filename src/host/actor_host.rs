@@ -1,4 +1,6 @@
-use crate::request_traces::{RequestKind, RequestSpan, TraceSender};
+use crate::request_traces::{RequestKind, TraceRecorder, TraceSender};
+use crate::request_tracking::HostState;
+use crate::request_tracking::{RequestMetadata, RequestObserver, RequestTracker};
 use std::{
     borrow::Cow,
     sync::Arc,
@@ -22,9 +24,7 @@ use crate::{
 
 use super::{
     HostEndpoint,
-    actor_runtime::{
-        ActorActivation, ActorRuntime, ActorStorage, InvocationTimings, socket_event_name,
-    },
+    actor_runtime::{ActorActivation, ActorRuntime, ActorStorage, socket_event_name},
     queues::{ActorQueues, WaitingRequest},
 };
 
@@ -113,9 +113,16 @@ impl ActorHost {
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
         started: Instant,
+        host_state: HostState,
     ) -> Result<ActorExecutionResult> {
-        self.submit_since(ActorOperation::Socket(invocation), owner_epoch, started)
-            .await
+        self.submit_traced(
+            ActorOperation::Socket(invocation),
+            owner_epoch,
+            started,
+            host_state,
+        )
+        .await
+        .0
     }
 
     pub(crate) fn id(&self) -> &super::HostId {
@@ -133,9 +140,15 @@ impl ActorHost {
         &self,
         invocation: ActorInvocation,
         owner_epoch: u64,
-    ) -> Result<ActorExecutionResult> {
-        self.submit(ActorOperation::Method(invocation), owner_epoch)
-            .await
+        host_state: HostState,
+    ) -> (Result<ActorExecutionResult>, Option<RequestMetadata>) {
+        self.submit_traced(
+            ActorOperation::Method(invocation),
+            owner_epoch,
+            Instant::now(),
+            host_state,
+        )
+        .await
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
@@ -167,28 +180,45 @@ impl ActorHost {
         owner_epoch: u64,
         started: Instant,
     ) -> Result<ActorExecutionResult> {
+        self.submit_traced(operation, owner_epoch, started, HostState::Warm)
+            .await
+            .0
+    }
+
+    async fn submit_traced(
+        &self,
+        operation: ActorOperation,
+        owner_epoch: u64,
+        started: Instant,
+        host_state: HostState,
+    ) -> (Result<ActorExecutionResult>, Option<RequestMetadata>) {
         let (reply, result) = oneshot::channel();
+        let (tracker, timing) = RequestTracker::new(started, host_state, self.observer(&operation));
         let request = ActorRequest {
-            trace: self.trace(&operation, started),
+            tracker,
             waiting: None,
             operation,
             owner_epoch,
 
-            timings: InvocationTimings::new(),
             reply,
         };
-        self.commands
+        let outcome = match self
+            .commands
             .send(HostCommand::Invoke(Box::new(request)))
             .await
-            .context("actor dispatcher stopped")?;
-        result.await.unwrap_or_else(|_| {
-            Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            })
-        })
+        {
+            Ok(()) => result.await.unwrap_or_else(|_| {
+                Ok(ActorExecutionResult::Failed {
+                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                })
+            }),
+            Err(_) => Err(anyhow::anyhow!("actor dispatcher stopped")),
+        };
+        let timing = timing.await.ok();
+        (outcome, timing)
     }
 
-    fn trace(&self, operation: &ActorOperation, started: Instant) -> Option<RequestSpan> {
+    fn observer(&self, operation: &ActorOperation) -> Option<Box<dyn RequestObserver>> {
         let sender = self.traces.as_ref()?.clone();
         let (kind, connection, metadata) = match operation {
             ActorOperation::Activate { .. } => return None,
@@ -207,14 +237,13 @@ impl ActorHost {
                 }
             },
         };
-        Some(RequestSpan::new(
+        Some(Box::new(TraceRecorder::new(
             sender,
             &operation.invocation(),
             kind,
             connection,
             metadata,
-            started,
-        ))
+        )))
     }
 }
 
@@ -435,19 +464,11 @@ async fn run_actor(
     }
     while let Some(mut request) = requests.recv().await {
         drop(request.waiting.take());
+        let invocation = request.operation.invocation().into_owned();
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
-            let result = Ok(ActorExecutionResult::HostUnavailable);
-            ActorRuntime::log_invocation(
-                runtime.endpoint(),
-                &request.operation.invocation(),
-                &request.timings,
-                &result,
-            );
-            result
+            Ok(ActorExecutionResult::HostUnavailable)
         } else {
-            if let Some(trace) = &mut request.trace {
-                trace.admitted();
-            }
+            request.tracker.admitted();
             match request.operation {
                 ActorOperation::Activate { actor, reply } => {
                     let _ = reply.send(runtime.activate_actor(&actor).await);
@@ -459,20 +480,24 @@ async fn run_actor(
 
                 ActorOperation::Method(invocation) => {
                     runtime
-                        .invoke_actor(invocation, request.owner_epoch, request.timings)
+                        .invoke_actor(invocation, request.owner_epoch, &mut request.tracker)
                         .await
                 }
                 ActorOperation::Socket(invocation) => {
                     runtime
-                        .handle_socket_event(invocation, request.owner_epoch, request.timings)
+                        .handle_socket_event(invocation, request.owner_epoch, &mut request.tracker)
                         .await
                 }
             }
         };
-        if let Some(trace) = &mut request.trace {
-            trace.state_version(runtime.state_version());
-            trace.complete(&result);
-        }
+        request.tracker.state_version(runtime.state_version());
+        request.tracker.complete(&result);
+        ActorRuntime::log_invocation(
+            runtime.endpoint(),
+            &invocation,
+            request.tracker.completion(),
+            &result,
+        );
         if completed
             .send(ActorCompletion {
                 object: object.clone(),
@@ -500,11 +525,10 @@ struct ActorMailbox {
 
 struct ActorRequest {
     waiting: Option<WaitingRequest>,
-    trace: Option<RequestSpan>,
+    tracker: RequestTracker,
     operation: ActorOperation,
     owner_epoch: u64,
 
-    timings: InvocationTimings,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
 }
 
@@ -516,13 +540,11 @@ struct ActorCompletion {
 
 impl ActorRequest {
     fn finish(mut self, endpoint: &HostEndpoint, result: Result<ActorExecutionResult>) {
-        if let Some(trace) = &mut self.trace {
-            trace.complete(&result);
-        }
+        self.tracker.complete(&result);
         ActorRuntime::log_invocation(
             endpoint,
             &self.operation.invocation(),
-            &self.timings,
+            self.tracker.completion(),
             &result,
         );
         let _ = self.reply.send(result);

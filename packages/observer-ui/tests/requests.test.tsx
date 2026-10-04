@@ -32,10 +32,16 @@ const page: RequestTracePage = {
             startedAtMs: 1000,
             durationMs: 25,
             queueWaitMs: 10,
+            hostState: "warm",
             outcome: "completed"
         }
     ]
 }
+
+test("request traces require a cold or warm hostState", () => {
+    for (const hostState of ["cold", "warm"]) assert.equal(isTrace({ ...page.records[0], hostState }), true)
+    for (const hostState of [undefined, null, true, false, "unknown"]) assert.equal(isTrace({ ...page.records[0], hostState }), false)
+})
 
 test("request traces require an explicit valid project ID", () => {
     for (const projectId of [undefined, "", "bad/project"]) assert.equal(isTrace({ ...page.records[0], projectId }), false)

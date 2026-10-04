@@ -18,6 +18,7 @@ const trace = (durationMs: number, outcome: RequestTrace["outcome"]): RequestTra
     startedAtMs: 1000,
     durationMs,
     queueWaitMs: 0,
+    hostState: "warm",
     outcome
 })
 

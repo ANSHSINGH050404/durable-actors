@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -56,6 +57,7 @@ async fn resolve_and_dispatch(
     invocation: &ActorInvocation,
 ) -> Result<(ActorTargetReply, Value), ApiError> {
     let deadline = tokio::time::Instant::now() + super::CONTROL_PLANE_REQUEST_TIMEOUT;
+    let mut host_state = HostState::Warm;
     loop {
         let target = resolve_actor_target(
             state,
@@ -66,12 +68,16 @@ async fn resolve_and_dispatch(
             })),
         )
         .await?;
+        if target.host_state == HostState::Cold {
+            host_state = HostState::Cold;
+        }
         let outcome = dispatch(
             &state.hosts,
             &target.backend_route,
             &target.token,
             target.owner_epoch,
             invocation,
+            host_state,
         )
         .await?;
         if !matches!(
@@ -114,7 +120,15 @@ async fn invoke_cached(
         args: request.args,
     };
     invocation.validate().map_err(ApiError::bad_request)?;
-    let outcome = dispatch(&state.hosts, &route, token, epoch, &invocation).await?;
+    let outcome = dispatch(
+        &state.hosts,
+        &route,
+        token,
+        epoch,
+        &invocation,
+        HostState::Warm,
+    )
+    .await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(outcome)).into_response())
 }
 
@@ -175,6 +189,7 @@ async fn dispatch(
     token: &str,
     owner_epoch: u64,
     invocation: &ActorInvocation,
+    host_state: HostState,
 ) -> Result<Value, ApiError> {
     let actor = &invocation.actor;
     let url = format!(
@@ -189,7 +204,7 @@ async fn dispatch(
         .bearer_auth(token)
         .json(&json!({
             "requestId":invocation.request_id, "ownerEpoch":owner_epoch,
-            "method":invocation.method, "args":invocation.args,
+            "method":invocation.method, "args":invocation.args, "hostState":host_state,
         }))
         .send()
         .await;

@@ -76,9 +76,7 @@ impl Mailbox {
             return true;
         }
         drop(request.waiting.take());
-        if let Some(trace) = &mut request.trace {
-            trace.admitted();
-        }
+        request.tracker.admitted();
         if matches!(request.operation, ActorOperation::Activate { .. }) {
             return self.activate(request).await;
         }
@@ -89,7 +87,7 @@ impl Mailbox {
                 &invocation,
                 request.owner_epoch,
                 matches!(request.operation, ActorOperation::Method(_)),
-                &mut request.timings,
+                &mut request.tracker,
             )
             .await
         {
@@ -190,7 +188,7 @@ impl Mailbox {
                     request.owner_epoch,
                     result,
                     request.operation.commit_origin(),
-                    &mut request.timings,
+                    &mut request.tracker,
                 )
                 .await;
             self.finish(request, result).await;
@@ -209,7 +207,7 @@ impl Mailbox {
                     request.owner_epoch,
                     outcome,
                     request.operation.commit_origin(),
-                    &mut request.timings,
+                    &mut request.tracker,
                 )
                 .await;
             match result {
@@ -249,16 +247,14 @@ impl Mailbox {
     }
 
     async fn finish(&mut self, mut request: ActorRequest, result: Result<ActorExecutionResult>) {
+        request.tracker.state_version(self.runtime.state_version());
+        request.tracker.complete(&result);
         ActorRuntime::log_invocation(
             self.runtime.endpoint(),
             &request.operation.invocation(),
-            &request.timings,
+            request.tracker.completion(),
             &result,
         );
-        if let Some(trace) = &mut request.trace {
-            trace.state_version(self.runtime.state_version());
-            trace.complete(&result);
-        }
         let _ = self
             .completed
             .send(ActorCompletion {

@@ -48,19 +48,44 @@ export class HttpActorHostTransport implements ActorHostTransport {
 
 export function parseActorHostReply(reply: unknown): ActorHostReply {
     if (isRecord(reply)) {
+        const metadata = parseMetadata(reply)
         if (reply.type === "completed" && Object.hasOwn(reply, "result"))
-            return { type: "completed", result: reply.result }
+            return { type: "completed", result: reply.result, ...metadata }
         if (
             reply.type === "failed" &&
             typeof reply.code === "string" &&
             reply.code.length > 0 &&
             typeof reply.message === "string"
         )
-            return { type: "failed", code: reply.code, message: reply.message }
+            return { type: "failed", code: reply.code, message: reply.message, ...metadata }
         if (reply.type === "not_executed" && rejectionReason(reply.reason))
-            return { type: "not_executed", reason: reply.reason }
+            return { type: "not_executed", reason: reply.reason, ...metadata }
     }
     throw new ActorProtocolError("actor host response did not contain a valid outcome")
+}
+
+function parseMetadata(reply: Record<string, unknown>): { metadata?: ActorResponseMetadata } {
+    if (!Object.hasOwn(reply, "metadata")) return {}
+    const metadata = reply.metadata
+    if (
+        !isRecord(metadata) ||
+        !nonnegativeFiniteNumber(metadata.durationMs) ||
+        (metadata.queueWaitMs !== null &&
+            (!nonnegativeFiniteNumber(metadata.queueWaitMs) || metadata.queueWaitMs > metadata.durationMs)) ||
+        (metadata.hostState !== "cold" && metadata.hostState !== "warm")
+    )
+        throw new ActorProtocolError("actor host response contained invalid latency metadata")
+    return {
+        metadata: {
+            durationMs: metadata.durationMs,
+            queueWaitMs: metadata.queueWaitMs,
+            hostState: metadata.hostState
+        }
+    }
+}
+
+function nonnegativeFiniteNumber(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0
 }
 
 function rejectionReason(value: unknown): value is ActorRejectionReason {
@@ -111,11 +136,18 @@ export interface ActorInvocation extends ActorAddress {
 }
 type ActorRejectionReason = "stale_owner" | "host_unavailable" | "upstream_not_reached"
 
-export type ActorHostReply =
+export interface ActorResponseMetadata {
+    readonly durationMs: number
+    readonly queueWaitMs: number | null
+    readonly hostState: "cold" | "warm"
+}
+
+export type ActorHostReply = (
     | { readonly type: "completed"; readonly result: unknown }
     | { readonly type: "failed"; readonly code: string; readonly message: string }
     | { readonly type: "unauthenticated" }
     | { readonly type: "not_executed"; readonly reason: ActorRejectionReason }
+) & { readonly metadata?: ActorResponseMetadata }
 export interface ActorHostTransport {
     invoke(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply>
     publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>

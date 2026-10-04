@@ -3,6 +3,7 @@ use super::{
     socket_directory::{GATEWAY_LEASE, GatewayOwner, SocketDirectory},
     socket_ticket::SocketTicket,
 };
+use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorKey, ActorSocketEffect, ActorSocketInvocation},
     sockets::{SocketRegistry, browser::SocketDispatcher},
@@ -25,6 +26,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) use crate::sockets::operations::{SocketOperation, SocketOperationReply};
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SocketEventRequest {
+    #[serde(default)]
+    pub host_state: HostState,
     pub owner_epoch: u64,
     pub invocation: ActorSocketInvocation,
 }
@@ -219,7 +222,9 @@ impl SocketGateway {
         let target = service
             .resolve_actor_route(&ticket.actor, ticket.home_region.as_deref(), None, None)
             .await?;
-        *cached = Some(target.clone());
+        let mut cached_target = target.clone();
+        cached_target.host_state = HostState::Warm;
+        *cached = Some(cached_target);
         Ok(target)
     }
 
@@ -246,6 +251,7 @@ impl SocketGateway {
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>> {
         let retry_deadline = Instant::now() + super::CONTROL_PLANE_REQUEST_TIMEOUT;
+        let mut host_state = HostState::Warm;
         loop {
             self.ensure_authority()?;
             ensure!(
@@ -263,6 +269,9 @@ impl SocketGateway {
                 }
                 Err(error) => return Err(error),
             };
+            if target.host_state == HostState::Cold {
+                host_state = HostState::Cold;
+            }
             let actor = &ticket.actor;
             let url = format!(
                 "{}/v1/projects/{}/actors/{}/{}/socket-events",
@@ -276,6 +285,7 @@ impl SocketGateway {
                 .post(url)
                 .bearer_auth(&target.token)
                 .json(&SocketEventRequest {
+                    host_state,
                     owner_epoch: target.owner_epoch,
                     invocation: invocation.clone(),
                 })

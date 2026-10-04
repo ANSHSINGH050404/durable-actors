@@ -1,4 +1,5 @@
 use crate::control_plane::admin::validate_component;
+use crate::request_tracking::HostState;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,9 +7,12 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::sync::mpsc;
+
+pub(crate) use crate::request_tracking::RequestOutcome;
+use crate::request_tracking::{RequestCompletion, RequestObserver};
 
 pub(crate) mod history;
 pub(crate) mod metrics;
@@ -36,6 +40,8 @@ pub(crate) struct RequestTrace {
     pub started_at_ms: u64,
     pub duration_ms: f64,
     pub queue_wait_ms: Option<f64>,
+    #[serde(default)]
+    pub host_state: HostState,
     pub outcome: RequestOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
@@ -97,28 +103,6 @@ impl RequestKind {
         match self {
             Self::Method => "method",
             Self::Websocket => "websocket",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RequestOutcome {
-    Completed,
-    Failed,
-    Rejected,
-    Rerouted,
-    Interrupted,
-}
-
-impl RequestOutcome {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Rejected => "rejected",
-            Self::Rerouted => "rerouted",
-            Self::Interrupted => "interrupted",
         }
     }
 }
@@ -399,29 +383,22 @@ impl TraceSender {
     }
 }
 
-pub(crate) struct RequestSpan {
+pub(crate) struct TraceRecorder {
     sender: TraceSender,
-    started: Instant,
-    trace: Option<RequestTrace>,
+    trace: RequestTrace,
 }
 
-impl RequestSpan {
+impl TraceRecorder {
     pub(crate) fn new(
         sender: TraceSender,
         invocation: &crate::actor::ActorInvocation,
         kind: RequestKind,
         connection_id: Option<String>,
         metadata: Option<serde_json::Value>,
-        started: Instant,
     ) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
         Self {
             sender,
-            started,
-            trace: Some(RequestTrace {
+            trace: RequestTrace {
                 state_version: None,
                 project_id: invocation.actor.project_id.clone(),
                 request_id: invocation.request_id.clone(),
@@ -430,48 +407,27 @@ impl RequestSpan {
                 kind,
                 operation: invocation.method.clone(),
                 connection_id,
-                started_at_ms: now.saturating_sub(started.elapsed().as_millis() as u64),
+                started_at_ms: 0,
                 duration_ms: 0.0,
                 queue_wait_ms: None,
+                host_state: HostState::Warm,
                 outcome: RequestOutcome::Interrupted,
                 metadata: bounded_metadata(metadata),
-            }),
+            },
         }
-    }
-
-    pub(crate) fn state_version(&mut self, version: Option<u64>) {
-        if let Some(trace) = &mut self.trace {
-            trace.state_version = version;
-        }
-    }
-
-    pub(crate) fn admitted(&mut self) {
-        self.trace.as_mut().unwrap().queue_wait_ms =
-            Some(self.started.elapsed().as_secs_f64() * 1000.0);
-    }
-
-    pub(crate) fn finish(&mut self, outcome: RequestOutcome) {
-        if let Some(mut trace) = self.trace.take() {
-            trace.outcome = outcome;
-            trace.duration_ms = self.started.elapsed().as_secs_f64() * 1000.0;
-            self.sender.send(trace);
-        }
-    }
-
-    pub(crate) fn complete(&mut self, result: &Result<crate::actor::ActorExecutionResult>) {
-        use crate::actor::ActorExecutionResult as R;
-        self.finish(match result {
-            Ok(R::Completed { .. }) => RequestOutcome::Completed,
-            Ok(R::HostUnavailable) => RequestOutcome::Rejected,
-            Ok(R::Reroute) => RequestOutcome::Rerouted,
-            _ => RequestOutcome::Failed,
-        });
     }
 }
 
-impl Drop for RequestSpan {
-    fn drop(&mut self) {
-        self.finish(RequestOutcome::Interrupted);
+impl RequestObserver for TraceRecorder {
+    fn record(self: Box<Self>, completion: &RequestCompletion) {
+        let mut trace = self.trace;
+        trace.started_at_ms = completion.started_at_ms;
+        trace.state_version = completion.state_version;
+        trace.outcome = completion.outcome;
+        trace.duration_ms = completion.timings.duration_ms;
+        trace.queue_wait_ms = completion.timings.queue_wait_ms;
+        trace.host_state = completion.timings.host_state;
+        self.sender.send(trace);
     }
 }
 

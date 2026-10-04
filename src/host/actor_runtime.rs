@@ -22,6 +22,7 @@ use crate::{
 };
 
 use super::HostEndpoint;
+use crate::request_tracking::{RequestCompletion, RequestStage, RequestTracker};
 
 #[async_trait]
 pub(crate) trait ActorStorage: Send + Sync {
@@ -139,14 +140,13 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         replay: bool,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<PreparedInvocation> {
         if self.storage.ensure_authority().is_err() {
             return Ok(PreparedInvocation::Completed(
                 ActorExecutionResult::HostUnavailable,
             ));
         }
-        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
         let mut cached = self
             .take_or_load_state(&invocation.actor, owner_epoch, timings)
             .await?;
@@ -159,7 +159,7 @@ impl ActorRuntime {
                 },
             ));
         }
-        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::PendingCommitResolved);
         let result = if replay {
             cached.replay(&invocation.request_id)
         } else {
@@ -187,7 +187,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         outcome: Result<ActorMethodOutcome>,
         origin: CommitOrigin,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         let executed = self.method_result(invocation, outcome).await;
         self.finish_method(invocation, owner_epoch, executed, origin, timings)
@@ -200,12 +200,12 @@ impl ActorRuntime {
         owner_epoch: u64,
         outcome: crate::actor::ActorInterleavedOutcome,
         mut origin: CommitOrigin,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         self.storage.ensure_authority()?;
         validate_socket_effects(&outcome.effects)?;
         origin.interleaved = true;
-        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::ActorExecutionCompleted);
         let mut cached = self
             .cached_state
             .take()
@@ -237,7 +237,7 @@ impl ActorRuntime {
             Some(cached)
         };
         publication?;
-        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StatePublicationCompleted);
         self.complete_with_state(&invocation.actor, version, outcome.result, outcome.effects)
             .await
     }
@@ -287,13 +287,12 @@ impl ActorRuntime {
         &mut self,
         invocation: ActorInvocation,
         owner_epoch: u64,
-        mut timings: InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         self.storage.ensure_authority()?;
         let outcome = self
-            .invoke_actor_once(&invocation, owner_epoch, &mut timings)
+            .invoke_actor_once(&invocation, owner_epoch, timings)
             .await;
-        Self::log_invocation(&self.endpoint, &invocation, &timings, &outcome);
         self.storage.ensure_authority()?;
         outcome
     }
@@ -302,7 +301,7 @@ impl ActorRuntime {
         &mut self,
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
-        mut timings: InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         let persistence = ActorInvocation {
             request_id: invocation.request_id.clone(),
@@ -311,9 +310,8 @@ impl ActorRuntime {
             args: Vec::new(),
         };
         let outcome = self
-            .handle_socket_event_once(invocation, owner_epoch, &persistence, &mut timings)
+            .handle_socket_event_once(invocation, owner_epoch, &persistence, timings)
             .await;
-        Self::log_invocation(&self.endpoint, &persistence, &timings, &outcome);
         if !matches!(outcome, Ok(ActorExecutionResult::HostUnavailable)) {
             self.storage.ensure_authority()?;
         }
@@ -325,7 +323,7 @@ impl ActorRuntime {
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
         persistence: &ActorInvocation,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         let state = match self
             .prepare_invocation(persistence, owner_epoch, false, timings)
@@ -336,7 +334,7 @@ impl ActorRuntime {
         };
         let origin = CommitOrigin::socket(&invocation.event);
         let outcome = self.execute_socket_event(invocation, state).await;
-        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::ActorExecutionCompleted);
         let (next_state, effects) = match outcome {
             Ok(outcome) => outcome,
             Err(result) => return Ok(result),
@@ -362,7 +360,7 @@ impl ActorRuntime {
                 origin,
             )
             .await;
-        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StatePublicationCompleted);
         if published.is_err() {
             self.evict(&persistence.actor).await;
         }
@@ -388,7 +386,7 @@ impl ActorRuntime {
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         let state = match self
             .prepare_invocation(invocation, owner_epoch, true, timings)
@@ -417,9 +415,9 @@ impl ActorRuntime {
             ActorExecutionResult,
         >,
         origin: CommitOrigin,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
-        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::ActorExecutionCompleted);
         let (result, next_state, effects) = match executed {
             Ok(outcome) => outcome,
             Err(failure) => return Ok(failure),
@@ -446,7 +444,7 @@ impl ActorRuntime {
                 origin,
             )
             .await;
-        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StatePublicationCompleted);
         if published.is_err() {
             self.evict(&invocation.actor).await;
         }
@@ -511,10 +509,10 @@ impl ActorRuntime {
         &mut self,
         actor: &crate::actor::ActorKey,
         owner_epoch: u64,
-        timings: &mut InvocationTimings,
+        timings: &mut RequestTracker,
     ) -> Result<CachedActorState> {
         let cached = self.cached_state.take();
-        timings.state_cache_checked_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StateCacheChecked);
         if let Some(cached) = cached
             && cached.owner_epoch == owner_epoch
         {
@@ -531,11 +529,11 @@ impl ActorRuntime {
                 SqliteCapture::new(self.replication.clone()).await?,
             ));
         }
-        timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StateDownloaded);
         let cached = self
             .load_cached(actor, owner_epoch, state_version, &loaded)
             .await?;
-        timings.state_decoded_at_ms = Some(timings.elapsed_ms());
+        timings.mark(RequestStage::StateDecoded);
         Ok(cached)
     }
 
@@ -898,14 +896,14 @@ impl ActorRuntime {
     pub(super) fn log_invocation(
         endpoint: &HostEndpoint,
         invocation: &ActorInvocation,
-        timings: &InvocationTimings,
+        completion: &RequestCompletion,
         outcome: &Result<ActorExecutionResult>,
     ) {
         match outcome {
             Ok(result) => Self::log_invocation_result(
                 endpoint,
                 invocation,
-                timings,
+                completion,
                 actor_execution_outcome(result),
                 actor_execution_failure_code(result).unwrap_or(""),
                 None,
@@ -913,7 +911,7 @@ impl ActorRuntime {
             Err(error) => Self::log_invocation_result(
                 endpoint,
                 invocation,
-                timings,
+                completion,
                 "host_error",
                 "",
                 Some(format!("{error:#}")),
@@ -924,7 +922,7 @@ impl ActorRuntime {
     fn log_invocation_result(
         endpoint: &HostEndpoint,
         invocation: &ActorInvocation,
-        timings: &InvocationTimings,
+        completion: &RequestCompletion,
         outcome: &str,
         failure_code: &str,
         error: Option<String>,
@@ -938,14 +936,15 @@ impl ActorRuntime {
                 method = %invocation.method,
                 host_id = %endpoint.id,
                 started_at_ms = 0,
-                queue_admitted_at_ms = timings.queue_admitted_at_ms,
-                state_cache_checked_at_ms = timings.state_cache_checked_at_ms,
-                state_downloaded_at_ms = timings.state_downloaded_at_ms,
-                state_decoded_at_ms = timings.state_decoded_at_ms,
-                pending_commit_resolved_at_ms = timings.pending_commit_resolved_at_ms,
-                actor_execution_completed_at_ms = timings.actor_execution_completed_at_ms,
-                state_publication_completed_at_ms = timings.state_publication_completed_at_ms,
-                completed_at_ms = timings.elapsed_ms(),
+                host_state = completion.timings.host_state.as_str(),
+                queue_admitted_at_ms = completion.timings.queue_wait_ms,
+                state_cache_checked_at_ms = completion.checkpoints.state_cache_checked_at_ms,
+                state_downloaded_at_ms = completion.checkpoints.state_downloaded_at_ms,
+                state_decoded_at_ms = completion.checkpoints.state_decoded_at_ms,
+                pending_commit_resolved_at_ms = completion.checkpoints.pending_commit_resolved_at_ms,
+                actor_execution_completed_at_ms = completion.checkpoints.actor_execution_completed_at_ms,
+                state_publication_completed_at_ms = completion.checkpoints.state_publication_completed_at_ms,
+                completed_at_ms = completion.timings.duration_ms,
                 outcome,
                 failure_code,
                 error,
@@ -1049,36 +1048,6 @@ impl CachedActorState {
         (self.last_request_id.as_deref() == Some(request_id))
             .then(|| self.last_result.clone())
             .flatten()
-    }
-}
-
-pub(super) struct InvocationTimings {
-    started_at: Instant,
-    queue_admitted_at_ms: Option<f64>,
-    state_cache_checked_at_ms: Option<f64>,
-    state_downloaded_at_ms: Option<f64>,
-    state_decoded_at_ms: Option<f64>,
-    pending_commit_resolved_at_ms: Option<f64>,
-    actor_execution_completed_at_ms: Option<f64>,
-    state_publication_completed_at_ms: Option<f64>,
-}
-
-impl InvocationTimings {
-    pub(super) fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            queue_admitted_at_ms: None,
-            state_cache_checked_at_ms: None,
-            state_downloaded_at_ms: None,
-            state_decoded_at_ms: None,
-            pending_commit_resolved_at_ms: None,
-            actor_execution_completed_at_ms: None,
-            state_publication_completed_at_ms: None,
-        }
-    }
-
-    fn elapsed_ms(&self) -> f64 {
-        elapsed_ms(self.started_at)
     }
 }
 

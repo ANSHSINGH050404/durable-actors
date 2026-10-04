@@ -35,6 +35,47 @@ test("HTTP invocation sends its ticket, epoch, method and arguments in one POST"
     assert.deepEqual(methods, ["POST"])
 })
 
+test("HTTP replies preserve host latency metadata for every outcome", async () => {
+    for (const outcome of [
+        { type: "completed", result: 7 },
+        { type: "failed", code: "actor_error", message: "failed" },
+        { type: "not_executed", reason: "host_unavailable" }
+    ]) {
+        const reply = {
+            ...outcome,
+            metadata: {
+                durationMs: 12.5,
+                queueWaitMs: outcome.type === "not_executed" ? null : 2.5,
+                hostState: outcome.type === "completed" ? "cold" : "warm"
+            }
+        }
+        const transport = new HttpActorHostTransport(async () => Response.json(reply))
+        assert.deepEqual(await transport.invoke(target, invocation), reply)
+    }
+})
+
+test("HTTP replies reject invalid host latency metadata", async () => {
+    for (const metadata of [
+        null,
+        {},
+        { durationMs: -1, queueWaitMs: null, hostState: "warm" },
+        { durationMs: "12", queueWaitMs: null, hostState: "warm" },
+        { durationMs: 12, hostState: "warm" },
+        { durationMs: 12, queueWaitMs: -1, hostState: "warm" },
+        { durationMs: 12, queueWaitMs: 13, hostState: "warm" },
+        { durationMs: 12, queueWaitMs: "2", hostState: "warm" },
+        { durationMs: 12, queueWaitMs: 2, hostState: "unknown" },
+        { durationMs: 12, queueWaitMs: 2, hostState: null },
+        { durationMs: 12, queueWaitMs: 2, hostState: true },
+        { durationMs: 12, queueWaitMs: 2 }
+    ]) {
+        const transport = new HttpActorHostTransport(async () =>
+            Response.json({ type: "completed", result: 7, metadata })
+        )
+        await assert.rejects(transport.invoke(target, invocation), ActorProtocolError)
+    }
+})
+
 test("only a pre-dispatch HTTP 401 is an authentication refresh signal", async () => {
     for (const status of [401, 403, 500, 503, 504]) {
         const transport = new HttpActorHostTransport(async () => new Response("rejected", { status }))

@@ -25,6 +25,7 @@ const trace: RequestTrace = {
     startedAtMs: 1500,
     durationMs: 4,
     queueWaitMs: 1,
+    hostState: "warm",
     outcome: "completed"
 }
 const records = [{ ...trace, sequence: 0, startedAtMs: 1000, operation: "early" }, trace, { ...trace, sequence: 2, startedAtMs: 1996, operation: "late" }]

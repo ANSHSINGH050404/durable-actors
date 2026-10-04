@@ -42,6 +42,7 @@ const page: RequestTracePage = {
             startedAtMs: Date.now(),
             durationMs: 30,
             queueWaitMs: 5,
+            hostState: "warm",
             outcome: "failed"
         },
         {
@@ -58,6 +59,7 @@ const page: RequestTracePage = {
             startedAtMs: Date.now(),
             durationMs: 10,
             queueWaitMs: 0,
+            hostState: "warm",
             outcome: "completed"
         }
     ]

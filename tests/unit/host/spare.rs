@@ -164,10 +164,14 @@ async fn run_activation(
         ("read", before + 1),
     ] {
         let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
-        assert_eq!(
-            result,
-            serde_json::json!({"type":"completed", "result":expected})
-        );
+        assert_eq!(result["type"], "completed");
+        assert_eq!(result["result"], expected);
+        let metadata = &result["metadata"];
+        let duration = metadata["durationMs"].as_f64().unwrap();
+        let queue_wait = metadata["queueWaitMs"].as_f64().unwrap();
+        assert!(duration.is_finite() && duration >= 0.0);
+        assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
+        assert_eq!(metadata["hostState"], "warm");
     }
     assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();

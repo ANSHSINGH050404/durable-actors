@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
@@ -452,6 +453,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                     started_at_ms: 1000,
                     duration_ms: 25.0,
                     queue_wait_ms: Some(10.0),
+                    host_state: HostState::Warm,
                     outcome: RequestOutcome::Completed,
                     metadata: None,
                 }],
@@ -649,6 +651,7 @@ async fn record_request(
                 started_at_ms: time,
                 duration_ms: 25.0,
                 queue_wait_ms: Some(10.0),
+                host_state: HostState::Warm,
                 outcome,
                 metadata: None,
             }],

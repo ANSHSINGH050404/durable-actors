@@ -25,6 +25,7 @@ const trace: RequestTrace = {
     startedAtMs: 1000,
     durationMs: 100,
     queueWaitMs: 20,
+    hostState: "warm",
     outcome: "completed"
 }
 
@@ -83,6 +84,22 @@ test("method rows keep different projects, actor classes, instances and event ki
     assert.equal(rows.length, 5)
     assert.equal(within(rows[0] as HTMLElement).getAllByRole("button").length, 2)
     assert.ok(within(rows[0] as HTMLElement).getByRole("button", { name: /Overlapping/ }))
+})
+
+test("request details show cold and warm host startup context", async () => {
+    for (const [hostState, label] of [
+        ["cold", "Cold"],
+        ["warm", "Warm"]
+    ] as const) {
+        const { client } = fixture([{ ...trace, hostState }])
+        const view = render(<RequestObserver client={client} />)
+        const trigger = await view.findByRole("button", { name: /Inspect load request/ })
+        fireEvent.click(trigger)
+        const details = await view.findByRole("dialog", { name: "Request details" })
+        assert.ok(within(details).getByText("Host state"))
+        assert.ok(within(details).getByText(label))
+        view.unmount()
+    }
 })
 
 test("request details open a right-side drawer from the waterfall and table, then restore focus on Escape", async () => {

@@ -206,6 +206,7 @@ export interface RequestTrace {
     startedAtMs: number
     durationMs: number
     queueWaitMs: number | null
+    hostState: "cold" | "warm"
     outcome: "completed" | "failed" | "rejected" | "rerouted" | "interrupted"
 }
 
@@ -270,6 +271,7 @@ export function isTrace(value: unknown): value is RequestTrace {
         ["method", "websocket"].includes(trace.kind) &&
         ["completed", "failed", "rejected", "rerouted", "interrupted"].includes(trace.outcome) &&
         (trace.connectionId === null || typeof trace.connectionId === "string") &&
+        ["cold", "warm"].includes(trace.hostState) &&
         Number.isFinite(trace.durationMs) &&
         trace.durationMs >= 0 &&
         (trace.queueWaitMs === null || (Number.isFinite(trace.queueWaitMs) && trace.queueWaitMs >= 0 && trace.queueWaitMs <= trace.durationMs))

@@ -22,6 +22,7 @@ function trace(overrides: Partial<RequestTrace>): RequestTrace {
         startedAtMs: 5000,
         durationMs: 50,
         queueWaitMs: 10,
+        hostState: "warm",
         outcome: "completed",
         ...overrides
     }

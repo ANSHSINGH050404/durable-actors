@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
@@ -381,6 +382,7 @@ pub(super) async fn resolve_actor_target(
             .await
             .map_err(ApiError::routing)?;
         Ok(ActorTargetReply {
+            host_state: target.host_state,
             home_region: target.home_region,
             backend_route: target.route.clone(),
             route: state
@@ -512,6 +514,8 @@ struct DeploymentReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ActorTargetReply {
+    #[serde(skip)]
+    pub host_state: HostState,
     #[serde(skip)]
     pub backend_route: String,
     home_region: String,

@@ -992,22 +992,42 @@ components:
                           required: [type]
                           properties:
                               type: { const: unauthenticated }
+        ActorInvocationMetadata:
+            type: object
+            description: Timing and host-start context finalized once by the host request tracker and shared with the response, observability and diagnostic log. Omitted for requests denied before host dispatch.
+            required: [durationMs, queueWaitMs, hostState]
+            properties:
+                durationMs:
+                    type: number
+                    minimum: 0
+                    description: Total traced host duration in milliseconds, including queue wait, state loading, actor execution and persistence. Ends before the result handoff to the HTTP handler; excludes network transit and subsequent HTTP-handler socket delivery.
+                queueWaitMs:
+                    type: [number, "null"]
+                    minimum: 0
+                    description: Milliseconds from host submission until the actor worker begins processing, before state loading. Null when processing never begins; otherwise no greater than durationMs.
+                hostState:
+                    type: string
+                    enum: [cold, warm]
+                    description: Cold when this invocation required actor-host provisioning or activation during routing; warm when routed to an existing host. This is independent of the host's actor-state cache. Host duration excludes provisioning time.
         ActorInvocationReply:
             oneOf:
                 - type: object
                   required: [type, result]
                   properties:
+                      metadata: { $ref: "#/components/schemas/ActorInvocationMetadata" }
                       type: { const: completed }
                       result: {}
                 - type: object
                   required: [type, code, message]
                   properties:
+                      metadata: { $ref: "#/components/schemas/ActorInvocationMetadata" }
                       type: { const: failed }
                       code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
                       message: { type: string }
                 - type: object
                   required: [type, reason]
                   properties:
+                      metadata: { $ref: "#/components/schemas/ActorInvocationMetadata" }
                       type: { const: not_executed }
                       reason:
                           type: string
@@ -1177,7 +1197,7 @@ components:
                 nextBefore: { type: [integer, "null"], minimum: 1 }
         TraceRecord:
             type: object
-            required: [projectId, sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
+            required: [projectId, sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, hostState, outcome]
             properties:
                 projectId: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
                 metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
@@ -1195,6 +1215,7 @@ components:
                 startedAtMs: { type: integer, minimum: 0 }
                 durationMs: { type: number, minimum: 0 }
                 queueWaitMs: { type: [number, "null"], minimum: 0 }
+                hostState: { type: string, enum: [cold, warm], description: "Whether routing required host startup. Defaults to warm for historical traces without this field." }
                 outcome: { type: string, enum: [completed, failed, rejected, rerouted, interrupted] }
         SocketMessageEvent:
             type: object

@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use std::{sync::Arc, time::Duration};
 
 use super::postgres::PostgresTracePersistence;
@@ -504,6 +505,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
             started_at_ms: 1,
             duration_ms: 1.0,
             queue_wait_ms: None,
+            host_state: HostState::Warm,
             outcome: RequestOutcome::Completed,
             metadata: None,
         },

@@ -1,6 +1,8 @@
 use super::persistence::{TracePersistence, sqlite::SqliteTracePersistence};
 use super::*;
-use std::sync::Mutex;
+use crate::request_tracking::HostState;
+use crate::request_tracking::RequestTracker;
+use std::{sync::Mutex, time::Instant};
 
 #[tokio::test]
 async fn trace_reports_require_the_authenticated_project() -> Result<()> {
@@ -610,6 +612,7 @@ fn trace(id: usize) -> RequestTrace {
         started_at_ms: 1000,
         duration_ms: 12.0,
         queue_wait_ms: Some(5.0),
+        host_state: HostState::Warm,
         outcome: RequestOutcome::Completed,
         metadata: None,
     }
@@ -711,15 +714,16 @@ fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata
     let metadata = serde_json::json!({ "name": "Ada" });
     let oversized = serde_json::json!({ "name": "x".repeat(TRACE_METADATA_LIMIT) });
     for value in [Some(metadata.clone()), Some(oversized.clone()), None] {
-        RequestSpan::new(
+        let observer = TraceRecorder::new(
             sender.clone(),
             &invocation,
             RequestKind::Websocket,
             Some("connection".into()),
             value,
-            Instant::now(),
-        )
-        .finish(RequestOutcome::Completed);
+        );
+        RequestTracker::new(Instant::now(), HostState::Warm, Some(Box::new(observer)))
+            .0
+            .finish(RequestOutcome::Completed);
     }
     let recorded: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok())
         .map(|trace| trace.metadata)
@@ -742,6 +746,39 @@ fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata
     );
     labelled.metadata = Some(oversized);
     assert!(labelled.validate().is_err());
+}
+
+#[tokio::test]
+async fn response_timings_do_not_depend_on_trace_delivery() {
+    let (sender, receiver) = TraceSender::channel(1);
+    drop(receiver);
+    for sender in [Some(sender), None] {
+        let invocation = crate::actor::ActorInvocation {
+            request_id: "request".into(),
+            actor: crate::actor::ActorKey {
+                project_id: "project".into(),
+                actor_name: "Counter".into(),
+                actor_id: "one".into(),
+            },
+            method: "increment".into(),
+            args: vec![],
+        };
+        let observer = sender.map(|sender| {
+            Box::new(TraceRecorder::new(
+                sender,
+                &invocation,
+                RequestKind::Method,
+                None,
+                None,
+            )) as Box<dyn RequestObserver>
+        });
+        let (mut span, timing) = RequestTracker::new(Instant::now(), HostState::Warm, observer);
+        span.admitted();
+        span.finish(RequestOutcome::Completed);
+        let timing = timing.await.unwrap();
+        assert!(timing.queue_wait_ms.is_some());
+        assert!(timing.duration_ms >= timing.queue_wait_ms.unwrap());
+    }
 }
 
 #[tokio::test]

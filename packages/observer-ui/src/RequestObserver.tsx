@@ -364,6 +364,7 @@ function RequestDetails({ record, timing }: { record: RequestTrace; timing?: { o
         Time: new Date(record.startedAtMs).toLocaleString(),
         Transport: record.kind === "method" ? "Method" : "WebSocket",
         Outcome: record.outcome,
+        "Host state": { cold: "Cold", warm: "Warm" }[record.hostState],
         Total: duration(record.durationMs),
         "Queue wait": record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs),
         ...(timing ? { "Start offset in view": duration(timing.offsetMs), "Gap from preceding calls": gapLabel(timing.gapMs) } : {}),

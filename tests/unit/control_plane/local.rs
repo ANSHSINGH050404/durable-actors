@@ -1,4 +1,5 @@
 use super::*;
+use crate::request_tracking::HostState;
 
 #[test]
 fn startup_message_has_clear_hierarchy_and_next_step() {
@@ -104,6 +105,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
                 started_at_ms: 1,
                 duration_ms: 1.0,
                 queue_wait_ms: None,
+                host_state: HostState::Warm,
                 outcome: crate::request_traces::RequestOutcome::Completed,
                 metadata: None,
             }],

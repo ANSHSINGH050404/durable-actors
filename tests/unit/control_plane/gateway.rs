@@ -1,4 +1,5 @@
 use super::*;
+use crate::request_tracking::HostState;
 
 #[tokio::test]
 async fn signed_route_is_bound_to_the_actor_and_epoch() -> Result<()> {
@@ -88,6 +89,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
     let retiring = Arc::new(AtomicBool::new(false));
     let rejections = Arc::new(AtomicUsize::new(4));
     let uncertain_executions = Arc::new(AtomicUsize::new(0));
+    let host_states = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut hosts = Vec::new();
     let mut host_routes = Vec::new();
     for instance in [1, 2] {
@@ -96,7 +98,9 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         let retiring = retiring.clone();
         let rejections = rejections.clone();
         let uncertain_executions = uncertain_executions.clone();
+        let host_states = host_states.clone();
         let handler = move |axum::Json(request): axum::Json<SocketEventRequest>| {
+            host_states.lock().unwrap().push(request.host_state);
             let retiring = retiring.clone();
             let rejections = rejections.clone();
             let uncertain_executions = uncertain_executions.clone();
@@ -255,6 +259,24 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 Some(UpstreamMessage::Text("ready".into()))
             );
         }
+        assert_eq!(
+            host_states
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&state| state == HostState::Cold)
+                .count(),
+            1
+        );
+        assert_eq!(
+            host_states
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&state| state == HostState::Warm)
+                .count(),
+            1
+        );
         assert_eq!(gateways[0].connections.registry.count(&actor).await, 2);
         assert_eq!(gateways[1].connections.registry.count(&actor).await, 0);
         struct EmptyInventory;

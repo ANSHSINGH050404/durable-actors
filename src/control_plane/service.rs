@@ -1,3 +1,4 @@
+use crate::request_tracking::HostState;
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, ensure};
@@ -341,6 +342,7 @@ impl ControlPlaneService {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
         }
         Ok(ActorTarget {
+            host_state: target.host_state,
             home_region: target.placement.home_region,
             route,
             token: issued.token,
@@ -352,6 +354,7 @@ impl ControlPlaneService {
 
 #[derive(Clone)]
 pub(super) struct ActorTarget {
+    pub host_state: HostState,
     pub home_region: String,
     pub route: String,
     pub token: String,
@@ -612,7 +615,8 @@ impl ControlPlaneService {
                         if !regions.contains(&placement.home_region) {
                             return Err(RegionConflict.into());
                         }
-                        if let Some(target) = self.active_target(&current, spec).await? {
+                        if let Some(mut target) = self.active_target(&current, spec).await? {
+                            target.host_state = HostState::Cold;
                             return Ok(target);
                         }
                         return Err(error);
@@ -644,6 +648,7 @@ impl ControlPlaneService {
             "host readiness returned no ownership epoch"
         );
         Ok(RoutedActor {
+            host_state: HostState::Cold,
             placement: ObjectPlacement {
                 lease: lease.clone(),
                 object: actor.storage_key(),
@@ -705,6 +710,7 @@ impl ControlPlaneService {
         }
         self.provisioner.wait_ready(&placement.owner).await?;
         Ok(Some(RoutedActor {
+            host_state: HostState::Warm,
             placement: placement.clone(),
             lease: lease.clone(),
             spec: spec.clone(),
@@ -1146,6 +1152,7 @@ fn ready_lease(
 }
 
 struct RoutedActor {
+    host_state: HostState,
     placement: ObjectPlacement,
     lease: HostLease,
     spec: HostLaunchSpec,
