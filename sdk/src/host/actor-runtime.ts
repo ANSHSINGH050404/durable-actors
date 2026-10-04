@@ -17,7 +17,7 @@ import type { JsonObject, JsonValue } from "../json.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
-import { SqliteActorDatabase, SqliteCaptureError } from "./sqlite.js"
+import { SqliteCaptureError } from "./sqlite.js"
 import type { ActorDatabaseStorage, SqliteState } from "./sqlite.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
@@ -34,11 +34,11 @@ class ActorRuntime {
     constructor(
         private readonly definition: ActorDefinition,
         private readonly allowNextInvocation: () => void,
+        private readonly database: ActorDatabaseStorage,
         private readonly publish?: SocketPublisher,
         private readonly connections: SocketSource = async () => {
             throw new Error("actor connection lookup is unavailable")
-        },
-        private readonly database: ActorDatabaseStorage = new SqliteActorDatabase()
+        }
     ) {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
     }

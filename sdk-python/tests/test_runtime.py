@@ -3,11 +3,10 @@ from threading import Event
 
 import pytest
 from fixtures.effects import Effects
-from fixtures.sqlite import seed
+from fixtures.sqlite import ActorRuntime, seed
 from pydantic import BaseModel
 
 from durable_actors import Actor, ephemeral, interleave, persisted
-from durable_actors.runtime import ActorRuntime
 
 
 class Value(BaseModel):

@@ -710,11 +710,13 @@ impl Stack {
             storage.clone(),
             publisher,
         ));
+        let replication = Arc::new(crate::litestream::Litestream::default());
         let (child, connection) = start_worker(directory.path()).await?;
         connection
             .mark_ready(
                 Some(local_sockets.clone()),
                 Some(source.unwrap_or_else(|| local_sockets.clone())),
+                replication.clone(),
             )
             .await?;
         let host = Arc::new(ActorHost::new(
@@ -726,7 +728,7 @@ impl Stack {
             storage.clone(),
             storage.runtime.clone(),
             local_sockets.clone(),
-            Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+            replication,
         ));
         host.activate_actor(actor.clone()).await?;
         tasks.spawn(async move {

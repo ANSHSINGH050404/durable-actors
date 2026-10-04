@@ -43,7 +43,7 @@ class Supervisor(Channel):
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 23})
+                await self.send({"type": "warm", "protocol": 24})
                 load = await self.read()
                 if load.get("type") != "load":
                     raise ValueError("expected actor code assignment")
@@ -53,9 +53,9 @@ class Supervisor(Channel):
             self.entrypoint = entrypoint
             self.worker = await self.create_worker(entrypoint)
             self.actor_names = self.worker.actor_names
-            await self.send({"type": "attach", "protocol": 23, "actor_names": self.actor_names})
+            await self.send({"type": "attach", "protocol": 24, "actor_names": self.actor_names})
             self.attached = await self.read()
-            if self.attached.get("type") != "attached" or self.attached.get("protocol") != 23:
+            if self.attached.get("type") != "attached" or self.attached.get("protocol") != 24:
                 raise ValueError("unsupported executor protocol")
             await self.start_pump()
             while True:
@@ -137,6 +137,8 @@ class Supervisor(Channel):
                 else:
                     if kind == "socket_effects":
                         pending.exchanges.add("socket_effects_published")
+                    elif kind == "commit_sqlite":
+                        pending.exchanges.add("sqlite_committed")
                     elif kind == "get_connections":
                         pending.exchanges.add("socket_connections")
                     elif kind != "ready_for_invocation":
@@ -209,7 +211,7 @@ class Worker(Channel):
             worker = cls(reader, writer, process)
             async with asyncio.timeout(60):
                 attach = await worker.read()
-            if attach.get("type") != "attach" or attach.get("protocol") != 23:
+            if attach.get("type") != "attach" or attach.get("protocol") != 24:
                 raise ValueError("worker did not attach")
             worker.actor_names = attach["actor_names"]
             return worker

@@ -137,7 +137,6 @@ async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream on PATH"]
 async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
@@ -165,7 +164,6 @@ async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream on PATH"]
 async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     use crate::litestream::storage::{SqliteCapture, restored_fields};
     let f = Fixture::new()?;
@@ -284,7 +282,6 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream on PATH"]
 async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Result<()> {
     for stalled in [false, true] {
         let f = Fixture::new()?;
@@ -321,7 +318,6 @@ async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Re
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream on PATH"]
 async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
@@ -387,7 +383,7 @@ async fn write_history(
         storage::{SqliteCapture, SqliteState},
     };
     writer.start(&f.stream).await?;
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
@@ -583,7 +579,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
         storage::SnapshotRef,
     };
     let f = Fixture::new()?;
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch("INSERT INTO __terse_fields VALUES ('count','1'); CREATE TABLE entries(value INTEGER); INSERT INTO entries VALUES (1);")?;

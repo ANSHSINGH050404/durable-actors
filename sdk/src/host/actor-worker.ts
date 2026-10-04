@@ -11,6 +11,7 @@ import { ActorConfigurationError, ActorDefinitionError, errorMessage } from "../
 import { ActorRuntime } from "./actor-runtime.js"
 import { failedReply } from "./protocol.js"
 import type { ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest } from "./protocol.js"
+import { SqliteActorDatabase } from "./sqlite.js"
 
 const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
@@ -25,6 +26,7 @@ process.once("exit", () => {
 
 let assigned = false
 const invocation = new AsyncLocalStorage<number>()
+const committing = new Map<number, { resolve: (txid: number) => void; reject: (error: Error) => void }>()
 const publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
 const loadingConnections = new Map<
     number,
@@ -47,6 +49,14 @@ async function initialize(data: ActorWorkerData): Promise<void> {
         const actorNames = await loadActorEntrypoint(data.moduleUrl)
         port!.on("message", (message: ActorWorkerRequest) => {
             if (message.type === "load") throw new Error("customer code already assigned")
+            if (message.type === "sqlite_committed") {
+                const pending = committing.get(message.messageId)
+                committing.delete(message.messageId)
+                if (message.error !== undefined) pending?.reject(new Error(message.error))
+                else if (message.txid !== undefined) pending?.resolve(message.txid)
+                else pending?.reject(new Error("host omitted SQLite commit position"))
+                return
+            }
             if (message.type === "socket_connections") {
                 const pending = loadingConnections.get(message.messageId)
                 loadingConnections.delete(message.messageId)
@@ -73,7 +83,13 @@ async function initialize(data: ActorWorkerData): Promise<void> {
                 })
                 return
             }
-            runtime ??= new ActorRuntime(definition, allowNextInvocation, publish, getConnections)
+            runtime ??= new ActorRuntime(
+                definition,
+                allowNextInvocation,
+                new SqliteActorDatabase(commitSqlite),
+                publish,
+                getConnections
+            )
             invocation.run(message.messageId, () => {
                 void runtime!.handle(message.command).then(
                     reply => post({ type: "reply", messageId: message.messageId, reply }),
@@ -100,6 +116,16 @@ function allowNextInvocation(): void {
     const messageId = invocation.getStore()
     if (messageId === undefined) throw new Error("invocation admission has no active invocation")
     post({ type: "ready_for_invocation", messageId })
+}
+
+function commitSqlite(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const messageId = invocation.getStore()
+        if (messageId === undefined) throw new Error("SQLite commit has no active invocation")
+        if (committing.has(messageId)) throw new Error("actor SQLite commit is already pending")
+        committing.set(messageId, { resolve, reject })
+        post({ type: "commit_sqlite", messageId })
+    })
 }
 
 function publish(effects: readonly SocketEffect[]): Promise<void> {

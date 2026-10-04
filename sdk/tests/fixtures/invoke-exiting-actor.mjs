@@ -2,10 +2,11 @@ import { pathToFileURL } from "node:url"
 
 import { ActorWorkerSupervisor } from "../../dist/host/worker-supervisor.js"
 
-import { seed } from "./litestream.ts"
+import { commit, seed } from "./litestream.ts"
 
 const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(process.argv[2]).href })
 try {
+    const sqlite = await seed(null)
     const reply = await supervisor.handle(
         {
             type: "invoke",
@@ -13,9 +14,10 @@ try {
             actor: { project_id: "local", actor_name: "Exiting", actor_id: "one" },
             method: "stop",
             args: [],
-            sqlite: await seed(null)
+            sqlite
         },
-        () => {}
+        () => {},
+        () => commit(sqlite)
     )
     console.log(JSON.stringify(reply))
 } finally {

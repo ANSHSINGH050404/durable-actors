@@ -16,6 +16,7 @@ from .client import component
 from .contract import Document
 from .executor_wire import Channel, serialize
 from .runtime import ActorRuntime, failed
+from .sqlite import SqliteStorage, valid_txid
 
 message_id: ContextVar[int] = ContextVar("actor_message_id")
 
@@ -32,7 +33,7 @@ class Session(Channel):
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 23})
+                await self.send({"type": "warm", "protocol": 24})
                 assignment = await self.read()
                 if (
                     assignment.get("type") != "load"
@@ -47,12 +48,15 @@ class Session(Channel):
                 while not path.is_file():
                     await asyncio.sleep(0.01)
             actors = load_artifact(path)
-            self.runtimes = {actor.__name__: ActorRuntime(actor, self) for actor in actors}
+            self.runtimes = {
+                actor.__name__: ActorRuntime(actor, self, SqliteStorage(self.commit_sqlite))
+                for actor in actors
+            }
             await self.send(
-                {"type": "attach", "protocol": 23, "actor_names": sorted(self.runtimes)}
+                {"type": "attach", "protocol": 24, "actor_names": sorted(self.runtimes)}
             )
             attached = await self.read()
-            if attached.get("type") != "attached" or attached.get("protocol") != 23:
+            if attached.get("type") != "attached" or attached.get("protocol") != 24:
                 raise ValueError("unsupported executor protocol")
             if attached.get("supports_residency"):
                 self.residency = asyncio.create_task(self.report_residency())
@@ -65,14 +69,22 @@ class Session(Channel):
                     task = asyncio.create_task(self.execute(message))
                     self.tasks.add(task)
                     task.add_done_callback(self.completed)
-                elif message["type"] in {"socket_connections", "socket_effects_published"}:
+                elif message["type"] in {
+                    "socket_connections",
+                    "socket_effects_published",
+                    "sqlite_committed",
+                }:
                     pending = self.pending.pop((message["type"], message["message_id"]))
                     if pending.cancelled():
                         continue
                     if message.get("error"):
                         pending.set_exception(RuntimeError(message["error"]))
                     else:
-                        pending.set_result(message.get("connections"))
+                        pending.set_result(
+                            message.get("txid")
+                            if message["type"] == "sqlite_committed"
+                            else message.get("connections")
+                        )
                 else:
                     raise ValueError("unexpected executor message")
         finally:
@@ -102,6 +114,12 @@ class Session(Channel):
         self.tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             self.writer.close()
+
+    async def commit_sqlite(self) -> int:
+        txid = await self.exchange("commit_sqlite", "sqlite_committed")
+        if not valid_txid(txid):
+            raise ValueError("invalid host commit position")
+        return int(txid)
 
     async def publish(self, effects: list[Document]) -> None:
         await self.exchange("socket_effects", "socket_effects_published", effects=effects)

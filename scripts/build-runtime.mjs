@@ -4,15 +4,12 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { installLitestream } from "./litestream.mjs"
-
 export class RuntimeBuilder {
-    constructor({ root, platform = process.platform, arch = process.arch }, run = runCommand, installReplication = installLitestream) {
+    constructor({ root, platform = process.platform, arch = process.arch }, run = runCommand) {
         this.root = root
         this.platform = platform
         this.arch = arch
         this.run = run
-        this.installReplication = installReplication
     }
 
     async build() {
@@ -21,7 +18,9 @@ export class RuntimeBuilder {
         const staging = await mkdtemp(path.join(output, ".build-"))
         try {
             await this.compile(staging)
-            await this.installReplication(staging, { platform: this.platform, arch: this.arch })
+            for (const name of ["LICENSE", "NOTICE"]) {
+                await copyFile(path.join(this.root, `third_party/terse-litestream/${name}`), path.join(staging, `${name}.terse-litestream`))
+            }
             await copyFile(path.join(this.root, "third_party/terse-ltx/LICENSE"), path.join(staging, "LICENSE.terse-ltx"))
             return await this.package(staging, output)
         } finally {
@@ -37,7 +36,7 @@ export class RuntimeBuilder {
     async package(staging, output) {
         const name = `durable-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "LICENSE.litestream", "LICENSE.terse-ltx"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "LICENSE.terse-litestream", "NOTICE.terse-litestream", "LICENSE.terse-ltx"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")

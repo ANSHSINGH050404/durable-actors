@@ -36,6 +36,11 @@ export async function seed(fields: JsonObject | null = {}): Promise<SqliteState>
     return register(path)
 }
 
+export async function commit(state: SqliteState): Promise<number> {
+    const reply = await ipc("sync", { path: state.path, wait: true, timeout: 10 })
+    return Number(reply.txid)
+}
+
 export async function recover(source: SqliteState, position: SqliteState): Promise<SqliteState> {
     const path = join(directory, `${++count}.sqlite`)
     await promisify(execFile)("litestream", [
@@ -68,7 +73,7 @@ async function register(path: string): Promise<SqliteState> {
     replicas.set(path, replica)
     await ipc("register", { path, replica_url: `file://${replica}` })
     const reply = await ipc("sync", { path, wait: true, timeout: 10 })
-    return { txid: Number(reply.txid), path, socket }
+    return { txid: Number(reply.txid), path }
 }
 
 async function start(): Promise<void> {

@@ -6,6 +6,7 @@ COPY .cargo ./.cargo
 COPY migrations ./migrations
 COPY proto ./proto
 COPY src ./src
+COPY third_party/terse-litestream ./third_party/terse-litestream
 COPY docs/reference/openapi.yaml ./docs/reference/openapi.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -16,8 +17,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM node:22.19.0-bookworm AS sdk-builder
 WORKDIR /build
-COPY scripts/litestream.mjs ./scripts/litestream.mjs
-RUN node scripts/litestream.mjs /out
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY sdk/package.json ./sdk/package.json
 COPY packages/observer-ui/package.json ./packages/observer-ui/package.json
@@ -50,9 +49,8 @@ RUN apt-get update -qq \
 
 COPY --from=python-sdk /usr/local /usr/local
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
-COPY --from=sdk-builder /out/litestream /usr/local/bin/litestream
 COPY third_party/terse-ltx/LICENSE /usr/share/licenses/terse-ltx/
-COPY --from=sdk-builder /out/LICENSE.litestream /usr/share/licenses/litestream/LICENSE
+COPY third_party/terse-litestream/LICENSE third_party/terse-litestream/NOTICE /usr/share/licenses/terse-litestream/
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules
 COPY --from=sdk-builder /build/sdk/node_modules /opt/durable-actors/sdk/node_modules

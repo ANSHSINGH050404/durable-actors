@@ -18,6 +18,7 @@ import type {
     InvokeCommand,
     WebSocketEventCommand
 } from "./protocol.js"
+import type { SqliteCommitter } from "./sqlite.js"
 import type {
     ActorWorkerFactory,
     ActorWorkerHandle,
@@ -57,6 +58,7 @@ class ActorWorkerSupervisor {
     async handle(
         command: ActorExecutorCommand,
         allowNextInvocation: () => void,
+        commit: SqliteCommitter,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -71,7 +73,7 @@ class ActorWorkerSupervisor {
             case "websocket_event":
                 try {
                     if (this.actorNames === undefined) await this.ready()
-                    return await this.execute(command, allowNextInvocation, publish, connections)
+                    return await this.execute(command, allowNextInvocation, commit, publish, connections)
                 } catch (error) {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
@@ -122,6 +124,7 @@ class ActorWorkerSupervisor {
     private execute(
         command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         allowNextInvocation: () => void,
+        commit: SqliteCommitter,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -147,7 +150,7 @@ class ActorWorkerSupervisor {
             this.resident = actor
         }
         const base = actor.sequenceBase
-        return actor.execute(command, allowNextInvocation, publish, connections).then(reply => {
+        return actor.execute(command, allowNextInvocation, commit, publish, connections).then(reply => {
             if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
                 const sequence = base + reply.sequence
                 this.lastSequence = Math.max(this.lastSequence, sequence)
@@ -190,6 +193,7 @@ class ResidentActorWorker {
     async execute(
         command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         allowNextInvocation: () => void,
+        commit: SqliteCommitter,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -199,7 +203,7 @@ class ResidentActorWorker {
         this.onActiveActorsChange()
         let reply: ActorExecutorReply
         try {
-            reply = await worker.execute(command, allowNextInvocation, publish, connections)
+            reply = await worker.execute(command, allowNextInvocation, commit, publish, connections)
         } catch (error) {
             reply = failedReply(
                 error instanceof ActorWorkerTerminatedError ? "actor_worker_terminated" : "actor_worker_failed",
@@ -243,6 +247,7 @@ class ActorWorker implements ActorWorkerHandle {
             resolve: (reply: ActorExecutorReply) => void
             reject: (error: Error) => void
             allowNextInvocation: (() => void) | undefined
+            commit: SqliteCommitter
             publish: SocketPublisher | undefined
             connections: SocketSource | undefined
         }
@@ -306,6 +311,7 @@ class ActorWorker implements ActorWorkerHandle {
     async execute(
         command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         allowNextInvocation: () => void,
+        commit: SqliteCommitter,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -316,7 +322,7 @@ class ActorWorker implements ActorWorkerHandle {
             if (this.terminalError !== undefined) throw this.terminalError
             return await new Promise<ActorExecutorReply>((resolve, reject) => {
                 const messageId = ++this.nextMessageId
-                this.pending.set(messageId, { resolve, reject, allowNextInvocation, publish, connections })
+                this.pending.set(messageId, { resolve, reject, allowNextInvocation, commit, publish, connections })
                 this.post({ type: "execute", messageId, command })
             })
         } finally {
@@ -343,6 +349,10 @@ class ActorWorker implements ActorWorkerHandle {
             const allowNextInvocation = pending.allowNextInvocation
             pending.allowNextInvocation = undefined
             allowNextInvocation()
+            return
+        }
+        if (message.type === "commit_sqlite") {
+            void this.commitSqlite(message.messageId)
             return
         }
         if (message.type === "get_connections") {
@@ -372,6 +382,17 @@ class ActorWorker implements ActorWorkerHandle {
         }
         if (message.type === "failed") this.stop(new Error(message.message))
         else this.reply(message.messageId, message.reply)
+    }
+
+    private async commitSqlite(messageId: number): Promise<void> {
+        try {
+            const pending = this.pending.get(messageId)
+            if (pending === undefined) throw new Error("SQLite commit has no active invocation")
+            const txid = await pending.commit()
+            this.post({ type: "sqlite_committed", messageId, txid })
+        } catch (error) {
+            this.post({ type: "sqlite_committed", messageId, error: errorMessage(error) })
+        }
     }
 
     private async publishEffects(messageId: number, effects: readonly SocketEffect[]): Promise<void> {

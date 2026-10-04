@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { Actor, type ActorClass, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
-import { ActorRuntime } from "../../src/host/actor-runtime.js"
+import { ActorRuntime } from "../fixtures/actor-runtime.js"
 import { seed } from "../fixtures/litestream.js"
 
 function deferred() {

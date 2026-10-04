@@ -11,7 +11,7 @@ import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
 import type { ActorExecutorReply } from "../../src/host/protocol.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
-import { seed } from "../fixtures/litestream.js"
+import { commit, seed } from "../fixtures/litestream.js"
 import { assertReply } from "../fixtures/reply.js"
 
 before(
@@ -34,7 +34,7 @@ test("loads a prepared JavaScript artifact only inside the first execution Worke
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 24 })}\n`)
             socket.end()
         })
     })
@@ -113,12 +113,13 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 23,
+            protocol: 24,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 24 })}\n`)
         await startup
 
+        const sqlite = await seed(null)
         customerSocket.write(
             `${JSON.stringify({
                 type: "command",
@@ -133,9 +134,13 @@ test("the actor session carries only owned execution commands", async t => {
                     },
                     method: "increment",
                     args: [4],
-                    sqlite: await seed(null)
+                    sqlite
                 }
             })}\n`
+        )
+        assert.deepEqual(await readMessage(iterator), { type: "commit_sqlite", message_id: 1 })
+        customerSocket.write(
+            `${JSON.stringify({ type: "sqlite_committed", message_id: 1, txid: await commit(sqlite) })}\n`
         )
         assertSessionReply(await readMessage(iterator), 1, { type: "invoked", result: 4 })
 
@@ -183,6 +188,10 @@ test("the actor session carries only owned execution commands", async t => {
                     sqlite: await seed({ count: 4 })
                 }
             })}\n`
+        )
+        assert.deepEqual(await readMessage(iterator), { type: "commit_sqlite", message_id: 3 })
+        customerSocket.write(
+            `${JSON.stringify({ type: "sqlite_committed", message_id: 3, txid: await commit(sqlite) })}\n`
         )
         assertSessionReply(await readMessage(iterator), 3, { type: "invoked", result: 5 })
 
@@ -277,7 +286,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 23, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 24, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()

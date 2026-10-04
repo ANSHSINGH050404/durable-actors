@@ -5,7 +5,7 @@ import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { runWithActorClient } from "../../src/client/client.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
-import { ActorRuntime } from "../../src/host/actor-runtime.js"
+import { ActorRuntime } from "../fixtures/actor-runtime.js"
 import { seed } from "../fixtures/litestream.js"
 import { assertReply } from "../fixtures/reply.js"
 

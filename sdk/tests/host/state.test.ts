@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorDefinitionError, ActorSerializationError } from "../../src/errors.js"
-import { hydrateActorState, snapshotActorState } from "../../src/host/actor-runtime.js"
+import { hydrateActorState, snapshotActorState } from "../fixtures/actor-runtime.js"
 
 const schema = {
     actorName: "Counter",

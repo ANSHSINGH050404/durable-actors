@@ -10,7 +10,7 @@ from typing import Any
 from .actor import Actor
 from .contract import Document, Method, decode, describe_actor, encode
 from .socket import Effects, SocketScope, scope_context
-from .sqlite import SqliteCaptureError, SqliteStorage, Storage
+from .sqlite import SqliteCaptureError, Storage
 
 
 class ActorRuntime:
@@ -18,10 +18,10 @@ class ActorRuntime:
         self,
         actor: type[Actor[Any, Any, Any, Any]],
         effects: Effects,
-        database: Storage | None = None,
+        database: Storage,
     ) -> None:
         self.effects = effects
-        self.database = database if database is not None else SqliteStorage()
+        self.database = database
         self.completion = asyncio.Lock()
         self.fatal: Document | None = None
         self.definition = describe_actor(actor)

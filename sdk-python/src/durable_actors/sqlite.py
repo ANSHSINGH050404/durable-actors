@@ -5,8 +5,6 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-import httpx
-
 from .contract import Document
 
 
@@ -23,28 +21,9 @@ class Storage(Protocol):
     def close(self) -> None: ...
 
 
-async def sync_litestream(state: Document) -> int:
-    transport = httpx.AsyncHTTPTransport(uds=state["socket"])
-    async with httpx.AsyncClient(transport=transport, timeout=35) as client:
-        response = await client.post(
-            "http://localhost/sync", json={"path": state["path"], "wait": True, "timeout": 30}
-        )
-        response.raise_for_status()
-        result = response.json()
-    txid = result.get("txid")
-    if (
-        result.get("path") != state["path"]
-        or not valid_txid(txid)
-        or not valid_txid(result.get("replicated_txid"))
-        or result["replicated_txid"] < txid
-    ):
-        raise ValueError("invalid Litestream replication acknowledgement")
-    return int(txid)
-
-
 class SqliteStorage:
-    def __init__(self, sync: Callable[[Document], Awaitable[int]] = sync_litestream) -> None:
-        self.sync = sync
+    def __init__(self, commit: Callable[[], Awaitable[int]]) -> None:
+        self.commit = commit
         self.connection: sqlite3.Connection | None = None
         self.seed: Document | None = None
         self.txid = 0
@@ -56,7 +35,8 @@ class SqliteStorage:
         if (
             state is None
             or not valid_txid(state.get("txid"))
-            or not all(isinstance(state.get(key), str) and state[key] for key in ("path", "socket"))
+            or not isinstance(state.get("path"), str)
+            or not state["path"]
         ):
             raise ValueError("invalid actor SQLite recovery state")
         self.seed = state
@@ -93,9 +73,9 @@ class SqliteStorage:
             database.commit()
             if version != self.version:
                 assert self.seed is not None
-                txid = await self.sync(self.seed)
+                txid = await self.commit()
                 if not valid_txid(txid) or txid < self.txid:
-                    raise ValueError("invalid Litestream transaction")
+                    raise ValueError("invalid host commit position")
                 self.txid = txid
                 self.version = version
             return {"txid": self.txid}

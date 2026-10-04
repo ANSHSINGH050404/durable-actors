@@ -3,14 +3,12 @@ import { createRequire } from "node:module"
 import type { ActorDatabase, SqliteValue } from "../actor/database.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
-import { syncLitestream } from "./litestream.js"
-import type { LitestreamDatabase } from "./litestream.js"
-
 interface SqliteState {
     readonly txid: number
     readonly path?: string
-    readonly socket?: string
 }
+
+type SqliteCommitter = () => Promise<number>
 
 class SqliteCaptureError extends Error {}
 
@@ -25,14 +23,14 @@ interface ActorDatabaseStorage extends ActorDatabase {
 
 class SqliteActorDatabase implements ActorDatabaseStorage {
     private connection: SqliteConnection | undefined
-    private seed: LitestreamDatabase | undefined
+    private seed: { readonly path: string } | undefined
     private txid = 0
     private version = ""
     private failure: SqliteCaptureError | undefined
 
     constructor(
-        private readonly connect: (path: string) => SqliteConnection = openSqlite,
-        private readonly sync: (database: LitestreamDatabase) => Promise<number> = syncLitestream
+        private readonly commit: SqliteCommitter,
+        private readonly connect: (path: string) => SqliteConnection = openSqlite
     ) {}
 
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
@@ -65,9 +63,9 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
 
     restore(state: SqliteState | undefined): void {
         this.close()
-        if (state === undefined || !Number.isSafeInteger(state.txid) || state.txid < 1 || !state.path || !state.socket)
+        if (state === undefined || !Number.isSafeInteger(state.txid) || state.txid < 1 || !state.path)
             throw new Error("invalid actor SQLite recovery state")
-        this.seed = { path: state.path, socket: state.socket }
+        this.seed = { path: state.path }
         this.txid = state.txid
         this.version = this.changeToken()
     }
@@ -78,8 +76,8 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
             const version = this.changeToken()
             if (database.isTransaction) database.exec("COMMIT")
             if (version !== this.version) {
-                const txid = await this.sync(this.seed!)
-                if (!Number.isSafeInteger(txid) || txid < this.txid) throw new Error("invalid Litestream transaction")
+                const txid = await this.commit()
+                if (!Number.isSafeInteger(txid) || txid < this.txid) throw new Error("invalid host commit position")
                 this.txid = txid
                 this.version = version
             }
@@ -208,4 +206,4 @@ function withoutComments(sql: string): string {
 }
 
 export { SqliteActorDatabase, SqliteCaptureError }
-export type { ActorDatabaseStorage, SqliteState }
+export type { ActorDatabaseStorage, SqliteState, SqliteCommitter }

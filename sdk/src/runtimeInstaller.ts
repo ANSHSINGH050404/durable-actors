@@ -6,8 +6,8 @@ import { x } from "tar"
 
 import { actorEnvironment } from "./environment.js"
 
-const executables = ["durable-actors", "litestream"]
-const bundleFiles = [...executables, "LICENSE.litestream", "LICENSE.terse-ltx"]
+const executables = ["durable-actors"]
+const bundleFiles = [...executables, "LICENSE.terse-litestream", "NOTICE.terse-litestream", "LICENSE.terse-ltx"]
 const maximumBytes = 200 * 1024 * 1024
 
 export async function fetchRuntimeExecutablePath(): Promise<string> {
@@ -77,7 +77,7 @@ export class RuntimeInstaller {
         })
         await rm(file)
         if (!(await completeBundle(directory)))
-            throw new Error("Runtime archive is missing a required runtime or Litestream file.")
+            throw new Error("Runtime archive is missing a required runtime or license file.")
         await Promise.all(executables.map(name => chmod(path.join(directory, name), 0o755)))
     }
 }

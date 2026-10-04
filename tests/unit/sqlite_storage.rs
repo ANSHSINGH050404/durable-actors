@@ -2,9 +2,8 @@ use super::*;
 use crate::litestream::Litestream;
 
 #[tokio::test]
-#[ignore = "requires the pinned Litestream binary on PATH"]
 async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Result<()> {
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
@@ -46,9 +45,8 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
 }
 
 #[tokio::test]
-#[ignore = "requires the pinned Litestream binary on PATH"]
 async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute("INSERT INTO __terse_fields VALUES ('count','1')", [])?;

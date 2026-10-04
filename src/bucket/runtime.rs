@@ -119,7 +119,7 @@ impl RuntimeStorage {
             reader: RuntimeStorageReader::new(
                 authority,
                 clock,
-                Arc::new(crate::litestream::RestoreCommand("litestream".into())),
+                Arc::new(crate::litestream::EmbeddedRestore),
             )?,
             owned: Mutex::new(HashMap::new()),
             uploaded: Mutex::new(HashMap::new()),

@@ -25,7 +25,7 @@ async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publicati
         .runtime
         .prepare_actor_write(&f.actor, &active.placement.lease, 1, 2)
         .await?;
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let initial = capture.state();
     let first = StateSnapshot::new(

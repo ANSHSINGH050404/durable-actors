@@ -15,7 +15,6 @@
 !docs/reference/openapi.yaml
 !package.json
 !scripts
-!scripts/litestream.mjs
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !sdk
@@ -51,3 +50,11 @@
 !third_party
 !third_party/terse-ltx
 !third_party/terse-ltx/**
+
+!third_party/terse-litestream
+!third_party/terse-litestream/Cargo.toml
+!third_party/terse-litestream/src
+!third_party/terse-litestream/src/**
+!third_party/terse-litestream/README.md
+!third_party/terse-litestream/LICENSE
+!third_party/terse-litestream/NOTICE

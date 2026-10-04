@@ -114,7 +114,7 @@ impl HttpHost {
             storage,
             Arc::new(FakeStateTransport::default()),
             sockets.clone(),
-            Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+            replication().await,
         ));
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
         let issuer = ActorJwtIssuer::from_base64_pkcs8(

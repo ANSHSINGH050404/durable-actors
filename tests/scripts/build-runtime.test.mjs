@@ -11,12 +11,15 @@ import { RuntimeBuilder } from "../../scripts/build-runtime.mjs"
 
 const execute = promisify(execFile)
 
-test("native builds package the runtime and replication tools with a matching checksum", async t => {
+test("native builds package the runtime and embedded replication licenses with a matching checksum", async t => {
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
     await mkdir(path.join(root, "third_party/terse-ltx"), { recursive: true })
     await writeFile(path.join(root, "third_party/terse-ltx/LICENSE"), "license")
+    await mkdir(path.join(root, "third_party/terse-litestream"), { recursive: true })
+    await writeFile(path.join(root, "third_party/terse-litestream/LICENSE"), "capture license")
+    await writeFile(path.join(root, "third_party/terse-litestream/NOTICE"), "capture notice")
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
@@ -26,11 +29,7 @@ test("native builds package the runtime and replication tools with a matching ch
             return execute(command, args, options)
         }
     }
-    const installLitestream = async directory => {
-        await writeFile(path.join(directory, "litestream"), "litestream", { mode: 0o755 })
-        await writeFile(path.join(directory, "LICENSE.litestream"), "license")
-    }
-    const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run, installLitestream).build()
+    const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run).build()
     assert.equal(path.basename(archive), "durable-actors-linux-arm64.tar.gz")
     const checksum = createHash("sha256")
         .update(await readFile(archive))
@@ -41,8 +40,8 @@ test("native builds package the runtime and replication tools with a matching ch
     await execute("tar", ["-xzf", archive, "-C", extracted])
     assert.equal(await readFile(path.join(extracted, "durable-actors"), "utf8"), "runtime")
     await execute("test", ["-x", path.join(extracted, "durable-actors")])
-    assert.equal(await readFile(path.join(extracted, "litestream"), "utf8"), "litestream")
-    await execute("test", ["-x", path.join(extracted, "litestream")])
+    assert.equal(await readFile(path.join(extracted, "LICENSE.terse-litestream"), "utf8"), "capture license")
+    assert.equal(await readFile(path.join(extracted, "NOTICE.terse-litestream"), "utf8"), "capture notice")
     assert.equal(await readFile(path.join(extracted, "LICENSE.terse-ltx"), "utf8"), "license")
 })
 

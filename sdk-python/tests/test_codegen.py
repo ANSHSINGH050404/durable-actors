@@ -141,9 +141,8 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
     from uuid import uuid4
 
     from fixtures.effects import Effects
+    from fixtures.sqlite import ActorRuntime
     from fixtures.types import Trees
-
-    from durable_actors.runtime import ActorRuntime
 
     generate_client(public_contract([Trees]), tmp_path / "tree_client")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -222,9 +221,8 @@ def check(client: Client, node: actors.Trees.NodeInput) -> None:
 
 def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypatch):
     from fixtures.effects import Effects
+    from fixtures.sqlite import ActorRuntime
     from fixtures.types import OptionActor
-
-    from durable_actors.runtime import ActorRuntime
 
     runtime = ActorRuntime(OptionActor, Effects())
     generate_client(public_contract([OptionActor]), tmp_path / "options_client")

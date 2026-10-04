@@ -149,7 +149,7 @@ async fn control_plane_routes(
         RuntimeStorageReader::new(
             authority,
             Arc::new(crate::clock::SystemClock),
-            Arc::new(crate::litestream::RestoreCommand("litestream".into())),
+            Arc::new(crate::litestream::EmbeddedRestore),
         )?
         .with_persistence(config.storage.persistence, snapshots)?,
     );

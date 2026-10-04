@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { SqliteActorDatabase } from "../../src/host/sqlite.js"
+import { SqliteActorDatabase } from "../fixtures/actor-runtime.js"
 import { recover, seed } from "../fixtures/litestream.js"
 
 test("commit errors reject the asynchronous snapshot operation", async context => {

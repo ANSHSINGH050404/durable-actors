@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { buildActor } from "../../dist/compiler/actor-build.js"
-import { fields, seed } from "../fixtures/litestream.ts"
+import { commit, fields, seed } from "../fixtures/litestream.ts"
 
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
@@ -130,10 +130,16 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     ])
     t.after(() => socket.destroy())
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
-    const receive = async () => JSON.parse((await lines.next()).value)
-    assert.deepEqual(await receive(), { type: "attach", protocol: 23, actor_names: ["BuiltCounter"] })
+    const receive = async () => {
+        for (;;) {
+            const message = JSON.parse((await lines.next()).value)
+            if (message.type !== "commit_sqlite") return message
+            send({ type: "sqlite_committed", message_id: message.message_id, txid: await commit(sqlite) })
+        }
+    }
+    assert.deepEqual(await receive(), { type: "attach", protocol: 24, actor_names: ["BuiltCounter"] })
     const send = message => socket.write(JSON.stringify(message) + "\n")
-    send({ type: "attached", protocol: 23 })
+    send({ type: "attached", protocol: 24 })
     const actor = { project_id: "default", actor_name: "BuiltCounter", actor_id: "counter" }
     let sqlite = await seed()
     const invoke = messageId =>

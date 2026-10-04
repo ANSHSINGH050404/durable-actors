@@ -44,8 +44,8 @@ class ActorSession {
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
         const supervisor = this.createSupervisor({ actorEntrypointUrl })
-        const commandHandler: ActorCommandHandler = (command, allowNextInvocation, publish, connections) =>
-            supervisor.handle(command, allowNextInvocation, publish, connections)
+        const commandHandler: ActorCommandHandler = (command, allowNextInvocation, commit, publish, connections) =>
+            supervisor.handle(command, allowNextInvocation, commit, publish, connections)
         try {
             const actorNames = await discoverActorNames(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
@@ -94,6 +94,7 @@ class ActorSessionConnection {
     private readonly attachedPromise: Promise<void>
     private closedResolve: (() => void) | undefined
     private readonly closedPromise: Promise<void>
+    private readonly committing = new Map<number, { resolve: (txid: number) => void; reject: (error: Error) => void }>()
     private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
     private readonly loadingConnections = new Map<
         number,
@@ -115,7 +116,7 @@ class ActorSessionConnection {
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
         connection.send({
             type: "attach",
-            protocol: 23,
+            protocol: 24,
             actor_names: actorNames
         })
         await connection.waitUntilAttached(timeoutMs)
@@ -208,11 +209,26 @@ class ActorSessionConnection {
                         await this.commandHandler(
                             message.command,
                             () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
+                            () => this.commitSqlite(message.message_id),
                             effects => this.publish(message.message_id, effects),
                             query => this.getConnections(message.message_id, query)
                         )
                     )
                     break
+                case "sqlite_committed": {
+                    const pending = this.committing.get(message.message_id)
+                    if (pending === undefined)
+                        throw new ActorProtocolError("Rust host acknowledged unknown SQLite commit")
+                    this.committing.delete(message.message_id)
+                    if (message.error !== undefined) pending.reject(new ActorSessionError(message.error))
+                    else if (message.txid !== undefined) pending.resolve(message.txid)
+                    else {
+                        const error = new ActorProtocolError("Rust host omitted the SQLite commit position")
+                        pending.reject(error)
+                        throw error
+                    }
+                    break
+                }
                 case "socket_connections": {
                     const pending = this.loadingConnections.get(message.message_id)
                     if (pending === undefined)
@@ -237,6 +253,20 @@ class ActorSessionConnection {
         } catch (error) {
             this.fail(sessionError(error))
         }
+    }
+
+    private commitSqlite(messageId: number): Promise<number> {
+        return new Promise((resolve, reject) => {
+            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before SQLite commit")
+            if (this.committing.has(messageId)) throw new ActorProtocolError("actor SQLite commit is already pending")
+            this.committing.set(messageId, { resolve, reject })
+            try {
+                this.send({ type: "commit_sqlite", message_id: messageId })
+            } catch (error) {
+                this.committing.delete(messageId)
+                reject(sessionError(error))
+            }
+        })
     }
 
     private publish(messageId: number, effects: readonly SocketEffect[]): Promise<void> {
@@ -286,6 +316,9 @@ class ActorSessionConnection {
         clearInterval(this.activityTimer)
         this.unsubscribeActivity?.()
         this.unsubscribeActivity = undefined
+        for (const pending of this.committing.values())
+            pending.reject(new ActorSessionError("Rust host disconnected during SQLite commit"))
+        this.committing.clear()
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

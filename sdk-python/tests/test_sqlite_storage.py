@@ -16,8 +16,8 @@ async def test_fields_commit_before_replication_and_rollback_together(tmp_path):
     )
     calls = []
 
-    async def sync(state):
-        calls.append(state)
+    async def sync():
+        calls.append(True)
         assert connection.execute(
             "SELECT value FROM __terse_fields WHERE name='count'"
         ).fetchone() == ("7",)
@@ -25,7 +25,7 @@ async def test_fields_commit_before_replication_and_rollback_together(tmp_path):
 
     storage = SqliteStorage(sync)
     try:
-        storage.restore({"path": str(path), "socket": "/tmp/test.sock", "txid": 1})
+        storage.restore({"path": str(path), "txid": 1})
         fields = {"count": 7, "nested": {"items": [None, {"done": True}]}}
         storage.persist_fields(fields)
         assert await storage.snapshot() == {"txid": 2}
@@ -47,12 +47,12 @@ async def test_replication_failure_fences_later_writes(tmp_path):
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE __terse_fields(name TEXT PRIMARY KEY, value TEXT)")
 
-    async def sync(state):
-        raise OSError("daemon exited")
+    async def sync():
+        raise OSError("host disconnected")
 
     storage = SqliteStorage(sync)
     try:
-        storage.restore({"path": str(path), "socket": "/tmp/test.sock", "txid": 1})
+        storage.restore({"path": str(path), "txid": 1})
         storage.persist_fields({"count": 1})
         with pytest.raises(SqliteCaptureError):
             await storage.snapshot()
@@ -70,11 +70,11 @@ async def test_fields_wait_for_a_competing_sqlite_writer(tmp_path):
             "PRAGMA journal_mode=WAL; CREATE TABLE __terse_fields(name TEXT PRIMARY KEY, value TEXT)"
         )
 
-    async def sync(state):
+    async def sync():
         return 2
 
     storage = SqliteStorage(sync)
-    storage.restore({"path": str(path), "socket": "/tmp/test.sock", "txid": 1})
+    storage.restore({"path": str(path), "txid": 1})
     locked, release = Event(), Event()
 
     def hold_write_lock():

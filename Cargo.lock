@@ -774,6 +774,7 @@ dependencies = [
  "serde_json",
  "subtle",
  "tempfile",
+ "terse-litestream",
  "terse-ltx",
  "tokio",
  "tokio-postgres",
@@ -3586,6 +3587,17 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terse-litestream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crc",
+ "rusqlite",
+ "tempfile",
+ "terse-ltx",
 ]
 
 [[package]]

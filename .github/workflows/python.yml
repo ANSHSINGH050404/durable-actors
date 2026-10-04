@@ -16,6 +16,8 @@ jobs:
                 python: ["3.11", "3.13", "3.14"]
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  submodules: recursive
             - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   python-version: ${{ matrix.python }}

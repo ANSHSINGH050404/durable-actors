@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, time::Duration};
+use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tokio::net::TcpListener;
@@ -6,6 +6,7 @@ use tokio::net::TcpListener;
 use super::process::{ActorHostConfig, serve_assigned_host, spawn_executor_process};
 use crate::actor::{ActorExecutorListener, WarmExecutor};
 use crate::bucket::WarmGcs;
+use crate::litestream::{Litestream, Replicator};
 
 pub(super) struct WarmHost {
     pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
@@ -15,6 +16,7 @@ pub(super) struct WarmHost {
     pub entrypoint: String,
     pub storage: WarmGcs,
     pub control_plane: Option<WarmControlPlane>,
+    pub replication: Arc<dyn Replicator>,
 }
 
 pub(super) struct WarmControlPlane {
@@ -24,6 +26,7 @@ pub(super) struct WarmControlPlane {
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     super::protect_runtime_credentials()?;
+    let replication = Arc::new(Litestream::default());
     let socket = std::env::var("DURABLE_ACTORS_EXECUTOR_SOCKET")
         .unwrap_or_else(|_| "/tmp/durable-actors-executor.sock".into());
     let token = std::env::var("DURABLE_ACTORS_SPARE_TOKEN").context("spare token missing")?;
@@ -103,6 +106,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         entrypoint,
         storage,
         control_plane,
+        replication,
     };
     serve_assigned_host(config, Some(warm), shutdown).await
 }

@@ -5,10 +5,10 @@ import { afterEach, test } from "node:test"
 
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
-import { ActorRuntime } from "../../src/host/actor-runtime.js"
 import type { InvokeCommand } from "../../src/host/protocol.js"
-import { SqliteActorDatabase } from "../../src/host/sqlite.js"
-import type { SqliteState } from "../../src/host/sqlite.js"
+import { ActorRuntime } from "../fixtures/actor-runtime.js"
+import { SqliteActorDatabase } from "../fixtures/actor-runtime.js"
+import type { SqliteState } from "../fixtures/actor-runtime.js"
 import { fields, recover, seed } from "../fixtures/litestream.js"
 
 class SqliteCounter extends Actor {
@@ -321,7 +321,7 @@ test("database handles cannot write after their invocation completes", async () 
 })
 
 test("a replication failure prevents further execution until the actor is reloaded", async () => {
-    const { SqliteActorDatabase, SqliteCaptureError } = await import("../../src/host/sqlite.js")
+    const { SqliteActorDatabase, SqliteCaptureError } = await import("../fixtures/actor-runtime.js")
     class BrokenCapture extends SqliteActorDatabase {
         override async snapshot(): Promise<never> {
             await super.snapshot()

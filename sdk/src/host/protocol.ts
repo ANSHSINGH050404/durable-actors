@@ -28,8 +28,7 @@ function failedReply(code: string, message: string): FailedReply {
 
 const sqliteStateSchema = z.object({
     txid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    path: z.string().optional(),
-    socket: z.string().optional()
+    path: z.string().optional()
 })
 
 const invokeCommandSchema = z.object({
@@ -72,7 +71,13 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(23), supports_residency: z.boolean().optional() }),
+    z.object({
+        type: z.literal("sqlite_committed"),
+        message_id: z.number().int().nonnegative(),
+        txid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+        error: z.string().optional()
+    }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(24), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -104,6 +109,7 @@ type ActorExecutorReply =
     | { readonly type: "hydrated" }
     | { readonly type: "state_required" }
 type ActorSessionClientMessage =
+    | { readonly type: "commit_sqlite"; readonly message_id: number }
     | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }
     | AttachMessage
     | { readonly type: "ready_for_invocation"; readonly message_id: number }
@@ -113,7 +119,7 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 23
+    readonly protocol: 24
     readonly actor_names: readonly string[]
 }
 
@@ -154,6 +160,7 @@ interface ActorWorkerData {
 }
 
 type ActorWorkerRequest =
+    | { readonly type: "sqlite_committed"; readonly messageId: number; readonly txid?: number; readonly error?: string }
     | { readonly type: "load"; readonly data: ActorWorkerData }
     | {
           readonly type: "execute"
@@ -168,6 +175,7 @@ type ActorWorkerRequest =
           readonly error?: string
       }
 type ActorWorkerMessage =
+    | { readonly type: "commit_sqlite"; readonly messageId: number }
     | { readonly type: "warm" }
     | {
           readonly type: "ready"

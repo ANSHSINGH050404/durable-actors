@@ -8,6 +8,9 @@ from pathlib import Path
 
 import httpx
 
+from durable_actors.runtime import ActorRuntime as Runtime
+from durable_actors.sqlite import SqliteStorage
+
 
 class SqliteFixture:
     def __init__(self):
@@ -64,7 +67,7 @@ class SqliteFixture:
         ).raise_for_status()
         reply = self.client.post("/sync", json={"path": str(path), "wait": True, "timeout": 10})
         reply.raise_for_status()
-        return {"path": str(path), "socket": str(self.socket), "txid": reply.json()["txid"]}
+        return {"path": str(path), "txid": reply.json()["txid"]}
 
     def close(self):
         self.resources.close()
@@ -93,3 +96,23 @@ def fields(state):
             name: json.loads(value)
             for name, value in database.execute("SELECT name, value FROM __terse_fields")
         }
+
+
+def commit(state):
+    assert fixture is not None
+    reply = fixture.client.post("/sync", json={"path": state["path"], "wait": True, "timeout": 10})
+    reply.raise_for_status()
+    return reply.json()["txid"]
+
+
+class HostStorage(SqliteStorage):
+    def __init__(self):
+        super().__init__(self.capture)
+
+    async def capture(self):
+        return commit(self.seed)
+
+
+class ActorRuntime(Runtime):
+    def __init__(self, actor, effects):
+        super().__init__(actor, effects, HostStorage())

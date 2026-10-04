@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from fixtures.sqlite import fields, seed
+from fixtures.sqlite import commit, fields, seed
 
 from durable_actors.build import build_actor
 
@@ -37,7 +37,7 @@ class Counter(Actor):
                     if generic:
                         assert json.loads(await reader.readline()) == {
                             "type": "warm",
-                            "protocol": 23,
+                            "protocol": 24,
                         }
                         writer.write(
                             (
@@ -54,10 +54,10 @@ class Counter(Actor):
                     attached = json.loads(await reader.readline())
                     assert attached == {
                         "type": "attach",
-                        "protocol": 23,
+                        "protocol": 24,
                         "actor_names": ["Counter"],
                     }
-                    writer.write(b'{"type":"attached","protocol":23}\n')
+                    writer.write(b'{"type":"attached","protocol":24}\n')
                     writer.write(
                         (
                             json.dumps(
@@ -73,6 +73,19 @@ class Counter(Actor):
                                         "args": [2],
                                     },
                                 }
+                            )
+                            + "\n"
+                        ).encode()
+                    )
+                    await writer.drain()
+                    assert json.loads(await reader.readline()) == {
+                        "type": "commit_sqlite",
+                        "message_id": 1,
+                    }
+                    writer.write(
+                        (
+                            json.dumps(
+                                {"type": "sqlite_committed", "message_id": 1, "txid": commit(state)}
                             )
                             + "\n"
                         ).encode()
@@ -156,13 +169,23 @@ class Counter(Actor):
                 reader, writer = await connected
 
                 async def receive():
-                    return json.loads(await reader.readline())
+                    while True:
+                        message = json.loads(await reader.readline())
+                        if message["type"] != "commit_sqlite":
+                            return message
+                        send(
+                            {
+                                "type": "sqlite_committed",
+                                "message_id": message["message_id"],
+                                "txid": commit(invocation["sqlite"]),
+                            }
+                        )
 
                 def send(message):
                     writer.write((json.dumps(message) + "\n").encode())
 
                 assert (await receive())["type"] == "attach"
-                send({"type": "attached", "protocol": 23})
+                send({"type": "attached", "protocol": 24})
                 actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
                 invocation = {
                     "type": "invoke",
@@ -210,6 +233,7 @@ class Counter(Actor):
                 outcomes = {reply["message_id"]: reply["reply"] for reply in replies}
                 assert outcomes[1]["code"] == "actor_evicted"
                 assert outcomes[2] == {"type": "evicted"}
+                invocation["sqlite"] = seed({"count": 10})
                 send(
                     {
                         "type": "command",
@@ -217,7 +241,7 @@ class Counter(Actor):
                         "command": {
                             **invocation,
                             "method": "increment",
-                            "sqlite": seed({"count": 10}),
+                            "sqlite": invocation["sqlite"],
                         },
                     }
                 )

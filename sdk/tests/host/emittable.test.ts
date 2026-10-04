@@ -4,8 +4,8 @@ import { test } from "node:test"
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import { Persisted } from "../../src/actor/decorators.js"
 import { Persistence } from "../../src/actor/schema.js"
-import { ActorRuntime } from "../../src/host/actor-runtime.js"
 import type { InvokeCommand } from "../../src/host/protocol.js"
+import { ActorRuntime } from "../fixtures/actor-runtime.js"
 import { seed, fields as storedFields } from "../fixtures/litestream.js"
 
 class ObservableRoom extends Actor {

@@ -3,15 +3,13 @@ use crate::{
     litestream::{Litestream, Replicator, storage::read_fields},
 };
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
-use std::sync::Arc;
+use serde_json::Value;
+use std::sync::{Arc, LazyLock};
+
+static CAPTURE: LazyLock<Arc<Litestream>> = LazyLock::new(|| Arc::new(Litestream::default()));
 
 pub async fn replication() -> Arc<dyn Replicator> {
-    Arc::new(
-        Litestream::start("litestream".into())
-            .await
-            .expect("test Litestream"),
-    )
+    CAPTURE.clone()
 }
 
 pub fn fields(state: Option<&ActorState>) -> Result<Value> {
@@ -39,17 +37,8 @@ fn commit_fields(state: &ActorState, fields: Value) -> Result<()> {
 }
 
 pub async fn sync(state: &ActorState) -> Result<ActorState> {
-    let reply: Value = reqwest::Client::builder()
-        .unix_socket(state.sqlite.socket.clone().context("replication socket")?)
-        .build()?
-        .post("http://localhost/sync")
-        .json(&json!({"path": state.sqlite.path, "wait": true, "timeout": 10}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
     let mut state = state.clone();
-    state.sqlite.txid = reply["txid"].as_u64().context("replicated transaction")?;
+    let path = state.sqlite.path.as_ref().context("SQLite path")?;
+    state.sqlite.txid = replication().await.sync(std::path::Path::new(path)).await?;
     Ok(state)
 }

@@ -6,7 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { c } from "tar"
 
-import { RuntimeInstaller } from "../src/runtimeInstaller.js"
+import { RuntimeInstaller } from "../../src/runtimeInstaller.js"
 
 test("installs the runtime from a verified release and reuses the cache offline", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "ldo-install-"))
@@ -25,7 +25,10 @@ test("installs the runtime from a verified release and reuses the cache offline"
     }
     const binary = await new RuntimeInstaller(options, download).install()
     assert.equal(await readFile(binary, "utf8"), "runtime")
-    assert.equal(await readFile(path.join(path.dirname(binary), "litestream"), "utf8"), "litestream")
+    assert.equal(
+        await readFile(path.join(path.dirname(binary), "NOTICE.terse-litestream"), "utf8"),
+        "NOTICE.terse-litestream"
+    )
     assert.equal(await readFile(path.join(path.dirname(binary), "LICENSE.terse-ltx"), "utf8"), "license")
     assert.equal(requests.length, 2)
     assert.deepEqual(requests, [
@@ -60,14 +63,14 @@ test("unsupported systems get an actionable error without downloading", async ()
 
 async function fixture(directory: string): Promise<Buffer> {
     await writeFile(path.join(directory, "durable-actors"), "runtime")
-    await writeFile(path.join(directory, "litestream"), "litestream")
-    await writeFile(path.join(directory, "LICENSE.litestream"), "license")
+    await writeFile(path.join(directory, "NOTICE.terse-litestream"), "NOTICE.terse-litestream")
+    await writeFile(path.join(directory, "LICENSE.terse-litestream"), "license")
     await writeFile(path.join(directory, "LICENSE.terse-ltx"), "license")
     const archive = path.join(directory, "runtime.tar.gz")
     await c({ gzip: true, file: archive, cwd: directory }, [
         "durable-actors",
-        "litestream",
-        "LICENSE.litestream",
+        "NOTICE.terse-litestream",
+        "LICENSE.terse-litestream",
         "LICENSE.terse-ltx"
     ])
     return readFile(archive)

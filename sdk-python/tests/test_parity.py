@@ -204,9 +204,9 @@ async def test_socket_tag_contract_rejects_values_outside_the_declared_set():
     from typing import Literal
 
     from fixtures.effects import Effects
+    from fixtures.sqlite import ActorRuntime
 
     from durable_actors import Actor, ActorSocket
-    from durable_actors.runtime import ActorRuntime
 
     class Room(Actor[str, str, str, Literal["member", "admin"]]):
         def on_connect(self, socket: ActorSocket[str, str, Literal["member", "admin"]]) -> None:
