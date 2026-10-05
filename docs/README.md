@@ -1,8 +1,17 @@
 # Documentation
 
-| Language | SDK and quickstart | Reference | Runnable example |
-| --- | --- | --- | --- |
-| TypeScript | [TypeScript SDK](../sdk/README.md) | [API](reference/typescript.md) | [Chatroom](../examples/chat/README.md) |
-| Python | [Python SDK](../sdk-python/README.md) | [API](reference/python.md) | [Chat](../examples/python/README.md) |
+## TypeScript
 
-[HTTP API](reference/openapi.md) · [Configuration](reference/configuration.md)
+- [Guide](reference/typescript-guide.md)
+- [Example](../examples/chat/README.md)
+
+## Python
+
+- [Guide](reference/python-guide.md)
+- [Example](../examples/python/README.md)
+
+## Reference
+
+- [CLI](reference/cli.md)
+- [Configuration](reference/configuration.md)
+- [OpenAPI](reference/openapi.md)

@@ -27,6 +27,7 @@ RESERVED = {
     "connect",
     "prepare_websocket",
     "subscribe",
+    "db",
 }
 
 

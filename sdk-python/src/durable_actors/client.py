@@ -20,6 +20,9 @@ from pydantic import BaseModel, ConfigDict
 
 from .guards import is_document
 
+# HTTPX raises these only while establishing a connection, before any request bytes are sent.
+NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
+
 
 class ActorInvocationError(Exception):
     """An RPC failure reported with its code and request identifier.
@@ -27,6 +30,7 @@ class ActorInvocationError(Exception):
     Attributes:
         code: Failure category. "outcome_unknown" means execution may have
             happened even though its response was lost; retrying can repeat work.
+            "unavailable" means the invocation was never executed.
         request_id: Identifier for correlating the invocation with runtime logs.
 
     str(error) returns the failure message.
@@ -332,14 +336,17 @@ class Client:
                 reply = self._invoke_attempt(path, request_id, method, args, target, key)
             except httpx.TransportError as error:
                 self._targets.pop(key, None)
-                if target is not None and isinstance(error, httpx.ConnectError) and refused(error):
-                    reply = {"type": "not_executed", "reason": "upstream_not_reached"}
-                else:
+                if not isinstance(error, NEVER_SENT):
                     raise ActorInvocationError(
                         "outcome_unknown",
                         request_id,
                         "invocation response was lost; execution may have occurred",
                     ) from error
+                if target is None:
+                    raise ActorInvocationError(
+                        "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+                    ) from error
+                reply = {"type": "not_executed", "reason": "upstream_not_reached"}
             kind = reply.get("type")
             if kind == "completed" and "result" in reply:
                 return reply["result"]
@@ -488,21 +495,6 @@ def document(response: httpx.Response) -> dict[str, Any]:
     if not is_document(value):
         raise ActorProtocolError("response must be a JSON object")
     return value
-
-
-def refused(error: BaseException) -> bool:
-    import errno
-
-    seen: set[int] = set()
-    while id(error) not in seen:
-        seen.add(id(error))
-        if isinstance(error, OSError) and error.errno == errno.ECONNREFUSED:
-            return True
-        cause = error.__cause__ or error.__context__
-        if cause is None:
-            return False
-        error = cause
-    return False
 
 
 def stderr_telemetry(event: dict[str, Any]) -> None:

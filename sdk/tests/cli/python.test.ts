@@ -31,7 +31,6 @@ test("init python creates a project using the shared CLI", async t => {
     const project = path.join(directory, "counter")
     assert.match(await readFile(path.join(project, "pyproject.toml"), "utf8"), /durable-actors\[codegen\]/u)
     assert.match(await readFile(path.join(project, "src/actors.py"), "utf8"), /class Counter/u)
-    assert.match(await readFile(path.join(project, ".env"), "utf8"), /DURABLE_ACTORS_ENTRYPOINT=src\/actors.py/u)
     assert.match(result.stdout, /uv sync/u)
     assert.match(result.stdout, /durable-actors dev/u)
 })
@@ -123,7 +122,6 @@ test(
                 ...environment,
                 DURABLE_ACTORS_PYTHON: python,
                 DURABLE_ACTORS_BINARY: runtime,
-                DURABLE_ACTORS_ENTRYPOINT: "src/actors.py",
                 NO_COLOR: "1"
             },
             stdio: ["pipe", "pipe", "pipe"]

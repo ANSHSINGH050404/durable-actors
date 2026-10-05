@@ -1,5 +1,5 @@
 import { ActorInvocationError, ActorProtocolError } from "./errors.js"
-import { HttpActorHostTransport, isRecord, parseActorHostReply, responseDocument } from "./http.js"
+import { HttpActorHostTransport, connectionRefused, isRecord, parseActorHostReply, responseDocument } from "./http.js"
 import type { ActorHostReply, ActorHostTarget, ActorHostTransport, ActorInvocation } from "./http.js"
 import { cloneJson } from "./json.js"
 import type { JsonValue } from "./json.js"
@@ -138,6 +138,12 @@ export class HttpActorClient {
             )
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            if (connectionRefused(error))
+                throw new ActorInvocationError(
+                    "unavailable",
+                    invocation.requestId,
+                    `could not connect to ${this.settings.controlPlaneUrl}: ${message}`
+                )
             throw new ActorInvocationError(
                 "outcome_unknown",
                 invocation.requestId,

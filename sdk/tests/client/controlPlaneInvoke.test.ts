@@ -229,6 +229,48 @@ test("cold and warm calls share one retry budget for explicit pre-execution reje
     }
 })
 
+test("only a refused connection proves that an invocation never ran", async () => {
+    const refused = () =>
+        new TypeError("fetch failed", {
+            cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED", syscall: "connect" })
+        })
+    const lost = () =>
+        new TypeError("fetch failed", {
+            cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" })
+        })
+    for (const warm of [false, true]) {
+        for (const [failure, code] of [
+            [refused, "unavailable"],
+            [lost, "outcome_unknown"]
+        ] as const) {
+            const origins: string[] = []
+            let priming = warm
+            const client = new RemoteActorClient(options, {
+                now: () => 0,
+                telemetry: () => {},
+                fetch: async url => {
+                    if (priming) return Response.json({ target, outcome: { type: "completed", result: 0 } })
+                    origins.push(new URL(String(url)).origin)
+                    throw failure()
+                }
+            })
+            if (priming) {
+                await client.invoke("Counter", "one", "read", [])
+                priming = false
+            }
+            await assert.rejects(
+                client.invoke("Counter", "one", "increment", [1]),
+                error => error instanceof ActorInvocationError && error.code === code
+            )
+            const retried = warm && code === "unavailable"
+            assert.deepEqual(origins, [
+                warm ? target.route : options.controlPlaneUrl,
+                ...(retried ? [options.controlPlaneUrl] : [])
+            ])
+        }
+    }
+})
+
 test("invoke refreshes a stale broadcast target after the actor moves", async () => {
     const fresh = { ...target, route: "https://fresh.example.com", token: "fresh", ownerEpoch: 4 }
     const requests: string[] = []

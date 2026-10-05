@@ -6,9 +6,43 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from fixtures.executor import build, warm_executor
 from fixtures.sqlite import commit, fields, seed
 
 from durable_actors.build import build_actor
+
+
+async def test_warm_executor_keeps_its_assigned_environment_across_worker_restarts(tmp_path):
+    entrypoint = build(
+        tmp_path,
+        "environment_actors",
+        """import os
+from durable_actors import Actor
+class Settings(Actor):
+    def read(self, name: str) -> str | None:
+        return os.environ.get(name)
+""",
+    )
+    actor = {"project_id": "local", "actor_name": "Settings", "actor_id": "one"}
+    state = seed()
+
+    async def send(message_id, command):
+        host.send({"type": "command", "message_id": message_id, "command": command})
+        return (await host.receive())["reply"]
+
+    read = {
+        "type": "invoke",
+        "request_id": "read",
+        "actor": actor,
+        "sqlite": state,
+        "method": "read",
+        "args": ["PAYMENTS_API_KEY"],
+        "resident_only": False,
+    }
+    async with warm_executor(entrypoint, {"PAYMENTS_API_KEY": "secret"}) as host:
+        assert (await send(1, read))["result"] == "secret"
+        assert await send(2, {"type": "evict", "actor": actor}) == {"type": "evicted"}
+        assert (await send(3, read))["result"] == "secret"
 
 
 @pytest.mark.parametrize("generic", [False, True])
@@ -45,6 +79,7 @@ class Counter(Actor):
                                     {
                                         "type": "load",
                                         "entrypoint": str(tmp_path / "build/actors.pyz"),
+                                        "environment": {},
                                     }
                                 )
                                 + "\n"

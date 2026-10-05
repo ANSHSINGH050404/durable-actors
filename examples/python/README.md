@@ -2,7 +2,7 @@
 
 Persistent messages, typed RPCs, and live state updates.
 
-[Quickstart](../../sdk-python/README.md#quickstart) · [Reference](../../docs/reference/python.md) · [Actor](actors.py) · [Client](client.py) · [Subscriber](watch.py)
+[Quickstart](../../sdk-python/README.md#quickstart) · [Reference](../../docs/reference/python-guide.md) · [Actor](actors.py) · [Client](client.py) · [Subscriber](watch.py)
 
 ## Run
 

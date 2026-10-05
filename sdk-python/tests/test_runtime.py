@@ -1,12 +1,15 @@
 import asyncio
+import gc
+import weakref
 from threading import Event
 
 import pytest
 from fixtures.effects import Effects
-from fixtures.sqlite import ActorRuntime, seed
+from fixtures.sqlite import ActorRuntime, HostStorage, seed
 from pydantic import BaseModel
 
 from durable_actors import Actor, ephemeral, interleave, persisted
+from durable_actors.runtime import ActorRuntime as Runtime
 
 
 class Value(BaseModel):
@@ -97,6 +100,17 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_replaced_and_evicted_instances_are_released():
+    runtime = ActorRuntime(Counter, Effects())
+    instances = []
+    for _ in range(3):
+        await runtime.handle(command("fail"))
+        instances.append(weakref.ref(runtime.instance))
+    await runtime.handle({"type": "evict", "actor": ACTOR})
+    gc.collect()
+    assert [instance() for instance in instances] == [None, None, None]
+
+
 async def test_residency_and_eviction_require_explicit_hydration():
     runtime = ActorRuntime(Counter, Effects())
     assert (await runtime.handle(command(resident_only=True)))["type"] == "state_required"
@@ -144,6 +158,50 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
     finally:
         resume.set()
         await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_completion_waits_for_an_interleaved_sql_statement_off_the_event_loop():
+    entered, persisting = asyncio.Event(), asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    class ContendedStorage(HostStorage):
+        def exec(self, sql, *bindings):
+            with self.lock:
+                loop.call_soon_threadsafe(entered.set)
+                if not release.wait(3):
+                    raise TimeoutError("the event loop stalled behind the database lock")
+                return super().exec(sql, *bindings)
+
+        def persist_fields(self, fields):
+            loop.call_soon_threadsafe(persisting.set)
+            super().persist_fields(fields)
+
+    class Ledger(Actor):
+        count: int = persisted(0)
+
+        @interleave
+        def record(self) -> None:
+            self.db.exec("CREATE TABLE IF NOT EXISTS entries (id INTEGER)")
+
+        def increment(self) -> int:
+            self.count += 1
+            return self.count
+
+    runtime = Runtime(Ledger, Effects(), ContendedStorage())
+    actor = {**ACTOR, "actor_name": "Ledger"}
+    tasks = [asyncio.create_task(runtime.handle(command("record", actor=actor)))]
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        tasks.append(asyncio.create_task(runtime.handle(command(actor=actor))))
+        await asyncio.wait_for(persisting.wait(), 1)
+        release.set()
+        replies = await asyncio.wait_for(asyncio.gather(*tasks), 5)
+        assert [reply["type"] for reply in replies] == ["invoked", "invoked"]
+        assert replies[1]["result"] == 1
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_socket_messages_are_typed_and_emit_persisted_changes():
@@ -353,3 +411,71 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
         for release in releases:
             release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_path):
+    from durable_actors.sqlite import SqliteStorage
+
+    captured: list[object] = []
+
+    class Account(Actor):
+        _balance: int = persisted(0)
+
+        def deposit(self, amount: int) -> int:
+            self.db.exec("CREATE TABLE IF NOT EXISTS ledger (amount INTEGER)")
+            self._balance += amount
+            self.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
+            return self._balance
+
+        def fail(self, amount: int) -> None:
+            self._balance += amount
+            self.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
+            raise ValueError("rollback both stores")
+
+        def balance(self) -> int:
+            return self._balance
+
+        def ledger(self) -> list[dict[str, int]]:
+            captured.append(self.db)
+            return self.db.exec("SELECT amount FROM ledger ORDER BY rowid")
+
+    path = tmp_path / "actor.sqlite"
+    path.touch()
+    commits = 1
+
+    async def sync() -> int:
+        nonlocal commits
+        commits += 1
+        return commits
+
+    runtime = Runtime(Account, Effects(), SqliteStorage(sync))
+    actor = {**ACTOR, "actor_name": "Account"}
+    state = {"path": str(path), "txid": 1}
+
+    def invoke(method: str, args: list[int] | None = None):
+        return {
+            "type": "invoke",
+            "request_id": method,
+            "actor": actor,
+            "method": method,
+            "args": args or [],
+            "sqlite": state,
+        }
+
+    assert (await runtime.handle(invoke("deposit", [5])))["result"] == 5
+    assert (await runtime.handle(invoke("deposit", [7])))["result"] == 12
+    assert (await runtime.handle(invoke("balance")))["result"] == 12
+    assert (await runtime.handle(invoke("ledger")))["result"] == [
+        {"amount": 5},
+        {"amount": 7},
+    ]
+    failure = await runtime.handle(invoke("fail", [3]))
+    assert failure["type"] == "failed"
+    assert failure["message"] == "rollback both stores"
+    assert (await runtime.handle(invoke("balance")))["result"] == 12
+    assert (await runtime.handle(invoke("ledger")))["result"] == [
+        {"amount": 5},
+        {"amount": 7},
+    ]
+    with pytest.raises(RuntimeError, match="outside its invocation"):
+        captured[0].exec("SELECT amount FROM ledger")  # type: ignore[attr-defined]

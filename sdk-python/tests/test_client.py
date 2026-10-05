@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 import sys
@@ -32,19 +33,89 @@ def test_caches_route_and_retries_only_explicit_non_execution():
     assert calls == ["control.test", "host.test", "control.test"]
 
 
-def test_lost_response_is_not_replayed():
+TARGET = {
+    "route": "http://host.test",
+    "token": "ticket",
+    "ownerEpoch": 1,
+    "expiresAtMs": 9999999999999,
+}
+
+
+def refused():
+    error = httpx.ConnectError("[Errno 61] Connection refused")
+    error.__cause__ = ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+    return error
+
+
+NEVER_SENT = pytest.mark.parametrize(
+    "failure",
+    [
+        refused,
+        lambda: httpx.ConnectError("[Errno 8] nodename nor servname provided"),
+        lambda: httpx.ConnectTimeout("timed out"),
+    ],
+    ids=["refused", "dns", "connect_timeout"],
+)
+MAYBE_SENT = pytest.mark.parametrize(
+    "failure",
+    [
+        lambda: httpx.ReadTimeout("timed out"),
+        lambda: httpx.ReadError("response lost"),
+        lambda: httpx.RemoteProtocolError("server disconnected"),
+    ],
+    ids=["read_timeout", "read_error", "disconnected"],
+)
+
+
+def invoke_through(failing_host, failure):
     calls = []
 
     def handle(request):
-        calls.append(request)
-        raise httpx.ReadError("response lost")
+        calls.append(request.url.host)
+        if request.url.host == failing_host:
+            raise failure()
+        outcome = {"type": "completed", "result": len(calls)}
+        return httpx.Response(200, json={"target": TARGET, "outcome": outcome})
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
         with Client("http://control.test", project_id="test", http=http) as client:
-            with pytest.raises(ActorInvocationError) as failure:
+            if failing_host == "host.test":
                 client.invoke("Counter", "one", "increment", [])
-    assert failure.value.code == "outcome_unknown"
-    assert len(calls) == 1
+                calls.clear()
+            try:
+                return client.invoke("Counter", "one", "increment", []), calls
+            except ActorInvocationError as error:
+                return error, calls
+
+
+@NEVER_SENT
+def test_control_plane_request_that_was_never_sent_is_unavailable(failure):
+    error, calls = invoke_through("control.test", failure)
+    assert isinstance(error, ActorInvocationError)
+    assert error.code == "unavailable"
+    assert str(error) == f"could not connect to http://control.test: {failure()}"
+    assert calls == ["control.test"]
+
+
+@MAYBE_SENT
+def test_control_plane_request_that_may_have_been_sent_is_not_replayed(failure):
+    error, calls = invoke_through("control.test", failure)
+    assert isinstance(error, ActorInvocationError)
+    assert error.code == "outcome_unknown"
+    assert calls == ["control.test"]
+
+
+@NEVER_SENT
+def test_cached_host_request_that_was_never_sent_retries_through_the_control_plane(failure):
+    assert invoke_through("host.test", failure) == (2, ["host.test", "control.test"])
+
+
+@MAYBE_SENT
+def test_cached_host_request_that_may_have_been_sent_is_not_replayed(failure):
+    error, calls = invoke_through("host.test", failure)
+    assert isinstance(error, ActorInvocationError)
+    assert error.code == "outcome_unknown"
+    assert calls == ["host.test"]
 
 
 def test_default_client_shares_its_pool_and_closes_it_at_process_exit(tmp_path):

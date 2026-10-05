@@ -2,7 +2,7 @@
 
 An Express + React chatroom with shared messages and persistent history.
 
-[Quickstart](../../sdk/README.md#quickstart) · [Reference](../../docs/reference/typescript.md)
+[Quickstart](../../sdk/README.md#quickstart) · [Reference](../../docs/reference/typescript-guide.md)
 
 ## Run locally
 

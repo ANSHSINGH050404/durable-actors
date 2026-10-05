@@ -10,9 +10,14 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 
+from pydantic import TypeAdapter
+
 from .contract import Document
 from .executor_wire import Channel
 from .runtime import failed
+
+Environment = dict[str, str]
+environment_adapter: TypeAdapter[Environment] = TypeAdapter(Environment)
 
 
 @dataclass
@@ -26,7 +31,7 @@ class Supervisor(Channel):
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        create_worker: Callable[[str], Awaitable[Worker]],
+        create_worker: Callable[[str, Environment], Awaitable[Worker]],
     ) -> None:
         super().__init__(reader, writer)
         self.create_worker = create_worker
@@ -36,6 +41,7 @@ class Supervisor(Channel):
         self.assigned: Document | None = None
         self.attached: Document = {}
         self.entrypoint = ""
+        self.environment: Environment = {}
         self.actor_names: list[str] = []
         self.sequence = 0
         self.offset = 0
@@ -48,10 +54,13 @@ class Supervisor(Channel):
                 if load.get("type") != "load":
                     raise ValueError("expected actor code assignment")
                 entrypoint = load.get("entrypoint")
+                self.environment = environment_adapter.validate_python(
+                    load.get("environment"), strict=True
+                )
             if not entrypoint or not os.path.isabs(entrypoint):
                 raise ValueError("an absolute actor entrypoint is required")
             self.entrypoint = entrypoint
-            self.worker = await self.create_worker(entrypoint)
+            self.worker = await self.create_worker(entrypoint, self.environment)
             self.actor_names = self.worker.actor_names
             await self.send({"type": "attach", "protocol": 24, "actor_names": self.actor_names})
             self.attached = await self.read()
@@ -93,7 +102,7 @@ class Supervisor(Channel):
                 raise ValueError("executor command queue is full or message ID is duplicated")
             self.assigned = actor
             if self.worker is None:
-                self.worker = await self.create_worker(self.entrypoint)
+                self.worker = await self.create_worker(self.entrypoint, self.environment)
                 if self.worker.actor_names != self.actor_names:
                     raise ValueError("worker actor definitions changed")
                 self.offset = self.sequence
@@ -188,7 +197,7 @@ class Worker(Channel):
         self.actor_names: list[str] = []
 
     @classmethod
-    async def start(cls, entrypoint: str) -> Worker:
+    async def start(cls, entrypoint: str, environment: Environment) -> Worker:
         parent, child = socket.socketpair()
         try:
             process = await asyncio.create_subprocess_exec(
@@ -197,7 +206,7 @@ class Worker(Channel):
                 "durable_actors.host",
                 "--worker",
                 str(child.fileno()),
-                env={**os.environ, "DURABLE_ACTORS_ENTRYPOINT": entrypoint},
+                env={**os.environ, **environment, "DURABLE_ACTORS_ENTRYPOINT": entrypoint},
                 pass_fds=(child.fileno(),),
             )
         except BaseException:

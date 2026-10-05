@@ -1,7 +1,16 @@
 from threading import Lock
 from typing import assert_type
 
-from durable_actors import Actor, ActorSocket, emitted, ephemeral, interleave, persisted
+from durable_actors import (
+    Actor,
+    ActorDatabase,
+    ActorSocket,
+    SqliteValue,
+    emitted,
+    ephemeral,
+    interleave,
+    persisted,
+)
 
 
 class TypedActor(Actor[str, str, str]):
@@ -22,6 +31,10 @@ class TypedActor(Actor[str, str, str]):
         assert_type(self.busy, bool)
         assert_type(self.lock, Lock)
         return self.count
+
+    def ledger(self, account: str) -> list[dict[str, SqliteValue]]:
+        database: ActorDatabase = self.db
+        return database.exec("SELECT amount FROM ledger WHERE account = ?", account)
 
     def on_connect(self, socket: ActorSocket[str, str]) -> None:
         assert_type(self.id, str)

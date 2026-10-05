@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Self, TypeVar
 
 from typing_extensions import TypeVar as DefaultTypeVar
 
+from .database import ActorDatabase, actor_database
 from .json import JsonValue
 
 if TYPE_CHECKING:
@@ -67,6 +68,11 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
         from .socket import current_scope
 
         return current_scope(self).actor_id
+
+    @property
+    def db(self) -> ActorDatabase:
+        """Actor-local SQLite. Changes commit with persisted fields after a successful invocation."""
+        return actor_database(self)
 
     def on_connect(self, socket: ActorSocket[Metadata, Outgoing, Tag]) -> None:
         """Handle a new WebSocket connection before it is accepted.

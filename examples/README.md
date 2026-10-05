@@ -10,6 +10,17 @@ Each example includes an app and a local actor runtime:
 
 Follow the example's README to install dependencies, copy `.env.example` to `.env`, and start its two processes. AI chat also requires an OpenAI API key.
 
+## Guide examples
+
+The [TypeScript](../docs/reference/typescript-guide.md) and [Python](../docs/reference/python-guide.md) guides build these projects step by step. Each contains the guide's finished code and runs from a repository checkout.
+
+| Example | What it demonstrates | Actor port |
+| --- | --- | --- |
+| [Bank account (TypeScript)](bank-typescript/README.md) | Fields, WebSockets, SQLite, interleaving, and sandbox overrides | `7111` |
+| [Bank account (Python)](bank-python/README.md) | The same actors in Python | `7112` |
+
+Their ports don't overlap with the app examples below, so every example can run at once.
+
 ## Run the examples together
 
 Each app needs its own app port and actor runtime port. Set these values in each project's `.env`:

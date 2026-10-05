@@ -5,12 +5,15 @@ import inspect
 import json
 from collections import OrderedDict
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from .actor import Actor
 from .contract import Document, Method, decode, describe_actor, encode
+from .database import actor_database_invocation, bind_actor_database
 from .socket import Effects, SocketScope, scope_context
 from .sqlite import SqliteCaptureError, Storage
+from .threads import run_in_thread
 
 
 class ActorRuntime:
@@ -147,7 +150,7 @@ class ActorRuntime:
                 state = self.snapshot()
                 previous = self.last_state if self.definition.reentrant_methods else before
                 effects.extend(self.state_updates(previous, state, command))
-                self.database.persist_fields(state)
+                await run_in_thread(partial(self.database.persist_fields, state))
                 try:
                     sqlite = await self.database.snapshot()
                 except SqliteCaptureError as error:
@@ -217,6 +220,7 @@ class ActorRuntime:
 
     def restore(self, state: Any) -> None:
         instance = self.definition.actor()
+        bind_actor_database(instance, self.database)
         if state is not None:
             if not isinstance(state, dict):
                 raise ValueError("persisted state must be an object")
@@ -241,22 +245,8 @@ class ActorRuntime:
 async def invoke_handler(
     scope: SocketScope, handler: Callable[..., Any], *args: Any, **kwargs: Any
 ) -> Any:
-    worker = asyncio.create_task(asyncio.to_thread(handler, *args, **kwargs))
-    cancelled = False
-    # Threads cannot be stopped: drain the handler before completing cancellation.
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            cancelled = True
-            scope.cancel()
-        except Exception:
-            break
-    if cancelled:
-        if not worker.cancelled():
-            worker.exception()
-        raise asyncio.CancelledError
-    return worker.result()
+    with actor_database_invocation(getattr(handler, "__self__", None)):
+        return await run_in_thread(partial(handler, *args, **kwargs), scope.cancel)
 
 
 def bind_arguments(method: Method, values: list[Any]) -> inspect.BoundArguments:

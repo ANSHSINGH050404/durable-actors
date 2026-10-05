@@ -1,0 +1,13 @@
+{
+    "name": "durable-actors-example-bank-python",
+    "private": true,
+    "scripts": {
+        "dev": "durable-actors dev",
+        "generate": "durable-actors generate",
+        "check": "uv run mypy --strict src client.py generated",
+        "client": "uv run --env-file .env client.py"
+    },
+    "dependencies": {
+        "durable-actors": "workspace:*"
+    }
+}

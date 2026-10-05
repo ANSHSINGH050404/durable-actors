@@ -94,7 +94,7 @@ function rejectionReason(value: unknown): value is ActorRejectionReason {
     return value === "stale_owner" || value === "host_unavailable" || value === "upstream_not_reached"
 }
 
-function connectionRefused(error: unknown, ancestors = new Set<unknown>()): boolean {
+export function connectionRefused(error: unknown, ancestors = new Set<unknown>()): boolean {
     if (!isRecord(error) || ancestors.has(error)) return false
     const visited = new Set(ancestors).add(error)
     if (error.code !== undefined && error.code !== "ECONNREFUSED") return false

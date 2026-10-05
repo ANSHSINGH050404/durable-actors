@@ -2,7 +2,7 @@
 
 Durable actors and typed clients, backed by the Rust runtime.
 
-[Quickstart](#quickstart) · [Reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/typescript.md) · [Runnable example](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/README.md)
+[Quickstart](#quickstart) · [Reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/typescript-guide.md) · [Runnable example](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/README.md)
 
 ## Quickstart
 

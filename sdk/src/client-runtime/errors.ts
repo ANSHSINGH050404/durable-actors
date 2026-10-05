@@ -12,7 +12,7 @@ class ActorDefinitionError extends Error {
     }
 }
 
-/** Remote failure. Retrying an `outcome_unknown` operation may run it twice. */
+/** Remote failure. Retrying an `outcome_unknown` operation may run it twice; `unavailable` never ran. */
 class ActorInvocationError extends Error {
     /** Error category, such as `actor_error` or `outcome_unknown`. New codes may be added. */
     readonly code: string

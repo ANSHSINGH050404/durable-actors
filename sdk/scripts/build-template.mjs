@@ -15,7 +15,7 @@ async function buildTemplate(template) {
     await mkdir(destination, { recursive: true })
     const files =
         template === "python"
-            ? ["package.json", "pyproject.toml", "README.md", "src", ".env.example"]
+            ? ["package.json", "pyproject.toml", "README.md", "src"]
             : ["package.json", "tsconfig.json", "README.md", "src"]
     if (!["actor", "python"].includes(template)) files.push("index.html", ".env.example")
     for (const file of files)

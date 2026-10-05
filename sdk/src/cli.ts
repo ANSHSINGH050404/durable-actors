@@ -54,8 +54,6 @@ async function initializeProject(directory: string, options: { template: string 
             force: false
         })
         await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
-        if (options.template === "python")
-            await rename(path.join(destination, ".env.example"), path.join(destination, ".env"))
         await nameProject(destination)
     } catch (error) {
         await rm(destination, { recursive: true, force: true })
