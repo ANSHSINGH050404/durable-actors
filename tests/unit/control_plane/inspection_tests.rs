@@ -72,7 +72,7 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
                 "projectId": project, "requestId": format!("{project}-{index}"),
                 "actorName": "Room", "actorId": "same", "kind": "websocket",
                 "operation": "onConnect", "connectionId": "same",
-                "startedAtMs": index + 1, "durationMs": duration,
+                "startedAtMs": index + 1, "durationMs": duration, "routingMs": 25.0,
                 "queueWaitMs": duration, "outcome": "completed"
             }))?;
             fixture
@@ -90,6 +90,7 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         .await?;
     assert_eq!(page["records"].as_array().unwrap().len(), 1);
     assert_eq!(page["records"][0]["projectId"], "alpha");
+    assert_eq!(page["records"][0]["routingMs"], 25.0);
     let metrics: Value = fixture
         .get(&format!("{base}/metrics"))
         .await?
@@ -454,6 +455,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                     duration_ms: 25.0,
                     queue_wait_ms: Some(10.0),
                     host_state: HostState::Warm,
+                    routing_ms: 0.0,
                     outcome: RequestOutcome::Completed,
                     metadata: None,
                 }],
@@ -652,6 +654,7 @@ async fn record_request(
                 duration_ms: 25.0,
                 queue_wait_ms: Some(10.0),
                 host_state: HostState::Warm,
+                routing_ms: 0.0,
                 outcome,
                 metadata: None,
             }],
@@ -747,7 +750,7 @@ async fn postgres_request_stream_observes_writes_from_another_control_plane() ->
         assert!(String::from_utf8(initial.to_vec())?.contains("\"records\":[]"));
         writer.record("alpha", "host", "session", vec![serde_json::from_value(json!({
             "projectId": "alpha", "requestId": "remote-instance-request", "actorName": "Room", "actorId": "one",
-            "kind": "method", "operation": "increment", "startedAtMs": 1000, "durationMs": 10.0,
+            "kind": "method", "operation": "increment", "startedAtMs": 1000, "durationMs": 10.0, "routingMs": 25.0,
             "queueWaitMs": 1.0, "outcome": "completed"
         }))?], 0).await?;
         tokio::time::timeout(Duration::from_secs(7), async {

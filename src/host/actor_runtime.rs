@@ -937,6 +937,7 @@ impl ActorRuntime {
                 host_id = %endpoint.id,
                 started_at_ms = 0,
                 host_state = completion.timings.host_state.as_str(),
+                routing_ms = completion.timings.routing_ms,
                 queue_admitted_at_ms = completion.timings.queue_wait_ms,
                 state_cache_checked_at_ms = completion.checkpoints.state_cache_checked_at_ms,
                 state_downloaded_at_ms = completion.checkpoints.state_downloaded_at_ms,

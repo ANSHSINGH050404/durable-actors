@@ -7,7 +7,7 @@ async fn completion_is_measured_once_and_shared_with_both_consumers() {
     let observer = RecordingObserver(records.clone());
     let started = Instant::now() - std::time::Duration::from_millis(25);
     let (mut tracker, response) =
-        RequestTracker::new(started, HostState::Cold, Some(Box::new(observer)));
+        RequestTracker::new(started, HostState::Cold, 500.0, Some(Box::new(observer)));
     tracker.admitted();
     tracker.state_version(Some(7));
     tracker.mark(RequestStage::StateCacheChecked);
@@ -34,6 +34,9 @@ async fn completion_is_measured_once_and_shared_with_both_consumers() {
             .state_publication_completed_at_ms
             .is_none()
     );
+    assert_eq!(timing.routing_ms, 500.0);
+    assert_eq!(timing.routing_ms, record.timings.routing_ms);
+    assert!(timing.duration_ms < timing.routing_ms);
     assert_eq!(timing.host_state, HostState::Cold);
     assert_eq!(timing.host_state, record.timings.host_state);
     assert_eq!(timing.duration_ms, record.timings.duration_ms);
@@ -48,6 +51,7 @@ async fn interrupted_requests_publish_the_same_completion_without_admission() {
     let (tracker, response) = RequestTracker::new(
         Instant::now(),
         HostState::Warm,
+        0.0,
         Some(Box::new(RecordingObserver(records.clone()))),
     );
     drop(tracker);
@@ -60,7 +64,7 @@ async fn interrupted_requests_publish_the_same_completion_without_admission() {
 
 #[tokio::test]
 async fn response_timing_is_available_without_an_observer() {
-    let (mut tracker, response) = RequestTracker::new(Instant::now(), HostState::Warm, None);
+    let (mut tracker, response) = RequestTracker::new(Instant::now(), HostState::Warm, 0.0, None);
     tracker.admitted();
     tracker.finish(RequestOutcome::Completed);
     let timing = response.await.unwrap();

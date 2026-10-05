@@ -790,6 +790,7 @@ impl Stack {
                 },
                 1,
                 HostState::Warm,
+                0.0,
             )
             .await
             .0?;
@@ -1021,7 +1022,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     let token = target["token"].as_str().context("token missing")?;
     let epoch = target["ownerEpoch"].as_u64().context("epoch missing")?;
     let url = format!("{route}/v1/projects/default/actors/Counter/counter-1");
-    let invocation = serde_json::json!({"requestId":"http-change", "ownerEpoch":epoch, "method":"change", "args":[]});
+    let invocation = serde_json::json!({"requestId":"http-change", "ownerEpoch":epoch, "routingMs":0.0, "method":"change", "args":[]});
     assert_eq!(
         http.post(format!("{url}/invoke"))
             .json(&invocation)
@@ -1155,7 +1156,7 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
         .token;
     for method in ["change", "onConnect", "onMessage", "onDisconnect"] {
         let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
-            .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]}))
+            .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "routingMs":0.0, "method":method, "args":[]}))
             .send().await?.error_for_status()?.json().await?;
         assert_eq!(reply["code"], "forbidden");
     }
@@ -1169,7 +1170,7 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
         reqwest::StatusCode::FORBIDDEN
     );
     let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
-        .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":"readHistory", "args":[]}))
+        .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "routingMs":0.0, "method":"readHistory", "args":[]}))
         .send().await?.error_for_status()?.json().await?;
     assert_eq!(reply["type"], "completed");
     stack.child.kill().await?;
@@ -1257,4 +1258,5 @@ fn assert_completed_invocation(mut reply: serde_json::Value, result: serde_json:
     assert!(duration.is_finite() && duration >= 0.0);
     assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
     assert_eq!(metadata["hostState"], "warm");
+    assert!(metadata["routingMs"].as_f64().unwrap() >= 0.0);
 }

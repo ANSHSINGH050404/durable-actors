@@ -811,6 +811,7 @@ async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<
         },
         1,
         HostState::Warm,
+        0.0,
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), other)
@@ -946,14 +947,14 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         args: vec![],
     };
     assert_eq!(
-        host.invoke_actor(invoke("one"), 7, HostState::Warm)
+        host.invoke_actor(invoke("one"), 7, HostState::Warm, 0.0)
             .await
             .0?,
         completed(1)
     );
     host.activate_actor(actor.clone()).await?;
     assert_eq!(
-        host.invoke_actor(invoke("two"), 7, HostState::Warm)
+        host.invoke_actor(invoke("two"), 7, HostState::Warm, 0.0)
             .await
             .0?,
         completed(2)
@@ -1012,6 +1013,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
             },
             7,
             HostState::Warm,
+            0.0,
         )
         .await
         .0?;
@@ -1652,6 +1654,7 @@ async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResu
         },
         1,
         HostState::Warm,
+        0.0,
     )
     .await
     .0

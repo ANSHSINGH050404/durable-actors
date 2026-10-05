@@ -44,6 +44,7 @@ test("HTTP replies preserve host latency metadata for every outcome", async () =
         const reply = {
             ...outcome,
             metadata: {
+                routingMs: 500,
                 durationMs: 12.5,
                 queueWaitMs: outcome.type === "not_executed" ? null : 2.5,
                 hostState: outcome.type === "completed" ? "cold" : "warm"
@@ -58,16 +59,17 @@ test("HTTP replies reject invalid host latency metadata", async () => {
     for (const metadata of [
         null,
         {},
-        { durationMs: -1, queueWaitMs: null, hostState: "warm" },
-        { durationMs: "12", queueWaitMs: null, hostState: "warm" },
-        { durationMs: 12, hostState: "warm" },
-        { durationMs: 12, queueWaitMs: -1, hostState: "warm" },
-        { durationMs: 12, queueWaitMs: 13, hostState: "warm" },
-        { durationMs: 12, queueWaitMs: "2", hostState: "warm" },
-        { durationMs: 12, queueWaitMs: 2, hostState: "unknown" },
-        { durationMs: 12, queueWaitMs: 2, hostState: null },
-        { durationMs: 12, queueWaitMs: 2, hostState: true },
-        { durationMs: 12, queueWaitMs: 2 }
+        { routingMs: -1, durationMs: 12, queueWaitMs: null, hostState: "warm" },
+        { routingMs: 500, durationMs: -1, queueWaitMs: null, hostState: "warm" },
+        { routingMs: 500, durationMs: "12", queueWaitMs: null, hostState: "warm" },
+        { routingMs: 500, durationMs: 12, hostState: "warm" },
+        { routingMs: 500, durationMs: 12, queueWaitMs: -1, hostState: "warm" },
+        { routingMs: 500, durationMs: 12, queueWaitMs: 13, hostState: "warm" },
+        { routingMs: 500, durationMs: 12, queueWaitMs: "2", hostState: "warm" },
+        { routingMs: 500, durationMs: 12, queueWaitMs: 2, hostState: "unknown" },
+        { routingMs: 500, durationMs: 12, queueWaitMs: 2, hostState: null },
+        { routingMs: 500, durationMs: 12, queueWaitMs: 2, hostState: true },
+        { routingMs: 500, durationMs: 12, queueWaitMs: 2 }
     ]) {
         const transport = new HttpActorHostTransport(async () =>
             Response.json({ type: "completed", result: 7, metadata })

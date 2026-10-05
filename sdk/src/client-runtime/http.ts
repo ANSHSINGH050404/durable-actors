@@ -69,6 +69,7 @@ function parseMetadata(reply: Record<string, unknown>): { metadata?: ActorRespon
     const metadata = reply.metadata
     if (
         !isRecord(metadata) ||
+        !nonnegativeFiniteNumber(metadata.routingMs) ||
         !nonnegativeFiniteNumber(metadata.durationMs) ||
         (metadata.queueWaitMs !== null &&
             (!nonnegativeFiniteNumber(metadata.queueWaitMs) || metadata.queueWaitMs > metadata.durationMs)) ||
@@ -77,6 +78,7 @@ function parseMetadata(reply: Record<string, unknown>): { metadata?: ActorRespon
         throw new ActorProtocolError("actor host response contained invalid latency metadata")
     return {
         metadata: {
+            routingMs: metadata.routingMs,
             durationMs: metadata.durationMs,
             queueWaitMs: metadata.queueWaitMs,
             hostState: metadata.hostState
@@ -137,6 +139,7 @@ export interface ActorInvocation extends ActorAddress {
 type ActorRejectionReason = "stale_owner" | "host_unavailable" | "upstream_not_reached"
 
 export interface ActorResponseMetadata {
+    readonly routingMs: number
     readonly durationMs: number
     readonly queueWaitMs: number | null
     readonly hostState: "cold" | "warm"

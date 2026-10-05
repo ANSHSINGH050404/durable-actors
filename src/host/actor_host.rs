@@ -114,12 +114,14 @@ impl ActorHost {
         owner_epoch: u64,
         started: Instant,
         host_state: HostState,
+        routing_ms: f64,
     ) -> Result<ActorExecutionResult> {
         self.submit_traced(
             ActorOperation::Socket(invocation),
             owner_epoch,
             started,
             host_state,
+            routing_ms,
         )
         .await
         .0
@@ -141,12 +143,14 @@ impl ActorHost {
         invocation: ActorInvocation,
         owner_epoch: u64,
         host_state: HostState,
+        routing_ms: f64,
     ) -> (Result<ActorExecutionResult>, Option<RequestMetadata>) {
         self.submit_traced(
             ActorOperation::Method(invocation),
             owner_epoch,
             Instant::now(),
             host_state,
+            routing_ms,
         )
         .await
     }
@@ -170,17 +174,7 @@ impl ActorHost {
         operation: ActorOperation,
         owner_epoch: u64,
     ) -> Result<ActorExecutionResult> {
-        self.submit_since(operation, owner_epoch, Instant::now())
-            .await
-    }
-
-    async fn submit_since(
-        &self,
-        operation: ActorOperation,
-        owner_epoch: u64,
-        started: Instant,
-    ) -> Result<ActorExecutionResult> {
-        self.submit_traced(operation, owner_epoch, started, HostState::Warm)
+        self.submit_traced(operation, owner_epoch, Instant::now(), HostState::Warm, 0.0)
             .await
             .0
     }
@@ -191,9 +185,11 @@ impl ActorHost {
         owner_epoch: u64,
         started: Instant,
         host_state: HostState,
+        routing_ms: f64,
     ) -> (Result<ActorExecutionResult>, Option<RequestMetadata>) {
         let (reply, result) = oneshot::channel();
-        let (tracker, timing) = RequestTracker::new(started, host_state, self.observer(&operation));
+        let (tracker, timing) =
+            RequestTracker::new(started, host_state, routing_ms, self.observer(&operation));
         let request = ActorRequest {
             tracker,
             waiting: None,

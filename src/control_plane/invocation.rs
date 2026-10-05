@@ -56,7 +56,8 @@ async fn resolve_and_dispatch(
     home_region: Option<String>,
     invocation: &ActorInvocation,
 ) -> Result<(ActorTargetReply, Value), ApiError> {
-    let deadline = tokio::time::Instant::now() + super::CONTROL_PLANE_REQUEST_TIMEOUT;
+    let started = tokio::time::Instant::now();
+    let deadline = started + super::CONTROL_PLANE_REQUEST_TIMEOUT;
     let mut host_state = HostState::Warm;
     loop {
         let target = resolve_actor_target(
@@ -78,6 +79,7 @@ async fn resolve_and_dispatch(
             target.owner_epoch,
             invocation,
             host_state,
+            started.elapsed().as_secs_f64() * 1000.0,
         )
         .await?;
         if !matches!(
@@ -98,6 +100,7 @@ async fn invoke_cached(
     request: InvokeRequest,
     epoch: u64,
 ) -> Result<Response, ApiError> {
+    let started = tokio::time::Instant::now();
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -127,6 +130,7 @@ async fn invoke_cached(
         epoch,
         &invocation,
         HostState::Warm,
+        started.elapsed().as_secs_f64() * 1000.0,
     )
     .await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(outcome)).into_response())
@@ -190,6 +194,7 @@ async fn dispatch(
     owner_epoch: u64,
     invocation: &ActorInvocation,
     host_state: HostState,
+    routing_ms: f64,
 ) -> Result<Value, ApiError> {
     let actor = &invocation.actor;
     let url = format!(
@@ -204,7 +209,7 @@ async fn dispatch(
         .bearer_auth(token)
         .json(&json!({
             "requestId":invocation.request_id, "ownerEpoch":owner_epoch,
-            "method":invocation.method, "args":invocation.args, "hostState":host_state,
+            "method":invocation.method, "args":invocation.args, "hostState":host_state, "routingMs":routing_ms,
         }))
         .send()
         .await;

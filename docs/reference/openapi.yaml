@@ -995,8 +995,12 @@ components:
         ActorInvocationMetadata:
             type: object
             description: Timing and host-start context finalized once by the host request tracker and shared with the response, observability and diagnostic log. Omitted for requests denied before host dispatch.
-            required: [durationMs, queueWaitMs, hostState]
+            required: [durationMs, queueWaitMs, hostState, routingMs]
             properties:
+                routingMs:
+                    type: number
+                    minimum: 0
+                    description: Gateway time before the final host dispatch, including host discovery, provisioning and routing retries. Separate from durationMs.
                 durationMs:
                     type: number
                     minimum: 0
@@ -1197,7 +1201,7 @@ components:
                 nextBefore: { type: [integer, "null"], minimum: 1 }
         TraceRecord:
             type: object
-            required: [projectId, sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, hostState, outcome]
+            required: [projectId, sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, routingMs, durationMs, queueWaitMs, hostState, outcome]
             properties:
                 projectId: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
                 metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
@@ -1213,6 +1217,7 @@ components:
                 operation: { type: string }
                 connectionId: { type: [string, "null"] }
                 startedAtMs: { type: integer, minimum: 0 }
+                routingMs: { type: number, minimum: 0, description: "Gateway routing and startup time before host dispatch." }
                 durationMs: { type: number, minimum: 0 }
                 queueWaitMs: { type: [number, "null"], minimum: 0 }
                 hostState: { type: string, enum: [cold, warm], description: "Whether routing required host startup. Defaults to warm for historical traces without this field." }

@@ -613,6 +613,7 @@ fn trace(id: usize) -> RequestTrace {
         duration_ms: 12.0,
         queue_wait_ms: Some(5.0),
         host_state: HostState::Warm,
+        routing_ms: 0.0,
         outcome: RequestOutcome::Completed,
         metadata: None,
     }
@@ -721,9 +722,14 @@ fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata
             Some("connection".into()),
             value,
         );
-        RequestTracker::new(Instant::now(), HostState::Warm, Some(Box::new(observer)))
-            .0
-            .finish(RequestOutcome::Completed);
+        RequestTracker::new(
+            Instant::now(),
+            HostState::Warm,
+            0.0,
+            Some(Box::new(observer)),
+        )
+        .0
+        .finish(RequestOutcome::Completed);
     }
     let recorded: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok())
         .map(|trace| trace.metadata)
@@ -772,7 +778,8 @@ async fn response_timings_do_not_depend_on_trace_delivery() {
                 None,
             )) as Box<dyn RequestObserver>
         });
-        let (mut span, timing) = RequestTracker::new(Instant::now(), HostState::Warm, observer);
+        let (mut span, timing) =
+            RequestTracker::new(Instant::now(), HostState::Warm, 0.0, observer);
         span.admitted();
         span.finish(RequestOutcome::Completed);
         let timing = timing.await.unwrap();

@@ -11,6 +11,7 @@ pub(crate) struct RequestTracker {
     started_at_ms: u64,
     queue_wait_ms: Option<f64>,
     host_state: HostState,
+    routing_ms: f64,
     state_version: Option<u64>,
     completion: Option<RequestCompletion>,
     response: Option<oneshot::Sender<RequestMetadata>>,
@@ -22,6 +23,7 @@ impl RequestTracker {
     pub(crate) fn new(
         started: Instant,
         host_state: HostState,
+        routing_ms: f64,
         observer: Option<Box<dyn RequestObserver>>,
     ) -> (Self, oneshot::Receiver<RequestMetadata>) {
         let (response, timing) = oneshot::channel();
@@ -34,6 +36,7 @@ impl RequestTracker {
             started_at_ms: now.saturating_sub(started.elapsed().as_millis() as u64),
             queue_wait_ms: None,
             host_state,
+            routing_ms,
             state_version: None,
             completion: None,
             response: Some(response),
@@ -96,6 +99,7 @@ impl RequestTracker {
                 duration_ms: self.elapsed_ms(),
                 queue_wait_ms: self.queue_wait_ms,
                 host_state: self.host_state,
+                routing_ms: self.routing_ms,
             },
         };
         self.completion = Some(completion.clone());
@@ -157,6 +161,7 @@ pub(crate) struct RequestCheckpoints {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RequestMetadata {
+    pub routing_ms: f64,
     pub duration_ms: f64,
     pub queue_wait_ms: Option<f64>,
     pub host_state: HostState,

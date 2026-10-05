@@ -94,12 +94,13 @@ impl ActorHostHttpService {
         invocation: ActorInvocation,
         owner_epoch: u64,
         host_state: HostState,
+        routing_ms: f64,
     ) -> InvocationResponse {
         let actor = invocation.actor.clone();
         let request_id = invocation.request_id.clone();
         let (result, metadata) = self
             .host
-            .invoke_actor(invocation, owner_epoch, host_state)
+            .invoke_actor(invocation, owner_epoch, host_state, routing_ms)
             .await;
         let outcome = match result {
             Ok(ActorExecutionResult::Completed { result, effects }) => {
@@ -169,6 +170,7 @@ async fn socket_event(
             request.owner_epoch,
             std::time::Instant::now(),
             request.host_state,
+            request.routing_ms,
         )
         .await;
     let reply = match result {
@@ -218,7 +220,12 @@ async fn invoke(
     invocation.validate().map_err(bad_request)?;
     Ok(Json(
         service
-            .execute(invocation, request.owner_epoch, request.host_state)
+            .execute(
+                invocation,
+                request.owner_epoch,
+                request.host_state,
+                request.routing_ms,
+            )
             .await,
     ))
 }
@@ -320,6 +327,7 @@ fn validate_host_request(
 struct InvokeRequest {
     #[serde(default)]
     host_state: HostState,
+    routing_ms: f64,
     request_id: String,
     owner_epoch: u64,
     method: String,

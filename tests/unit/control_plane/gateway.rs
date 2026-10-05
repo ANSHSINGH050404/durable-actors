@@ -100,6 +100,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         let uncertain_executions = uncertain_executions.clone();
         let host_states = host_states.clone();
         let handler = move |axum::Json(request): axum::Json<SocketEventRequest>| {
+            assert!(request.routing_ms.is_finite() && request.routing_ms > 0.0);
             host_states.lock().unwrap().push(request.host_state);
             let retiring = retiring.clone();
             let rejections = rejections.clone();

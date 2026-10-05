@@ -163,7 +163,7 @@ async fn run_activation(
         ("increment", before + 1),
         ("read", before + 1),
     ] {
-        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
+        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "routingMs":0.0, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
         assert_eq!(result["type"], "completed");
         assert_eq!(result["result"], expected);
         let metadata = &result["metadata"];
@@ -173,7 +173,7 @@ async fn run_activation(
         assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
         assert_eq!(metadata["hostState"], "warm");
     }
-    assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "routingMs":0.0, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(10), task).await???;
     assert!(

@@ -37,9 +37,11 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     );
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     let requests = fixture.host.requests.lock().unwrap();
+    let routing_ms = requests[0].1["routingMs"].as_f64().unwrap();
+    assert!(routing_ms >= 25.0);
     assert_eq!(
         requests[0].1,
-        json!({"requestId":"call-1", "ownerEpoch":1, "method":"sendMessage", "args":["hello"], "hostState":"cold"})
+        json!({"requestId":"call-1", "ownerEpoch":1, "method":"sendMessage", "args":["hello"], "hostState":"cold", "routingMs":routing_ms})
     );
     let principal = fixture
         .verifier
@@ -131,6 +133,7 @@ async fn combined_invocation_retries_known_non_execution_through_handoff() -> Re
         let mut replies = vec![(status, outcome); 4];
         replies.push((StatusCode::OK, json!({"type":"completed", "result":42})));
         let fixture = Fixture::start(replies).await?;
+        let started = std::time::Instant::now();
         let reply: Value = fixture
             .call(
                 "api-key",
@@ -140,6 +143,11 @@ async fn combined_invocation_retries_known_non_execution_through_handoff() -> Re
             .json()
             .await?;
         assert_eq!(reply["outcome"], json!({"type":"completed", "result":42}));
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let requests = fixture.host.requests.lock().unwrap();
+        let routing_ms = requests.last().unwrap().1["routingMs"].as_f64().unwrap();
+        assert!(routing_ms >= 400.0 && routing_ms <= elapsed_ms);
+        drop(requests);
         assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 5);
         assert!(fixture.host.requests.lock().unwrap().iter().all(
             |(_, request)| request["requestId"] == "same-id" && request["hostState"] == "cold"
@@ -492,6 +500,7 @@ impl HostProvisioner for InvocationProvisioner {
         _: bool,
         _: Option<&crate::bucket::OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
+        tokio::time::sleep(Duration::from_millis(25)).await;
         let lease = HostLease {
             route: self.route.clone(),
             ..test_lease(&HostId::new(format!(

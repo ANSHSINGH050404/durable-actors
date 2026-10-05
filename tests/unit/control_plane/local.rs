@@ -106,6 +106,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
                 duration_ms: 1.0,
                 queue_wait_ms: None,
                 host_state: HostState::Warm,
+                routing_ms: 0.0,
                 outcome: crate::request_traces::RequestOutcome::Completed,
                 metadata: None,
             }],

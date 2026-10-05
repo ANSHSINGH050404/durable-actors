@@ -27,6 +27,7 @@ async fn response_and_observability_preserve_routing_start_context() -> Result<(
             .invoke_with_start(request_id, "counter-1", host_state)
             .await?;
         assert_eq!(reply["metadata"]["hostState"], host_state.as_str());
+        assert_eq!(reply["metadata"]["routingMs"], 500.0);
         assert_trace_metadata(&reply, fixture.traces.recv().await.unwrap());
     }
     Ok(())
@@ -40,7 +41,7 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
         .with_writer(log.reopen()?)
         .finish();
     let _subscriber = tracing::subscriber::set_default(subscriber);
-    let (mut tracker, response) = RequestTracker::new(Instant::now(), HostState::Warm, None);
+    let (mut tracker, response) = RequestTracker::new(Instant::now(), HostState::Warm, 0.0, None);
     tracker.admitted();
     tracker.mark(crate::request_tracking::RequestStage::StateCacheChecked);
     tracker.mark(crate::request_tracking::RequestStage::ActorExecutionCompleted);
@@ -132,6 +133,7 @@ fn assert_trace_metadata(reply: &Value, trace: crate::request_traces::RequestTra
             "durationMs": trace["durationMs"],
             "queueWaitMs": trace["queueWaitMs"],
             "hostState": trace["hostState"],
+            "routingMs": trace["routingMs"],
         })
     );
 }
@@ -337,7 +339,7 @@ impl HttpHost {
         )?;
         Ok(self.client.post(format!("{}/v1/projects/default/actors/Counter/{actor_id}/invoke", self.origin))
             .bearer_auth(token.token)
-            .json(&json!({"requestId": request_id, "ownerEpoch": 1, "method": "increment", "args": [], "hostState": host_state}))
+            .json(&json!({"requestId": request_id, "ownerEpoch": 1, "method": "increment", "args": [], "hostState": host_state, "routingMs": 500.0}))
             .send().await?.error_for_status()?.json().await?)
     }
 }

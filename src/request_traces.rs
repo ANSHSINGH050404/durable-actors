@@ -38,6 +38,7 @@ pub(crate) struct RequestTrace {
     pub operation: String,
     pub connection_id: Option<String>,
     pub started_at_ms: u64,
+    pub routing_ms: f64,
     pub duration_ms: f64,
     pub queue_wait_ms: Option<f64>,
     #[serde(default)]
@@ -66,6 +67,10 @@ impl RequestTrace {
         ensure!(
             self.connection_id.as_ref().is_none_or(|id| id.len() <= 256),
             "invalid trace connection ID"
+        );
+        ensure!(
+            self.routing_ms.is_finite() && self.routing_ms >= 0.0,
+            "invalid routing duration"
         );
         ensure!(
             self.duration_ms.is_finite() && self.duration_ms >= 0.0,
@@ -411,6 +416,7 @@ impl TraceRecorder {
                 duration_ms: 0.0,
                 queue_wait_ms: None,
                 host_state: HostState::Warm,
+                routing_ms: 0.0,
                 outcome: RequestOutcome::Interrupted,
                 metadata: bounded_metadata(metadata),
             },
@@ -427,6 +433,7 @@ impl RequestObserver for TraceRecorder {
         trace.duration_ms = completion.timings.duration_ms;
         trace.queue_wait_ms = completion.timings.queue_wait_ms;
         trace.host_state = completion.timings.host_state;
+        trace.routing_ms = completion.timings.routing_ms;
         self.sender.send(trace);
     }
 }

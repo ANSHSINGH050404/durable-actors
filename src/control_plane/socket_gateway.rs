@@ -28,6 +28,7 @@ pub(crate) use crate::sockets::operations::{SocketOperation, SocketOperationRepl
 pub(crate) struct SocketEventRequest {
     #[serde(default)]
     pub host_state: HostState,
+    pub routing_ms: f64,
     pub owner_epoch: u64,
     pub invocation: ActorSocketInvocation,
 }
@@ -250,7 +251,8 @@ impl SocketGateway {
         ticket: &SocketTicket,
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>> {
-        let retry_deadline = Instant::now() + super::CONTROL_PLANE_REQUEST_TIMEOUT;
+        let started = Instant::now();
+        let retry_deadline = started + super::CONTROL_PLANE_REQUEST_TIMEOUT;
         let mut host_state = HostState::Warm;
         loop {
             self.ensure_authority()?;
@@ -286,6 +288,7 @@ impl SocketGateway {
                 .bearer_auth(&target.token)
                 .json(&SocketEventRequest {
                     host_state,
+                    routing_ms: started.elapsed().as_secs_f64() * 1000.0,
                     owner_epoch: target.owner_epoch,
                     invocation: invocation.clone(),
                 })
