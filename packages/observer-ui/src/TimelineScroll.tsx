@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react"
 import type { ReactNode } from "react"
 
+import { useTimelineWheelZoom } from "./TimelineWheelZoom.js"
 import type { TimelineWindow } from "./TimelineZoom.js"
 
 export function TimelineScroll({ bounds, range, onChange, children }: { bounds: TimelineWindow; range: TimelineWindow; onChange: (range: TimelineWindow) => void; children: ReactNode }) {
@@ -11,6 +12,7 @@ export function TimelineScroll({ bounds, range, onChange, children }: { bounds: 
     const end = Math.max(bounds.end, range.end)
     const span = range.end - range.start
     const travel = end - start - span
+    useTimelineWheelZoom(viewport, bounds, range, onChange)
 
     useLayoutEffect(() => {
         const element = scrollbar.current!
@@ -28,7 +30,7 @@ export function TimelineScroll({ bounds, range, onChange, children }: { bounds: 
         const element = viewport.current!
         const wheel = (event: WheelEvent) => {
             const delta = event.deltaX || (event.shiftKey ? event.deltaY : 0)
-            if (!delta || event.ctrlKey || travel <= 0 || element.scrollWidth > element.clientWidth) return
+            if (!delta || event.ctrlKey || event.metaKey || travel <= 0 || element.scrollWidth > element.clientWidth) return
             const width = element.querySelector(".request-waterfall-axis > div")!.getBoundingClientRect().width
             if (!width) return
             const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? width : 1

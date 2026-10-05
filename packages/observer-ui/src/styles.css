@@ -2364,19 +2364,13 @@
     color: var(--muted-foreground);
     font-size: 11px;
 }
-.request-waterfall-zoom > div {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-.request-waterfall-zoom > span:last-child {
+.request-waterfall-zoom > [role="status"] {
     margin-left: auto;
 }
 .request-waterfall-zoom-slider {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 0 8px;
 }
 .request-waterfall-zoom-slider input {
     width: 140px;

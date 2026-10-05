@@ -13,12 +13,12 @@ export interface RequestTimelineProps {
 export function RequestTimeline({ records, selected, onSelect }: RequestTimelineProps) {
     const { start, span, rows } = requestTimeline(records)
     const bounds = { start, end: start + Math.max(1, span) }
-    const { range, zoomed, setWindow } = useTimelineZoom(bounds)
+    const { range, setWindow } = useTimelineZoom(bounds)
     const visible = rows.map(row => ({ ...row, calls: row.calls.filter(call => inWindow(call.record, range)) })).filter(row => row.calls.length > 0)
     return (
         <div className="request-waterfall" role="group" aria-label="Invocation waterfall">
             <TimelineHeading count={records.length} span={span} />
-            <TimelineZoomControls bounds={bounds} range={range} zoomed={zoomed} count={visible.reduce((total, row) => total + row.calls.length, 0)} onChange={setWindow} />
+            <TimelineZoomControls bounds={bounds} range={range} count={visible.reduce((total, row) => total + row.calls.length, 0)} onChange={setWindow} />
             <TimelineScroll bounds={bounds} range={range} onChange={setWindow}>
                 <TimelineAxis start={start} range={range} onChange={setWindow} />
                 {visible.map(row => (

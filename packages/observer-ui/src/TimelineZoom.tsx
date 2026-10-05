@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { PointerEvent } from "react"
 
-import { ChevronLeft, ChevronRight, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
-
-import { Button } from "./components/ui/button.js"
 import { duration } from "./request-timeline.js"
 
 export interface TimelineWindow {
@@ -25,72 +22,38 @@ export function useTimelineZoom(bounds: TimelineWindow) {
         const fitted = next && fitWindow(next, bounds)
         setWindow(fitted?.start === bounds.start && fitted.end === bounds.end ? null : fitted)
     }
-    return { range, zoomed, setWindow: update }
+    return { range, setWindow: update }
 }
 
-export function TimelineZoomControls({
-    bounds,
-    range,
-    zoomed,
-    count,
-    onChange
-}: {
-    bounds: TimelineWindow
-    range: TimelineWindow
-    zoomed: boolean
-    count: number
-    onChange: (range: TimelineWindow | null) => void
-}) {
+export function TimelineZoomControls({ bounds, range, count, onChange }: { bounds: TimelineWindow; range: TimelineWindow; count: number; onChange: (range: TimelineWindow | null) => void }) {
     const span = range.end - range.start
     const fullSpan = Math.max(bounds.end - bounds.start, span)
     const zoom = (width: number) => {
         const center = (range.start + range.end) / 2
         onChange({ start: center - width / 2, end: center + width / 2 })
     }
-    const pan = (direction: number) => onChange({ start: range.start + (direction * span) / 2, end: range.end + (direction * span) / 2 })
     return (
-        <div className="request-waterfall-zoom">
-            <div role="group" aria-label="Timeline zoom">
-                <Button variant="outline" size="icon-sm" aria-label="Zoom out" title="Zoom out" disabled={!zoomed} onClick={() => zoom(span * 2)}>
-                    <ZoomOut aria-hidden="true" />
-                </Button>
-                <label className="request-waterfall-zoom-slider">
-                    <span>Zoom</span>
-                    <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={fullSpan <= 1 ? 0 : Math.round((Math.log(fullSpan / span) / Math.log(fullSpan)) * 100)}
-                        aria-valuetext={`${duration(span)} window`}
-                        disabled={fullSpan <= 1}
-                        onChange={event => {
-                            const value = event.currentTarget.valueAsNumber
-                            if (value === 0) onChange(null)
-                            else zoom(fullSpan ** (1 - value / 100))
-                        }}
-                    />
-                </label>
-                <Button variant="outline" size="icon-sm" aria-label="Zoom in" title="Zoom in" disabled={span <= 1} onClick={() => zoom(span / 2)}>
-                    <ZoomIn aria-hidden="true" />
-                </Button>
-            </div>
-            <div role="group" aria-label="Timeline navigation">
-                <Button variant="outline" size="icon-sm" aria-label="Pan earlier" title="Pan earlier" disabled={range.start <= bounds.start} onClick={() => pan(-1)}>
-                    <ChevronLeft aria-hidden="true" />
-                </Button>
-                <Button variant="outline" size="icon-sm" aria-label="Pan later" title="Pan later" disabled={range.end >= bounds.end} onClick={() => pan(1)}>
-                    <ChevronRight aria-hidden="true" />
-                </Button>
-                <Button variant="ghost" size="sm" aria-label="Reset zoom" disabled={!zoomed} onClick={() => onChange(null)}>
-                    <RotateCcw aria-hidden="true" />
-                    Reset
-                </Button>
-            </div>
+        <div className="request-waterfall-zoom" role="group" aria-label="Timeline zoom">
+            <label className="request-waterfall-zoom-slider">
+                <span>Zoom</span>
+                <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={fullSpan <= 1 ? 0 : Math.round((Math.log(fullSpan / span) / Math.log(fullSpan)) * 100)}
+                    aria-valuetext={`${duration(span)} window`}
+                    disabled={fullSpan <= 1}
+                    onChange={event => {
+                        const value = event.currentTarget.valueAsNumber
+                        if (value === 0) onChange(null)
+                        else zoom(fullSpan ** (1 - value / 100))
+                    }}
+                />
+            </label>
             <span role="status">
                 {duration(span)} window · {count.toLocaleString()} {count === 1 ? "call" : "calls"} in view
             </span>
-            <span>Scroll horizontally to pan · Drag across the time axis to zoom</span>
         </div>
     )
 }
