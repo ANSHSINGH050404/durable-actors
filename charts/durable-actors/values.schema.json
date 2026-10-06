@@ -1,0 +1,219 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "publicUrl": {
+      "type": "string",
+      "pattern": "^https://[^/?#@]+/?$"
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "zone": {
+          "type": "string",
+          "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+        }
+      },
+      "required": [
+        "zone"
+      ]
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9._-]+[a-z0-9]$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "rapid"
+          ]
+        },
+        "rapid": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "buckets": {
+              "type": "array",
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9][a-z0-9._-]+[a-z0-9]$"
+                  },
+                  "zone": {
+                    "type": "string",
+                    "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "zone"
+                ]
+              }
+            }
+          },
+          "required": [
+            "buckets"
+          ]
+        }
+      },
+      "required": [
+        "bucket",
+        "mode",
+        "rapid"
+      ]
+    },
+    "credentialsSecret": {
+      "type": "string",
+      "minLength": 1
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "googleServiceAccount": {
+          "type": "string",
+          "pattern": "^[^@]+@[^@]+[.]iam[.]gserviceaccount[.]com$"
+        }
+      },
+      "required": [
+        "googleServiceAccount"
+      ]
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "tlsSecret": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "className",
+        "tlsSecret",
+        "annotations"
+      ]
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "actors": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "warm": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 64000
+        },
+        "memoryMiB": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 262144
+        }
+      },
+      "required": [
+        "warm",
+        "cpuMillis",
+        "memoryMiB"
+      ]
+    },
+    "resources": {
+      "type": "object"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "repository",
+        "digest"
+      ]
+    },
+    "sandboxNamespace": {
+      "type": "string",
+      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dnsCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "dnsCidrs"
+      ]
+    }
+  },
+  "required": [
+    "publicUrl",
+    "placement",
+    "storage",
+    "credentialsSecret",
+    "serviceAccount",
+    "ingress",
+    "replicaCount",
+    "actors",
+    "resources",
+    "image",
+    "sandboxNamespace",
+    "nodeSelector",
+    "networkPolicy"
+  ],
+  "$schema": "https://json-schema.org/draft-07/schema#"
+}

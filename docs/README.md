@@ -10,6 +10,10 @@
 - [Guide](reference/python-guide.md)
 - [Example](../examples/python/README.md)
 
+## Hosting
+
+- [Self-host on GCP](self-hosting.md)
+
 ## Reference
 
 - [CLI](reference/cli.md)

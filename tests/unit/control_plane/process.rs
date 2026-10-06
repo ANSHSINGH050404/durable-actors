@@ -191,7 +191,7 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn production_defaults_to_two_rapid_zones_and_gke() -> Result<()> {
+fn rapid_configuration_uses_two_zones_and_gke() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
@@ -257,6 +257,7 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
+        ("DURABLE_ACTORS_PERSISTENCE", "rapid"),
         ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
         (
             "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
@@ -371,5 +372,60 @@ fn default_region_requires_a_configured_compute_zone() -> Result<()> {
         r#"{"north-america-west":"us-west4-b"}"#,
     );
     assert!(parse(&values).is_ok());
+    Ok(())
+}
+
+#[test]
+fn standard_gcs_starts_with_one_bucket_and_no_rapid_configuration() -> Result<()> {
+    let mut values = process_environment();
+    values.remove("DURABLE_ACTORS_PERSISTENCE");
+    values.remove("DURABLE_ACTORS_ARCHIVE_BUCKET");
+    values.remove("DURABLE_ACTORS_RAPID_BUCKETS");
+    values.remove("DURABLE_ACTORS_ARTIFACT_BUCKET");
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert_eq!(config.storage.artifact_bucket, config.storage.bucket);
+    assert_eq!(
+        config.storage.persistence,
+        crate::bucket::PersistenceConfig::Local
+    );
+    Ok(())
+}
+
+#[test]
+fn persistence_selection_rejects_typos_and_conflicting_rapid_configuration() {
+    for mode in ["standrad", "", "standard"] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_PERSISTENCE", mode);
+        assert!(
+            ControlPlaneProcessConfig::from_lookup(|name| {
+                values.get(name).map(|value| (*value).into())
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn single_gke_zone_infers_the_actor_region() -> Result<()> {
+    let mut values = process_environment();
+    values.remove("DURABLE_ACTORS_GKE_ZONES");
+    values.insert("DURABLE_ACTORS_GKE_ZONE", "us-east4-a");
+    let config =
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))?;
+    assert_eq!(config.region.as_deref(), Some("north-america-east"));
+    assert_eq!(
+        config.sandbox_provider.gke.zones["north-america-east"],
+        ["us-east4-a"]
+    );
+    values.insert(
+        "DURABLE_ACTORS_GKE_ZONES",
+        r#"{"north-america-west":"us-west4-a"}"#,
+    );
+    assert!(
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
+            .is_err()
+    );
     Ok(())
 }

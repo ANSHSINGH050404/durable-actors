@@ -169,12 +169,12 @@ jobs:
                   sha256sum --check helm-v3.19.0-linux-amd64.tar.gz.sha256sum
                   tar -xzf helm-v3.19.0-linux-amd64.tar.gz
                   sudo install linux-amd64/helm /usr/local/bin/helm
-            - run: helm lint charts/terse -f charts/terse/tests/values.yaml
-            - run: node --test charts/terse/tests/chart.test.mjs
-            - run: helm package charts/terse --destination .artifacts/charts
+            - run: helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
+            - run: node --test charts/durable-actors/tests/chart.test.mjs tests/scripts/chart-image.test.mjs tests/scripts/python-release.test.mjs
+            - run: helm package charts/durable-actors --destination .artifacts/charts
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: terse-helm-chart
+                  name: durable-actors-helm-chart
                   path: .artifacts/charts/*.tgz
                   include-hidden-files: true
                   if-no-files-found: error

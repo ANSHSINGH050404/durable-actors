@@ -137,14 +137,8 @@ async fn control_plane_routes(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
-        &config.storage.persistence,
-        authority.clients(),
-        stop.clone(),
-        None,
-    )?);
-    crate::bucket::RapidSnapshots::validate_gcs(&config.storage.persistence, authority.clients())
-        .await?;
+    let snapshots =
+        snapshot_store(authority.clone(), &config.storage.persistence, stop.clone()).await?;
     let storage = Arc::new(
         RuntimeStorageReader::new(
             authority,
@@ -227,6 +221,23 @@ async fn control_plane_routes(
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
 
+async fn snapshot_store(
+    authority: Arc<GcsBucket>,
+    persistence: &crate::bucket::PersistenceConfig,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<Arc<dyn crate::bucket::SnapshotStore>> {
+    if persistence.rapid_settings().is_none() {
+        return Ok(Arc::new(crate::bucket::BucketSnapshots(authority)));
+    }
+    crate::bucket::RapidSnapshots::validate_gcs(persistence, authority.clients()).await?;
+    Ok(Arc::new(crate::bucket::RapidSnapshots::gcs(
+        persistence,
+        authority.clients(),
+        stop,
+        None,
+    )?))
+}
+
 async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
@@ -288,27 +299,13 @@ impl ControlPlaneProcessConfig {
         }
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
-        let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
-        crate::storage::validate_bucket(&artifact_bucket)?;
-        let archive_bucket = required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?;
-        let buckets = serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?;
-        let persistence = crate::bucket::PersistenceConfig::Rapid {
-            archive_bucket,
-            buckets,
-            archive_batch: crate::bucket::ArchiveBatchConfig {
-                bytes: get("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES")
-                    .map(|value| value.parse())
-                    .transpose()
-                    .context("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES must be an integer")?
-                    .unwrap_or(16 * 1024 * 1024),
-                interval_ms: get("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS")
-                    .map(|value| value.parse())
-                    .transpose()
-                    .context("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS must be an integer")?
-                    .unwrap_or(10_000),
-            },
+        let persistence = persistence_config(&mut get)?;
+        let artifact_bucket = if persistence.rapid_settings().is_none() {
+            get("DURABLE_ACTORS_ARTIFACT_BUCKET").unwrap_or_else(|| bucket.clone())
+        } else {
+            required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?
         };
-        persistence.validate()?;
+        crate::storage::validate_bucket(&artifact_bucket)?;
         let region = get("DURABLE_ACTORS_REGION");
         if let Some(region) = &region {
             crate::placement::validate_region(region)?;
@@ -359,6 +356,56 @@ impl ControlPlaneProcessConfig {
     }
 }
 
+fn persistence_config(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<crate::bucket::PersistenceConfig> {
+    match get("DURABLE_ACTORS_PERSISTENCE")
+        .as_deref()
+        .unwrap_or("standard")
+    {
+        "standard" => {
+            for name in [
+                "DURABLE_ACTORS_RAPID_BUCKETS",
+                "DURABLE_ACTORS_ARCHIVE_BUCKET",
+                "DURABLE_ACTORS_ARCHIVE_BATCH_BYTES",
+                "DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS",
+            ] {
+                ensure!(
+                    get(name).is_none(),
+                    "{name} cannot be used with standard persistence"
+                );
+            }
+            // Local names the existing snapshot format, including snapshots backed by GCS.
+            Ok(crate::bucket::PersistenceConfig::Local)
+        }
+        "rapid" => rapid_persistence(get),
+        _ => anyhow::bail!("DURABLE_ACTORS_PERSISTENCE must be standard or rapid"),
+    }
+}
+
+fn rapid_persistence(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<crate::bucket::PersistenceConfig> {
+    let persistence = crate::bucket::PersistenceConfig::Rapid {
+        archive_bucket: required(get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
+        buckets: serde_json::from_str(&required(get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
+        archive_batch: crate::bucket::ArchiveBatchConfig {
+            bytes: get("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES")
+                .map(|value| value.parse())
+                .transpose()
+                .context("DURABLE_ACTORS_ARCHIVE_BATCH_BYTES must be an integer")?
+                .unwrap_or(16 * 1024 * 1024),
+            interval_ms: get("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS")
+                .map(|value| value.parse())
+                .transpose()
+                .context("DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS must be an integer")?
+                .unwrap_or(10_000),
+        },
+    };
+    persistence.validate()?;
+    Ok(persistence)
+}
+
 fn trace_retention(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Duration> {
     let days: u64 = get("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS")
         .map(|value| value.parse())
@@ -389,7 +436,7 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let zones = compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
+    let zones = placement_zones(get)?;
     let public_origin = validated_http_url(
         &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
         "DURABLE_ACTORS_PUBLIC_URL",
@@ -447,6 +494,23 @@ fn sandbox_provider_config(
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
     })
+}
+
+fn placement_zones(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    if let Some(zone) = get("DURABLE_ACTORS_GKE_ZONE") {
+        ensure!(
+            get("DURABLE_ACTORS_GKE_ZONES").is_none(),
+            "configure GKE_ZONE or GKE_ZONES, not both"
+        );
+        let region = super::regions::storage_region(&zone)?.to_owned();
+        return compute_zones(&serde_json::to_string(&BTreeMap::from([(
+            region,
+            vec![zone],
+        )]))?);
+    }
+    compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)
 }
 
 fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {

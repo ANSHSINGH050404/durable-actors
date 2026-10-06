@@ -11,7 +11,7 @@ const manifestFiles = {
     observerPackage: "packages/observer-ui/package.json",
     pythonPackage: "sdk-python/pyproject.toml",
     pythonLock: "sdk-python/uv.lock",
-    helmChart: "charts/terse/Chart.yaml"
+    helmChart: "charts/durable-actors/Chart.yaml"
 }
 
 export const releaseManifestPaths = Object.values(manifestFiles)
@@ -55,10 +55,10 @@ export function stampReleaseVersion(manifests, version) {
         pythonPackage: replaceOne(manifests.pythonPackage, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/pyproject.toml"),
         pythonLock: replaceOne(manifests.pythonLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/uv.lock"),
         helmChart: replaceOne(
-            replaceOne(manifests.helmChart, /^version: .+$/mu, `version: ${version}`, "charts/terse/Chart.yaml"),
+            replaceOne(manifests.helmChart, /^version: .+$/mu, `version: ${version}`, "charts/durable-actors/Chart.yaml"),
             /^appVersion: .+$/mu,
             `appVersion: "${version}"`,
-            "charts/terse/Chart.yaml"
+            "charts/durable-actors/Chart.yaml"
         ),
         observerPackage: replaceOne(manifests.observerPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "packages/observer-ui/package.json")
     }

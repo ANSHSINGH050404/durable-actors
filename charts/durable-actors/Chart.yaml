@@ -1,0 +1,6 @@
+apiVersion: v2
+name: durable-actors
+description: Durable Actors on GKE with Standard GCS persistence and optional Rapid acceleration
+type: application
+version: 0.7.15
+appVersion: "0.7.15"

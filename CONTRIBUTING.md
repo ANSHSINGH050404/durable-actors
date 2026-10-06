@@ -37,7 +37,7 @@ The SDK build includes the observer UI and actor template. A full native bundle 
 | `sdk-python/`           | Python actors, executor, and generated clients |
 | `sdk/`                  | TypeScript SDK, compiler, generated client, and CLI |
 | `packages/observer-ui/` | Actor observability UI                              |
-| `charts/terse/`          | GKE Sandbox and GCS Rapid storage deployment          |
+| `charts/durable-actors/`          | GKE hosting with Standard GCS and optional Rapid          |
 | `tests/`                | Rust tests and repository script tests              |
 | `examples/`             | Chat, AI chat, and collaborative documents          |
 | `docs/`                 | API and configuration references                    |
@@ -84,8 +84,8 @@ cargo test --locked -- --ignored
 For Kubernetes deployment changes:
 
 ```sh
-helm lint charts/terse -f charts/terse/tests/values.yaml
-node --test charts/terse/tests/chart.test.mjs
+helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
+node --test charts/durable-actors/tests/chart.test.mjs
 ```
 
 For Python SDK changes, build the runtime and run from `sdk-python`:
@@ -123,3 +123,5 @@ The [CI workflow](.github/workflows/ci.yml) is the source of truth for toolchain
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
 Contributions are made under the repository's [MIT license](LICENSE.md).
+
+Published chart packages include the runtime image digest from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.

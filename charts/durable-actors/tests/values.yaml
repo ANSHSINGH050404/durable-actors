@@ -1,0 +1,9 @@
+publicUrl: https://actors.example.com
+placement:
+  zone: us-west4-a
+storage:
+  bucket: test-state
+serviceAccount:
+  googleServiceAccount: actors@test-project.iam.gserviceaccount.com
+image:
+  digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

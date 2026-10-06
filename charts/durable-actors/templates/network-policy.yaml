@@ -1,9 +1,8 @@
-{{- if .Values.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "terse.name" . }}
-  namespace: {{ .Values.sandboxNamespace }}
+  name: {{ include "actors.name" . }}
+  namespace: {{ (include "actors.sandboxNamespace" .) }}
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
@@ -12,7 +11,7 @@ spec:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
           podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
+            matchLabels: {app.kubernetes.io/name: {{ include "actors.name" . }}}
       ports:
         - {protocol: TCP, port: 7101}
         - {protocol: TCP, port: 7102}
@@ -21,7 +20,7 @@ spec:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
           podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
+            matchLabels: {app.kubernetes.io/name: {{ include "actors.name" . }}}
       ports:
         - {protocol: TCP, port: 7100}
     - to:
@@ -49,4 +48,3 @@ spec:
         - ipBlock:
             cidr: ::/0
             except: ["::1/128", "fc00::/7", "fe80::/10"]
-{{- end }}

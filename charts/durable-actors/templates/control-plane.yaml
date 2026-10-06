@@ -1,0 +1,122 @@
+{{- include "actors.validate" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "actors.name" . }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.googleServiceAccount | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "actors.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "actors.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "actors.name" . }}
+    spec:
+      serviceAccountName: {{ include "actors.name" . }}
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: sandbox.gke.io/runtime
+                    operator: NotIn
+                    values: [gvisor]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: control-plane
+          image: {{ include "actors.image" . | quote }}
+          ports:
+            - {name: http, containerPort: 7100}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          env:
+            - {name: DURABLE_ACTORS_PROCESS_ROLE, value: control_plane}
+            - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
+            - name: DURABLE_ACTORS_GATEWAY_IP
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - {name: DURABLE_ACTORS_GATEWAY_ROUTE, value: "http://$(DURABLE_ACTORS_GATEWAY_IP):7100"}
+            - name: DURABLE_ACTORS_CONTROL_PLANE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "actors.name" .) .Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
+            - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "actors.image" . | quote }}}
+            - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ include "actors.sandboxNamespace" . | quote }}}
+            - {name: DURABLE_ACTORS_GKE_ZONE, value: {{ .Values.placement.zone | quote }}}
+            - {name: DURABLE_ACTORS_PERSISTENCE, value: {{ .Values.storage.mode | quote }}}
+            - {name: DURABLE_ACTORS_BUCKET, value: {{ .Values.storage.bucket | quote }}}
+            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ .Values.storage.bucket | quote }}}
+            {{- if eq .Values.storage.mode "rapid" }}
+            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ .Values.storage.bucket | quote }}}
+            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ .Values.storage.rapid.buckets | toJson | quote }}}
+            {{- end }}
+            - {name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT, value: {{ .Values.serviceAccount.googleServiceAccount | quote }}}
+            - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.actors.warm | quote }}}
+            - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.actors.cpuMillis | quote }}}
+            - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ .Values.actors.memoryMiB | quote }}}
+            - name: DURABLE_ACTORS_POSTGRES_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: postgres-url}
+            - name: DURABLE_ACTORS_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
+            - name: DURABLE_ACTORS_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "actors.name" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "actors.name" . }}
+  ports:
+    - {name: http, port: 7100, targetPort: http}
+{{- if gt (int .Values.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "actors.name" . }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "actors.name" . }}
+{{- end }}

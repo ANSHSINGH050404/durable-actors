@@ -17,7 +17,7 @@ They provide _stateful serverless functions_, a foundational building block that
 - **If you were building Notion...** a document actor can coordinate concurrent edits from several people and agents (serialized execution)
 
 2. Generate type-safe clients automatically with the Durable Actors SDK. For now, it supports Python and TypeScript.
-3. Develop locally with one command and later self-host the Durable Actors runtime for production.
+3. Develop locally with one command and later [self-host the Durable Actors runtime on GCP](docs/self-hosting.md).
 
 ## Quickstart: Multiplayer AI Chat
 

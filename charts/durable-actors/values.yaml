@@ -1,0 +1,32 @@
+publicUrl: ""
+placement:
+  zone: ""
+storage:
+  bucket: ""
+  mode: standard
+  rapid:
+    buckets: []
+credentialsSecret: actors-credentials
+serviceAccount:
+  googleServiceAccount: ""
+ingress:
+  enabled: false
+  className: ""
+  tlsSecret: ""
+  annotations: {}
+replicaCount: 1
+actors:
+  warm: 0
+  cpuMillis: 500
+  memoryMiB: 256
+resources:
+  requests: {cpu: 250m, memory: 512Mi}
+  limits: {memory: 1Gi}
+image:
+  repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
+  # Release packaging supplies the matching immutable runtime digest.
+  digest: ""
+sandboxNamespace: ""
+nodeSelector: {}
+networkPolicy:
+  dnsCidrs: []

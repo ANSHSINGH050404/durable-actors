@@ -63,23 +63,30 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Kubernetes hosting
 
-Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox. It runs the control plane, a WebSocket connection gateway, and a prewarmed actor pool. The chart can place WebSocket gateways in a separate deployment. The chart sets these runtime variables:
+Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Sandbox with PostgreSQL and one Standard GCS bucket. One controller handles HTTP and WebSockets, and actor pods start on demand. The chart sets `DURABLE_ACTORS_SPARE_IDLE=0`; the runtime's standalone default above remains 64.
 
-| Variable                                    | Description                                                                                                                                                                                                                                         |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_PROCESS_ROLE`               | `control_plane` for the server; the provider assigns actor/spare roles.                                                                                                                                                                             |
-| `DURABLE_ACTORS_CONTROL_PLANE_BIND`         | Listen address, `0.0.0.0:7100` in the chart.                                                                                                                                                                                                        |
-| `DURABLE_ACTORS_CONTROL_PLANE_URL`          | Private Kubernetes Service origin reachable from sandboxes.                                                                                                                                                                                         |
-| `DURABLE_ACTORS_GATEWAY_ROUTE`              | Required private HTTP origin of this gateway pod; the chart uses the pod IP.                                                                                                                                                                        |
-| `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process can own socket rooms; defaults to `true`. The chart disables it on ordinary control-plane replicas when dedicated gateways are enabled.                                                                                        |
-| `DURABLE_ACTORS_PUBLIC_URL`                 | Public HTTPS origin for client invocation and socket routing.                                                                                                                                                                                       |
-| `DURABLE_ACTORS_POSTGRES_URL`               | Registry, trace and spare bookkeeping database; migrations required.                                                                                                                                                                                |
-| `DURABLE_ACTORS_BUCKET`                     | Standard GCS authority bucket for CAS ownership and leases.                                                                                                                                                                                         |
-| `DURABLE_ACTORS_ARTIFACT_BUCKET`            | Immutable compiled customer code.                                                                                                                                                                                                                   |
-| `DURABLE_ACTORS_ARCHIVE_BUCKET`             | Permanent Standard GCS bucket for manifests, checkpoints, and archived log segments.                                                                                                                                                                |
-| `DURABLE_ACTORS_RAPID_BUCKETS`              | JSON array of exactly two `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct Rapid zones. Both durable flushes are required for acknowledgment.                                                                                    |
-| `DURABLE_ACTORS_GKE_NAMESPACE`              | Dedicated sandbox namespace, default `terse-sandboxes`.                                                                                                                                                                                             |
-| `DURABLE_ACTORS_GKE_ZONES`                  | JSON map from canonical compute region to a nonempty list of Google zones, for example `{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}`. A single zone string is also accepted. Actor placement spreads across the eligible zones. |
-| `DURABLE_ACTORS_RUNTIME_IMAGE`              | Shared runtime OCI image pinned by SHA-256 digest.                                                                                                                                                                                                  |
-| `DURABLE_ACTORS_JWT_SIGNING_KEY`            | Shared base64 Ed25519 PKCS#8 key; stable across restarts.                                                                                                                                                                                           |
-| `GOOGLE_APPLICATION_CREDENTIALS`            | Optional ADC file; use Workload Identity on GKE.                                                                                                                                                                                                    |
+| Variable | Description |
+| --- | --- |
+| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` for the server; the provider assigns actor/spare roles. |
+| `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
+| `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
+| `DURABLE_ACTORS_GATEWAY_ROUTE` | Private HTTP origin of the gateway pod; the chart uses its pod IP. |
+| `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process can own socket rooms; defaults to `true`. |
+| `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
+| `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
+| `DURABLE_ACTORS_PERSISTENCE` | `standard` by default. Select `rapid` for two-zone Rapid append logs with Standard archives. |
+| `DURABLE_ACTORS_BUCKET` | Standard GCS bucket for ownership and, in Standard mode, immutable state snapshots. |
+| `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled actor code. Defaults to `DURABLE_ACTORS_BUCKET` in Standard mode; the chart uses that bucket in both modes. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Required only in Rapid mode: permanent Standard GCS manifests, checkpoints, and archived log segments. The chart uses `storage.bucket`. |
+| `DURABLE_ACTORS_RAPID_BUCKETS` | Required only in Rapid mode: JSON array of exactly two `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct zones. Both durable flushes are required for acknowledgment. |
+| `DURABLE_ACTORS_ARCHIVE_BATCH_BYTES` | Rapid archive batch target, default `16777216` bytes. |
+| `DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS` | Rapid archive batch interval, default `10000` milliseconds. |
+| `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
+| `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
+| `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |
+| `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
+| `DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT` | Workload Identity service account used as the storage-token cache issuer identity. |
+| `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
+
+Standard mode rejects Rapid bucket and archive settings. Storage mode and bucket identities are fixed for existing actor ownership records; changing them requires a planned data migration. See [Rapid configuration](../self-hosting.md#speed-up-writes-with-gcs-rapid) for bucket creation, IAM, and chart values.
