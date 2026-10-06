@@ -167,14 +167,14 @@ access = actors.Room.Authorization(
 grant = ActorProxy.handle(access)
 ```
 
-## Sandbox resources
+## Compute resources
 
 Override deployment defaults per actor; see [configuration](configuration.md#per-actor-sandbox-overrides) for limits and placement rules.
 
 ```python
-from durable_actors import Actor, persisted, sandbox
+from durable_actors import Actor, compute, persisted
 
-@sandbox(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
+@compute(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
 class CustomerAgent(Actor):
     count: int = persisted(0)
 

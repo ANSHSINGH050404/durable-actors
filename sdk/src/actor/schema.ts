@@ -1,6 +1,6 @@
 import type { SocketContract } from "../wire/contract.js"
 
-import type { SandboxOptions } from "./sandbox.js"
+import type { ComputeOptions } from "./compute.js"
 
 const ACTOR_ARTIFACT_VERSION = 1
 
@@ -20,7 +20,7 @@ interface ActorFieldSchema {
 interface ActorSchema {
     readonly actorName: string
     readonly fields: readonly ActorFieldSchema[]
-    readonly sandbox?: SandboxOptions
+    readonly sandbox?: ComputeOptions
     readonly reentrantMethods?: readonly string[]
     readonly contract?: SocketContract
 }

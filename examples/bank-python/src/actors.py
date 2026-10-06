@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from durable_actors import Actor, ActorSocket, emitted, ephemeral, interleave, persisted, sandbox
+from durable_actors import Actor, ActorSocket, compute, emitted, ephemeral, interleave, persisted
 
 
 class Metadata(BaseModel):
@@ -21,7 +21,7 @@ class Outgoing(BaseModel):
 Socket = ActorSocket[Metadata, Outgoing]
 
 
-@sandbox(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000)
+@compute(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000)
 class BankAccount(Actor[Metadata, Incoming, Outgoing]):
     balance: int = emitted(persisted(0))
     _deposits_since_wake: int = ephemeral(0)

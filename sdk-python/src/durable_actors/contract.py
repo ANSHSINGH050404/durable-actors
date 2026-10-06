@@ -12,9 +12,9 @@ from pydantic.json_schema import JsonSchemaMode
 from typing_extensions import TypeAliasType
 
 from .actor import Actor
+from .compute import compute_contract
 from .guards import is_document, is_field, is_list
 from .json import JsonValue
-from .sandbox import sandbox_contract
 
 Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
@@ -192,7 +192,7 @@ def actor_contract(definition: Definition) -> Document:
     return {
         "actorName": definition.actor.__name__,
         **documentation(definition.actor),
-        **sandbox_contract(definition.actor),
+        **compute_contract(definition.actor),
         "rpc": {"schema": rpc_schema, "methods": methods},
         "socket": {
             "version": 1,

@@ -1,6 +1,6 @@
 import type ts from "typescript"
 
-import type { SandboxOptions } from "../actor/sandbox.js"
+import type { ComputeOptions } from "../actor/compute.js"
 import { Persistence } from "../actor/schema.js"
 import type { ActorSchema } from "../actor/schema.js"
 
@@ -14,14 +14,14 @@ interface SdkSymbols {
     readonly Ephemeral: ts.Symbol
     readonly Emittable: ts.Symbol
     readonly Interleave?: ts.Symbol
-    readonly Sandbox?: ts.Symbol
+    readonly Compute?: ts.Symbol
 }
 
 enum AnnotationKind {
     Persistence = "persistence",
     Emission = "emission",
     Reentrancy = "reentrancy",
-    Sandbox = "sandbox"
+    Compute = "compute"
 }
 
 interface PersistenceAnnotation {
@@ -32,7 +32,7 @@ interface PersistenceAnnotation {
 
 type Annotation =
     | PersistenceAnnotation
-    | { readonly kind: AnnotationKind.Sandbox; readonly node: ts.Decorator; readonly options: SandboxOptions }
+    | { readonly kind: AnnotationKind.Compute; readonly node: ts.Decorator; readonly options: ComputeOptions }
     | { readonly kind: AnnotationKind.Emission | AnnotationKind.Reentrancy; readonly node: ts.Decorator }
 
 interface DecoratorUse {

@@ -24,11 +24,11 @@ test("the package root exposes the complete minimal actor API", () => {
     assert.deepEqual(Object.keys(api).sort(), [
         "Actor",
         "ActorInvocationError",
+        "Compute",
         "Emittable",
         "Ephemeral",
         "Interleave",
-        "Persisted",
-        "Sandbox"
+        "Persisted"
     ])
 })
 

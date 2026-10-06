@@ -282,13 +282,13 @@ class BankAccount(Actor):
 
 ## Configuring actor resources
 
-`@sandbox` overrides the deployment's default resources for one actor class:
+`@compute` overrides the deployment's default resources for one actor class:
 
 ```python
-from durable_actors import Actor, emitted, persisted, sandbox
+from durable_actors import Actor, compute, emitted, persisted
 
 
-@sandbox(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000)
+@compute(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000)
 class BankAccount(Actor):
     balance: int = emitted(persisted(0))
 ```

@@ -20,11 +20,11 @@ from durable_actors.codegen import generate_client
 )
 def test_python_actor_generated_client_and_durable_restart(tmp_path):
     (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
-from durable_actors import Actor, persisted, sandbox
+from durable_actors import Actor, compute, persisted
 import os
 class Count(BaseModel):
     value: int
-@sandbox(cpu=0.5, memory_mib=512, idle_timeout_ms=60000)
+@compute(cpu=0.5, memory_mib=512, idle_timeout_ms=60000)
 class Counter(Actor):
     'A durable counter.'
     count: int = persisted(0)

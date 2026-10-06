@@ -11,9 +11,9 @@ import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
 import { generateClientArtifacts } from "../../src/compiler/generators/client-artifacts.js"
 import { parsePublicContract } from "../../src/compiler/validate-public-contract.js"
 
-test("sandbox overrides survive compilation and public contract transport", async t => {
+test("compute overrides survive compilation and public contract transport", async t => {
     const project = await createProject(t)
-    await project.write(`import { Sandbox as S } from "durable-actors"
+    await project.write(`import { Compute as S } from "durable-actors"
         @S({ cpu: 1.5, memoryMiB: 2048, regions: ["canada"], idleTimeoutMs: 60000 })
         export class Room extends Actor { async read() { return 1 } }
         export class Plain extends Actor { async read() { return 2 } }

@@ -1,6 +1,6 @@
-import { Actor, type ActorSocket, Emittable, Ephemeral, Interleave, Persisted, Sandbox } from "durable-actors"
+import { Actor, type ActorSocket, Compute, Emittable, Ephemeral, Interleave, Persisted } from "durable-actors"
 
-@Sandbox({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000 })
+@Compute({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000 })
 export class BankAccount extends Actor<Metadata, Incoming, Outgoing> {
     @Persisted @Emittable balance = 0
     @Ephemeral private depositsSinceWake = 0

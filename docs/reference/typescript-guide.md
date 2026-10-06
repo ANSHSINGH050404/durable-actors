@@ -255,12 +255,12 @@ export class BankAccount extends Actor {
 
 ## Configuring actor resources
 
-`@Sandbox` overrides the deployment's default resources for one actor class:
+`@Compute` overrides the deployment's default resources for one actor class:
 
 ```typescript
-import { Actor, Emittable, Persisted, Sandbox } from "durable-actors"
+import { Actor, Compute, Emittable, Persisted } from "durable-actors"
 
-@Sandbox({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000 })
+@Compute({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000 })
 export class BankAccount extends Actor {
     @Persisted @Emittable balance = 0
 }

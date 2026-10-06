@@ -1,4 +1,4 @@
-"""Per-actor sandbox resources and placement."""
+"""Per-actor compute resources and placement."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .actor import Actor
 from .guards import is_actor
 
-SandboxRegion = Literal[
+ComputeRegion = Literal[
     "canada",
     "north-america-east",
     "north-america-central",
@@ -23,7 +23,7 @@ SandboxRegion = Literal[
 A = TypeVar("A", bound=Actor[Any, Any, Any, Any])
 
 
-class SandboxOptions(BaseModel):
+class ComputeOptions(BaseModel):
     """Overrides for an actor's deployment defaults; omitted values are inherited.
 
     cpu is a request and cap in cores, memory_mib in MiB, and idle_timeout_ms
@@ -37,25 +37,25 @@ class SandboxOptions(BaseModel):
     idle_timeout_ms: int | None = Field(
         default=None, ge=1, le=86400000, serialization_alias="idleTimeoutMs"
     )
-    regions: list[SandboxRegion] | None = Field(default=None, min_length=1, max_length=7)
+    regions: list[ComputeRegion] | None = Field(default=None, min_length=1, max_length=7)
 
     @field_validator("regions")
     @classmethod
-    def unique_regions(cls, value: list[SandboxRegion] | None) -> list[SandboxRegion] | None:
+    def unique_regions(cls, value: list[ComputeRegion] | None) -> list[ComputeRegion] | None:
         if value is not None and len(value) != len(set(value)):
             raise ValueError("regions must be unique")
         return value
 
 
-_options: WeakKeyDictionary[type[Actor[Any, Any, Any, Any]], SandboxOptions] = WeakKeyDictionary()
+_options: WeakKeyDictionary[type[Actor[Any, Any, Any, Any]], ComputeOptions] = WeakKeyDictionary()
 
 
-def sandbox(
+def compute(
     *,
     cpu: float | None = None,
     memory_mib: int | None = None,
     idle_timeout_ms: int | None = None,
-    regions: list[SandboxRegion] | None = None,
+    regions: list[ComputeRegion] | None = None,
 ) -> Callable[[type[A]], type[A]]:
     """Configure an actor class while preserving its type and method signatures.
 
@@ -63,22 +63,22 @@ def sandbox(
     idle_timeout_ms accepts 1–86400000. regions must be nonempty and unique.
     Use once per actor class. Unspecified values inherit deployment defaults.
     """
-    options = SandboxOptions(
+    options = ComputeOptions(
         cpu=cpu, memory_mib=memory_mib, idle_timeout_ms=idle_timeout_ms, regions=regions
     )
 
     def decorate(actor: type[A]) -> type[A]:
         if not is_actor(actor):
-            raise ValueError("sandbox requires an actor class")
+            raise ValueError("compute requires an actor class")
         if actor in _options:
-            raise ValueError("sandbox cannot be repeated")
+            raise ValueError("compute cannot be repeated")
         _options[actor] = options
         return actor
 
     return decorate
 
 
-def sandbox_contract(actor: type[Actor[Any, Any, Any, Any]]) -> dict[str, Any]:
+def compute_contract(actor: type[Actor[Any, Any, Any, Any]]) -> dict[str, Any]:
     options = _options.get(actor)
     return (
         {}

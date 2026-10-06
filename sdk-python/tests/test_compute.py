@@ -8,10 +8,10 @@ from durable_actors.codegen import generate_client
 from durable_actors.contract import public_contract
 
 
-def test_sandbox_options_preserve_actor_types_and_publish_runtime_overrides(tmp_path):
-    from durable_actors import sandbox
+def test_compute_options_preserve_actor_types_and_publish_runtime_overrides(tmp_path):
+    from durable_actors import compute
 
-    @sandbox(cpu=2, memory_mib=2048, idle_timeout_ms=60000, regions=["canada"])
+    @compute(cpu=2, memory_mib=2048, idle_timeout_ms=60000, regions=["canada"])
     class Agent(Actor):
         count: int = persisted(0)
 
@@ -29,10 +29,10 @@ def test_sandbox_options_preserve_actor_types_and_publish_runtime_overrides(tmp_
     assert Agent().increment() == 1
     generate_client(contract, tmp_path / "resource_client")
     source = tmp_path / "usage.py"
-    source.write_text("""from durable_actors import Actor, sandbox
+    source.write_text("""from durable_actors import Actor, compute
 from resource_client import actors
 
-@sandbox(cpu=0.125, memory_mib=512, idle_timeout_ms=1000, regions=["canada"])
+@compute(cpu=0.125, memory_mib=512, idle_timeout_ms=1000, regions=["canada"])
 class Agent(Actor):
     def increment(self) -> int:
         return 1
@@ -49,7 +49,7 @@ def check() -> int:
         )
         assert result.returncode == 0, result.stdout + result.stderr
     source.write_text(
-        source.read_text() + '\nsandbox(memory_mib="huge")\nsandbox(regions=["moon"])\n'
+        source.read_text() + '\ncompute(memory_mib="huge")\ncompute(regions=["moon"])\n'
     )
     for checker in ("mypy", "pyright"):
         result = subprocess.run(
@@ -79,20 +79,20 @@ def check() -> int:
     ],
 )
 def test_invalid_resource_options_fail_before_publication(options):
-    from durable_actors import sandbox
+    from durable_actors import compute
 
     with pytest.raises(ValueError):
-        sandbox(**options)
+        compute(**options)
 
 
-def test_unspecified_sandbox_defaults_are_inherited_and_repeated_decorators_are_rejected():
-    from durable_actors import sandbox
+def test_unspecified_compute_defaults_are_inherited_and_repeated_decorators_are_rejected():
+    from durable_actors import compute
 
     class Default(Actor):
         pass
 
     assert "sandbox" not in public_contract([Default])["actors"][0]
-    configured = sandbox(cpu=0.5)(Default)
+    configured = compute(cpu=0.5)(Default)
     assert public_contract([configured])["actors"][0]["sandbox"] == {"cpu": 0.5}
     with pytest.raises(ValueError, match="repeated"):
-        sandbox(memory_mib=512)(configured)
+        compute(memory_mib=512)(configured)

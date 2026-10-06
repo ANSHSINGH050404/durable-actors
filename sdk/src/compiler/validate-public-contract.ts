@@ -3,7 +3,7 @@ import type { JSONSchema7, JSONSchema7Definition } from "json-schema"
 import ts from "typescript"
 import { z } from "zod"
 
-import { sandboxOptionsSchema } from "../actor/sandbox.js"
+import { computeOptionsSchema } from "../actor/compute.js"
 import type { SocketContract } from "../wire/contract.js"
 import type { ActorApi, PublicActorContract, RpcContract } from "../wire/public-contract.js"
 
@@ -141,7 +141,7 @@ const documentSchema = z.strictObject({
         z.strictObject({
             actorName: component,
             description: z.string().optional(),
-            sandbox: sandboxOptionsSchema.optional(),
+            sandbox: computeOptionsSchema.optional(),
             socket: z.strictObject({
                 version: z.literal(1),
                 actorName: component,

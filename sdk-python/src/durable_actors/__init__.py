@@ -7,6 +7,9 @@ from .client import ActorProtocolError as ActorProtocolError
 from .client import ActorTransport as ActorTransport
 from .client import Client as Client
 from .client import SocketGrant as SocketGrant
+from .compute import ComputeOptions as ComputeOptions
+from .compute import ComputeRegion as ComputeRegion
+from .compute import compute as compute
 from .connection import StateSnapshot as StateSnapshot
 from .connection import StateUpdate as StateUpdate
 from .database import ActorDatabase as ActorDatabase
@@ -18,9 +21,6 @@ from .generated import UNSET as UNSET
 from .generated import Unset as Unset
 from .json import JsonValue as JsonValue
 from .proxy import SocketAuthorization as SocketAuthorization
-from .sandbox import SandboxOptions as SandboxOptions
-from .sandbox import SandboxRegion as SandboxRegion
-from .sandbox import sandbox as sandbox
 from .session import ActorSession as ActorSession
 from .session import ActorSessionRejectedError as ActorSessionRejectedError
 from .session import ActorSessionTransport as ActorSessionTransport

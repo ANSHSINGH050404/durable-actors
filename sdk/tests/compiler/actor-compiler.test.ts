@@ -8,18 +8,18 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
-test("rejects invalid or dynamic sandbox overrides", () => {
+test("rejects invalid or dynamic compute overrides", () => {
     for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
-        const result = analyze(`import { Actor, Sandbox } from "./sdk.js"
+        const result = analyze(`import { Actor, Compute } from "./sdk.js"
             const defaults = { cpu: 1 }
-            @Sandbox(${settings}) export class Room extends Actor { async read() {} }`)
+            @Compute(${settings}) export class Room extends Actor { async read() {} }`)
         assert.ok(result.diagnostics.length > 0, settings)
     }
     for (const declaration of [
-        "@Sandbox({}) @Sandbox({}) export class Room extends Actor {}",
-        "export class Room extends Actor { @Sandbox({}) async read() {} }"
+        "@Compute({}) @Compute({}) export class Room extends Actor {}",
+        "export class Room extends Actor { @Compute({}) async read() {} }"
     ])
-        assert.ok(analyze(`import { Actor, Sandbox } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
+        assert.ok(analyze(`import { Actor, Compute } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
 })
 
 test("db is reserved for the actor SQLite database", () => {
@@ -469,7 +469,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Interleave(...args: unknown[]) {}
-            export function Sandbox(...args: unknown[]) {}
+            export function Compute(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])

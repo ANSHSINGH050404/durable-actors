@@ -7,9 +7,9 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { DeclarationCompiler } from "./declarations.js"
+import { readCompute, validateCompute } from "./features/compute.js"
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
 import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
-import { readSandbox, validateSandbox } from "./features/sandbox.js"
 import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
@@ -299,8 +299,8 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readEmission(use)
         case sdk.Interleave:
             return readReentrancy(use)
-        case sdk.Sandbox:
-            return readSandbox(use)
+        case sdk.Compute:
+            return readCompute(use)
         default:
             return { annotations: [], diagnostics: [] }
     }
@@ -315,12 +315,12 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...persistence.diagnostics)
         const reentrancy = validateReentrancy(actor)
         diagnostics.push(...reentrancy.diagnostics)
-        const sandbox = validateSandbox(actor)
-        diagnostics.push(...sandbox.diagnostics)
+        const compute = validateCompute(actor)
+        diagnostics.push(...compute.diagnostics)
         schemas.push({
             actorName: actor.name,
             fields: persistence.fields,
-            ...(sandbox.options === undefined ? {} : { sandbox: sandbox.options }),
+            ...(compute.options === undefined ? {} : { sandbox: compute.options }),
             ...(reentrancy.methods.length ? { reentrantMethods: reentrancy.methods } : {})
         })
     }
@@ -336,13 +336,13 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         return canonicalSymbol(checker, symbol)
     }
     const interleave = exports.find(symbol => symbol.name === "Interleave")
-    const sandbox = exports.find(symbol => symbol.name === "Sandbox")
+    const compute = exports.find(symbol => symbol.name === "Compute")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
-        ...(sandbox === undefined ? {} : { Sandbox: canonicalSymbol(checker, sandbox) }),
+        ...(compute === undefined ? {} : { Compute: canonicalSymbol(checker, compute) }),
         ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) })
     }
 }
