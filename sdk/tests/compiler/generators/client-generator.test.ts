@@ -36,8 +36,8 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         `import { ActorProxy } from "./index.js"
         import type { ActorAuthorization } from "./index.js"
         import { actors } from "./index.js"
-        const grant: Promise<{ websocketUrl: string; homeRegion: string; connectByMs: number; authorizedUntilMs: number }> = actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
-        actors.Counter.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 })
+        const grant: Promise<{ websocketUrl: string; homeRegion: string; connectByMs: number }> = actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
+        actors.Counter.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         // @ts-expect-error unknown actor
         actors.Missing.prepareWebsocket({ actorId: "one", metadata: {} })
         // @ts-expect-error actor name is selected by the helper
@@ -87,8 +87,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         return Response.json({
             websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
             homeRegion: "north-america-east",
-            connectByMs: 1000,
-            authorizedUntilMs: 900000
+            connectByMs: 1000
         })
     }
     const options = { projectId: "default", controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
@@ -142,8 +141,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     assert.deepEqual(await actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } }), {
         websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
         homeRegion: "north-america-east",
-        connectByMs: 1000,
-        authorizedUntilMs: 900000
+        connectByMs: 1000
     })
     assert.equal(
         requests.at(-1)!.url,
@@ -151,7 +149,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     )
     const issued: { url: string; headers: Headers; body: unknown }[] = []
     await actors.Counter.prepareWebsocket(
-        { actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 },
+        { actorId: "one", metadata: { tenantId: 1, role: "viewer" } },
         { ...options },
         {
             fetch: async (url: unknown, init: RequestInit) => {
@@ -163,8 +161,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
                     homeRegion: "north-america-east",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         }
@@ -172,8 +169,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     assert.equal(issued[0]!.url, "https://actors.example.com/v1/projects/default/actors/Counter/one/find-websocket")
     assert.equal(issued[0]!.headers.get("authorization"), "Bearer secret")
     assert.deepEqual(issued[0]!.body, {
-        metadata: { tenantId: 1, role: "viewer" },
-        authorizationLifetimeMs: 60000
+        metadata: { tenantId: 1, role: "viewer" }
     })
     await assert.rejects(
         actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } }, options, {

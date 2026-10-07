@@ -94,13 +94,11 @@ test("deployment schemas describe both hosted and local registration and the com
     }
 })
 
-test("websocket discovery requires metadata and enforces grant limits", async () => {
+test("websocket discovery requires metadata and validates placement", async () => {
     const spec = await SwaggerParser.dereference(specPath)
     const validate = new Ajv({ strict: false }).compile(spec.components.schemas.FindWebSocketRequest)
-    for (const request of [{ metadata: null }, { metadata: {}, homeRegion: null }, { metadata: {}, authorizationLifetimeMs: 1000 }, { metadata: {}, authorizationLifetimeMs: 86400000 }])
-        assert.ok(validate(request), JSON.stringify(request))
-    for (const request of [{}, { metadata: {}, unknown: true }, { metadata: {}, authorizationLifetimeMs: 999 }, { metadata: {}, authorizationLifetimeMs: 86400001 }])
-        assert.equal(validate(request), false, JSON.stringify(request))
+    for (const request of [{ metadata: null }, { metadata: {}, homeRegion: null }, { metadata: {}, homeRegion: "us-west" }]) assert.ok(validate(request), JSON.stringify(request))
+    for (const request of [{}, { metadata: {}, unknown: true }, { metadata: {}, homeRegion: 42 }]) assert.equal(validate(request), false, JSON.stringify(request))
 })
 
 test("compiled deployments pin each artifact generation and checksum", async () => {

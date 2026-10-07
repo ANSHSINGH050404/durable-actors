@@ -73,7 +73,6 @@ export interface Authorization {
     actorId: string
     metadata: Metadata
     clientLocation?: { latitude: number; longitude: number }
-    authorizationLifetimeMs?: number
 }
 }`
 }

@@ -19,9 +19,7 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 #[ignore = "requires pnpm --dir sdk build"]
 async fn browser_receives_only_emittable_state_after_commit_and_on_reconnect() -> Result<()> {
     let mut stack = Stack::start().await?;
-    let grant = stack
-        .grant(serde_json::json!({"user":"one"}), 30_000)
-        .await?;
+    let grant = stack.grant(serde_json::json!({"user":"one"})).await?;
     let url = grant["websocketUrl"].as_str().context("socket URL")?;
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
     let initial = receive(&mut socket).await?;
@@ -83,9 +81,7 @@ async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_
 async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain_json() -> Result<()>
 {
     let mut stack = Stack::start().await?;
-    let grant = stack
-        .grant(serde_json::json!({"user":"one"}), 5_000)
-        .await?;
+    let grant = stack.grant(serde_json::json!({"user":"one"})).await?;
     let url = grant["websocketUrl"].as_str().context("socket URL")?;
     assert_eq!(
         reqwest::Url::parse(url)?.port_or_known_default(),
@@ -152,7 +148,7 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
 #[ignore = "requires pnpm --dir sdk build"]
 async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading() -> Result<()> {
     let mut stack = Stack::start().await?;
-    let grant = stack.grant(serde_json::json!({}), 3_000).await?;
+    let grant = stack.grant(serde_json::json!({})).await?;
     let mut url = reqwest::Url::parse(grant["websocketUrl"].as_str().context("socket URL")?)?;
     for key in [
         "",
@@ -181,30 +177,10 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_invalid_messages()
--> Result<()> {
+async fn signed_socket_rejects_invalid_messages() -> Result<()> {
     let mut stack = Stack::start().await?;
-    for active in [false, true] {
-        let grant = stack.grant(serde_json::json!({}), 1_000).await?;
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
-        assert_eq!(receive(&mut socket).await?["type"], "state");
-        if active {
-            socket
-                .send(Message::Text(r#"{"type":"start"}"#.into()))
-                .await?;
-            assert_eq!(
-                receive(&mut socket).await?,
-                serde_json::json!({"delta":"first"})
-            );
-        }
-        let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
-            .await?
-            .context("close")??;
-        assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4408));
-    }
     std::fs::write(stack.directory.path().join("release"), "")?;
-    let grant = stack.grant(serde_json::json!({}), 3_000).await?;
+    let grant = stack.grant(serde_json::json!({})).await?;
     let (mut socket, _) =
         tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
     receive(&mut socket).await?;
@@ -221,7 +197,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
 #[ignore = "requires pnpm --dir sdk build"]
 async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order() -> Result<()> {
     let mut stack = Stack::start().await?;
-    let grant = stack.grant(serde_json::json!({}), 30_000).await?;
+    let grant = stack.grant(serde_json::json!({})).await?;
     let (mut socket, _) =
         tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
     receive(&mut socket).await?;
@@ -287,7 +263,7 @@ await assert.rejects(counter.fail(), error => error instanceof ActorInvocationEr
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
     {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
-assert.ok(grant.authorizedUntilMs >= grant.connectByMs);
+assert.ok(grant.connectByMs > Date.now());
 assert.equal(grant.key, undefined);
 await writeFile(directory + '/release', '');
 const socket = new WebSocket(grant.websocketUrl);
@@ -551,14 +527,14 @@ struct Stack {
 }
 
 impl Stack {
-    async fn grant(&self, metadata: serde_json::Value, lifetime: u64) -> Result<serde_json::Value> {
+    async fn grant(&self, metadata: serde_json::Value) -> Result<serde_json::Value> {
         reqwest::Client::new()
             .post(format!(
                 "{}/v1/projects/default/actors/Counter/counter-1/find-websocket",
                 self.gateway
             ))
             .bearer_auth("test-api-key")
-            .json(&serde_json::json!({"metadata":metadata,"authorizationLifetimeMs":lifetime}))
+            .json(&serde_json::json!({"metadata":metadata}))
             .send()
             .await?
             .error_for_status()?
@@ -801,7 +777,7 @@ impl Stack {
     }
 
     async fn connect(&self) -> Result<Socket> {
-        let grant = self.grant(serde_json::json!({}), 60_000).await?;
+        let grant = self.grant(serde_json::json!({})).await?;
         let (socket, _) =
             tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().context("socket URL")?)
                 .await?;

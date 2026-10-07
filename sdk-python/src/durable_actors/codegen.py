@@ -490,18 +490,17 @@ def socket_methods(actor: str, types: dict[str, str]) -> list[str]:
         ),
         f"        self._transport.broadcast({actor!r}, self._actor_id, _argument(message, _TypeAdapter({outgoing})))",
         "",
-        f"    def prepare_websocket(self, metadata: {metadata}, *, authorization_lifetime_ms: int = 900000) -> _SocketGrant:",
+        f"    def prepare_websocket(self, metadata: {metadata}) -> _SocketGrant:",
         docstring(
             "Authorize a WebSocket connection without opening it.\n\n"
             "Args:\n"
-            "    metadata: Typed metadata passed to the actor's on_connect hook.\n"
-            "    authorization_lifetime_ms: Authorization duration, from 1,000 to\n"
-            "        86,400,000 milliseconds. Defaults to 15 minutes.\n\n"
+            "    metadata: Typed metadata passed to the actor's on_connect hook.\n\n"
             "Returns:\n"
-            "    A grant containing the connection URL and expiration deadlines.",
+            "    A grant containing the connection URL and admission deadline.\n"
+            "    Accepted connections remain authorized until they close.",
             8,
         ),
-        f"        return self._transport.prepare_websocket({actor!r}, self._actor_id, _argument(metadata, _TypeAdapter({metadata})), authorization_lifetime_ms=authorization_lifetime_ms)",
+        f"        return self._transport.prepare_websocket({actor!r}, self._actor_id, _argument(metadata, _TypeAdapter({metadata})))",
         "",
         f"    def connect(self, metadata: {metadata}) -> {connection}:",
         docstring(

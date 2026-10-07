@@ -17,15 +17,12 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
         region: "us-east".into(),
         home_region: Some("us-east".into()),
         metadata: serde_json::json!({"userId":"alice"}),
-        authorization_lifetime_ms: 900_000,
     };
-    let (token, connect_by, authorized_until) = issuer.issue_socket_at(grant(), now)?;
+    let (token, connect_by) = issuer.issue_socket_at(grant(), now)?;
     assert_eq!(connect_by, now + 60_000);
-    assert_eq!(authorized_until, now + 900_000);
     let claims = issuer.verify_socket_at(&token, now + 1)?;
     assert_eq!(claims.actor, grant().actor);
     assert_eq!(claims.metadata, grant().metadata);
-    assert_eq!(claims.authorized_until_ms, now + 900_000);
     assert!(issuer.verify_socket_at(&token, now + 60_000).is_err());
 
     assert!(issuer.verify_socket_at(&token, now - 1_000).is_err());

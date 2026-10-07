@@ -164,7 +164,6 @@ async fn find_websocket(
             .unwrap_or_else(|| state.invocations.default_region().into()),
         home_region: request.home_region.clone(),
         metadata: request.metadata,
-        authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
     grant.validate().map_err(ApiError::bad_request)?;
     let gateway =
@@ -184,12 +183,6 @@ struct FindWebSocketRequest {
     #[serde(default)]
     home_region: Option<String>,
     metadata: Value,
-    #[serde(default = "socket_authorization_lifetime")]
-    authorization_lifetime_ms: i64,
-}
-
-fn socket_authorization_lifetime() -> i64 {
-    900_000
 }
 
 async fn get_deployment(

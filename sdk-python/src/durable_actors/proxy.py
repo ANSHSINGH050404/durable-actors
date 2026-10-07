@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from .client import ActorTransport, SocketGrant, default_client
 
@@ -16,8 +16,7 @@ class SocketAuthorization(BaseModel, Generic[Metadata]):
 
     Authenticate the user and authorize actor access before issuing a grant.
     Generated actors.Name.Authorization narrows the actor name and metadata.
-    home_region optionally overrides placement; authorization_lifetime_ms
-    defaults to fifteen minutes and accepts one second through one day.
+    home_region optionally overrides placement.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -25,7 +24,6 @@ class SocketAuthorization(BaseModel, Generic[Metadata]):
     actor_id: str
     metadata: Metadata
     home_region: str | None = None
-    authorization_lifetime_ms: int = Field(default=900000, ge=1000, le=86400000)
 
 
 def prepare_authorization(
@@ -41,5 +39,4 @@ def prepare_authorization(
         authorization.actor_id,
         metadata,
         home_region=authorization.home_region,
-        authorization_lifetime_ms=authorization.authorization_lifetime_ms,
     )

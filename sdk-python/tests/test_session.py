@@ -32,14 +32,11 @@ class Transport:
             assert not self.closed
         return self.token
 
-    def prepare_websocket(
-        self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000, home_region=None
-    ):
+    def prepare_websocket(self, actor_name, actor_id, metadata, *, home_region=None):
         return SocketGrant(
             websocket_url="wss://example.test/socket",
             home_region="west",
             connect_by_ms=1000,
-            authorized_until_ms=2000,
         )
 
     def broadcast(self, actor_name, actor_id, message):

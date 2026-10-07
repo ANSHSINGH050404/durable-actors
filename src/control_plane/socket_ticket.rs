@@ -12,7 +12,6 @@ pub(crate) struct SocketGrant {
     pub region: String,
     pub home_region: Option<String>,
     pub metadata: Value,
-    pub authorization_lifetime_ms: i64,
 }
 
 impl SocketGrant {
@@ -23,10 +22,6 @@ impl SocketGrant {
             validate_region(region)?;
         }
         validate_socket_metadata(&self.metadata)?;
-        ensure!(
-            (1_000..=86_400_000).contains(&self.authorization_lifetime_ms),
-            "socket authorization lifetime must be between one second and one day"
-        );
         Ok(())
     }
 }
@@ -46,7 +41,6 @@ pub(crate) struct SocketTicket {
     pub home_region: Option<String>,
     pub metadata: Value,
     pub connect_by_ms: i64,
-    pub authorized_until_ms: i64,
 }
 
 impl SocketTicket {
@@ -62,18 +56,10 @@ impl SocketTicket {
             self.iat * 1000 <= now_ms && self.nbf * 1000 <= now_ms,
             "socket ticket is not active"
         );
+        ensure!(now_ms < self.connect_by_ms, "socket ticket has expired");
         ensure!(
-            now_ms < self.connect_by_ms && now_ms < self.authorized_until_ms,
-            "socket ticket has expired"
-        );
-        ensure!(
-            self.connect_by_ms <= self.authorized_until_ms
-                && self.connect_by_ms - self.iat * 1000 <= 61_000,
+            self.connect_by_ms - self.iat * 1000 <= 61_000,
             "invalid socket ticket admission lifetime"
-        );
-        ensure!(
-            self.authorized_until_ms - self.iat * 1000 <= 86_401_000,
-            "invalid socket authorization lifetime"
         );
         Ok(())
     }

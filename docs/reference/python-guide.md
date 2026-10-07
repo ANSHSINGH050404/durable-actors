@@ -81,6 +81,8 @@ class BankAccount(Actor):
 
 ## WebSocket messages
 
+Socket authorization is checked when connecting. The grant's `connect_by_ms` deadline limits when a connection can open; an accepted socket remains authorized until it closes, including while the actor sleeps. Reconnects require a valid grant. To revoke an existing connection, explicitly close it.
+
 Actors handle WebSocket connections directly. The three type parameters of `Actor` describe each connection. Payloads are JSON.
 
 - **Metadata** identifies the client. In this example, it is the `user_id` passed when the client connects.

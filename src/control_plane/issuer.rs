@@ -139,23 +139,20 @@ impl ActorJwtIssuer {
         })
     }
 
-    pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<(String, i64, i64)> {
+    pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<(String, i64)> {
         self.issue_socket_at(grant, unix_millis()?)
     }
 
-    fn issue_socket_at(&self, grant: SocketGrant, now_ms: i64) -> Result<(String, i64, i64)> {
+    fn issue_socket_at(&self, grant: SocketGrant, now_ms: i64) -> Result<(String, i64)> {
         grant.validate()?;
-        let lifetime = grant
-            .authorization_lifetime_ms
-            .min(duration_millis(self.max_lifetime)?);
+        let lifetime = duration_millis(self.max_lifetime)?.min(60_000);
         ensure!(
             lifetime >= 1000,
             "configured token lifetime is too short for a socket"
         );
-        let authorized_until_ms = now_ms
+        let connect_by_ms = now_ms
             .checked_add(lifetime)
-            .context("socket authorization time overflow")?;
-        let connect_by_ms = authorized_until_ms.min(now_ms + 60_000);
+            .context("socket admission time overflow")?;
         let claims = SocketTicket {
             iss: self.issuer.clone(),
             aud: format!("{}:websocket", self.authority_audience),
@@ -167,16 +164,11 @@ impl ActorJwtIssuer {
             region: grant.region,
             home_region: grant.home_region,
             metadata: grant.metadata,
-            authorized_until_ms,
             connect_by_ms,
         };
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
-        Ok((
-            encode(&header, &claims, &self.encoding_key)?,
-            connect_by_ms,
-            authorized_until_ms,
-        ))
+        Ok((encode(&header, &claims, &self.encoding_key)?, connect_by_ms))
     }
 
     #[cfg(test)]

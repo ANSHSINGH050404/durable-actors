@@ -32,16 +32,14 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
         readonly actorId: string
         readonly metadata: Actors[Name] extends ProxyActor<infer Metadata> ? Metadata : never
         readonly homeRegion?: string
-        readonly authorizationLifetimeMs?: number
     }
 }[keyof Actors & string]
 
-/** Browser connection URL and deadlines in Unix milliseconds. Treat the URL as a credential. */
+/** Browser connection URL and admission deadline in Unix milliseconds. Treat the URL as a credential. */
 interface SocketGrant {
     websocketUrl: string
     homeRegion: string
     connectByMs: number
-    authorizedUntilMs: number
 }
 
 /** Issues browser connection URLs from your backend. */
@@ -76,13 +74,6 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         const actorId = validateActorComponent("actor ID", authorization.actorId)
         if (!Object.hasOwn(this.actors, actorName)) throw new Error(`Unknown actor name: ${actorName}`)
         const metadata = socketMetadata(authorization.metadata)
-        const authorizationLifetimeMs = authorization.authorizationLifetimeMs ?? 900000
-        if (
-            !Number.isSafeInteger(authorizationLifetimeMs) ||
-            authorizationLifetimeMs < 1000 ||
-            authorizationLifetimeMs > 86400000
-        )
-            throw new Error("Socket authorization lifetime must be between one second and one day")
         const homeRegion =
             authorization.homeRegion === undefined
                 ? undefined
@@ -93,7 +84,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
                 method: "POST",
                 redirect: "manual",
                 headers: { ...authorizationHeaders(this.apiKey), "content-type": "application/json" },
-                body: JSON.stringify({ metadata, authorizationLifetimeMs, homeRegion }),
+                body: JSON.stringify({ metadata, homeRegion }),
                 signal: AbortSignal.timeout(this.setupTimeoutMs)
             }
         )
@@ -124,15 +115,13 @@ function socketGrant(value: unknown): SocketGrant {
         !/^wss?:$/u.test(new URL(value.websocketUrl).protocol) ||
         typeof value.homeRegion !== "string" ||
         !value.homeRegion ||
-        !Number.isSafeInteger(value.connectByMs) ||
-        !Number.isSafeInteger(value.authorizedUntilMs)
+        !Number.isSafeInteger(value.connectByMs)
     )
         throw new ActorProtocolError("invalid WebSocket authorization response")
     return {
         websocketUrl: value.websocketUrl,
         homeRegion: value.homeRegion,
-        connectByMs: value.connectByMs as number,
-        authorizedUntilMs: value.authorizedUntilMs as number
+        connectByMs: value.connectByMs as number
     }
 }
 

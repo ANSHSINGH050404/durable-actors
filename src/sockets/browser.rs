@@ -100,14 +100,12 @@ impl Session {
     async fn run(&mut self, socket: &mut WebSocket) -> Result<Closed, Closed> {
         let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
         loop {
-            let remaining = self.remaining()?;
             tokio::select! {
                 biased;
                 _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
                 _ = authority_checks.tick() => {
                     self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
                 }
-                _ = tokio::time::sleep(remaining) => return Err(Closed::new(4408, "socket authorization expired")),
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
                     if !result.unwrap_or(false) { return Err(Closed::new(4400, "actor socket handler failed")); }
@@ -208,7 +206,6 @@ impl Session {
             .dispatcher
             .ensure_authority()
             .map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
-        let deadline = tokio::time::Instant::now() + self.remaining()?;
         let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
         let send = socket.send(frame);
         tokio::pin!(send);
@@ -216,19 +213,10 @@ impl Session {
             tokio::select! {
                 biased;
                 _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
-                _ = tokio::time::sleep_until(deadline) => return Err(Closed::new(4408, "socket authorization expired")),
                 _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?,
                 result = &mut send => return result.map_err(|_| Closed::new(1006, "transport closed")),
             }
         }
-    }
-
-    fn remaining(&self) -> Result<Duration, Closed> {
-        let millis = self.ticket.authorized_until_ms - now_ms();
-        if millis <= 0 {
-            return Err(Closed::new(4408, "socket authorization expired"));
-        }
-        Ok(Duration::from_millis(millis as u64))
     }
 
     async fn disconnect(mut self, closed: Closed, was_clean: bool) {
@@ -254,13 +242,6 @@ impl Session {
         )
         .await;
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 async fn close(socket: &mut WebSocket, closed: &Closed) -> bool {

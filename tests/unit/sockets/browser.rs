@@ -7,6 +7,71 @@ use tokio_tungstenite::tungstenite::{
 
 struct Dispatcher(tokio::sync::mpsc::UnboundedSender<ActorSocketEvent>);
 
+#[tokio::test]
+async fn accepted_socket_outlives_its_ticket_without_waking_the_actor() -> Result<()> {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let state = SocketServerState {
+        registry: SocketRegistry::default(),
+        dispatcher: Arc::new(Dispatcher(events)),
+        stop: CancellationToken::new(),
+    };
+    let now = now_ms();
+    let ticket = SocketTicket {
+        iss: "issuer".into(),
+        aud: "socket".into(),
+        scope: "actor:socket".into(),
+        iat: now / 1000,
+        nbf: now / 1000,
+        exp: (now + 1999) / 1000,
+        actor: crate::actor::ActorKey {
+            project_id: "test".into(),
+            actor_name: "Room".into(),
+            actor_id: "one".into(),
+        },
+        region: "us-west".into(),
+        home_region: None,
+        metadata: serde_json::json!({"user":"one"}),
+        connect_by_ms: now + 1000,
+    };
+    ticket.validate(now)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server_state = state.clone();
+    let admitted = ticket.clone();
+    let router = Router::new().route(
+        "/",
+        get(move |upgrade: WebSocketUpgrade| {
+            let state = server_state.clone();
+            let ticket = admitted.clone();
+            async move { upgrade.on_upgrade(|socket| run(socket, state, ticket)) }
+        }),
+    );
+    let _server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        axum::serve(listener, router).await
+    }));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/")).await?;
+        assert_eq!(socket.next().await.transpose()?, Some(ClientMessage::Text("ready".into())));
+        assert!(matches!(received.recv().await, Some(ActorSocketEvent::Connect { .. })));
+        let connections = state.registry.connections_with_tag(&ticket.actor, None).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(ticket.validate(now_ms()).is_err(), "expired tickets cannot open new connections");
+        socket.send(ClientMessage::Ping("alive".into())).await?;
+        assert_eq!(socket.next().await.transpose()?, Some(ClientMessage::Pong("alive".into())));
+        assert!(received.try_recv().is_err(), "idle sockets must not deliver actor events");
+        assert_eq!(state.registry.connections_with_tag(&ticket.actor, None).await, connections);
+        state.registry.apply(&ticket.actor, vec![ActorSocketEffect::Send {
+            connection_id: connections[0].id.clone(),
+            message: ActorSocketMessage::Text { data: "still connected".into() },
+        }]).await;
+        assert_eq!(socket.next().await.transpose()?, Some(ClientMessage::Text("still connected".into())));
+        state.stop.cancel();
+        assert!(matches!(socket.next().await.transpose()?, Some(ClientMessage::Close(Some(frame))) if u16::from(frame.code) == 1012));
+        anyhow::Ok(())
+    }).await??;
+    Ok(())
+}
+
 #[async_trait]
 impl SocketDispatcher for Dispatcher {
     fn ensure_authority(&self) -> Result<()> {
@@ -83,7 +148,6 @@ async fn joining_broadcasts_and_close_handshakes_reach_the_actor() -> Result<()>
             home_region: None,
             metadata: serde_json::json!(mode),
             connect_by_ms: i64::MAX,
-            authorized_until_ms: now_ms() + 60_000,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -124,4 +188,11 @@ async fn joining_broadcasts_and_close_handshakes_reach_the_actor() -> Result<()>
         drop(server);
     }
     Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }

@@ -583,7 +583,7 @@ paths:
             operationId: openWebSocket
             tags: [WebSockets]
             summary: Open a WebSocket
-            description: Pass websocketUrl from the find-websocket response directly to new WebSocket().
+            description: Pass websocketUrl from the find-websocket response directly to new WebSocket() before connectByMs. Authorization is checked on connection; accepted sockets remain authorized until they close, including while the actor hibernates. Reconnects require a valid ticket.
             servers:
                 - url: https://{actorHost}
                   variables:
@@ -686,7 +686,7 @@ components:
                 application/json:
                     schema: { $ref: "#/components/schemas/FindWebSocketRequest" }
                     examples:
-                        socket: { value: { metadata: { userId: alice }, authorizationLifetimeMs: 900000 } }
+                        socket: { value: { metadata: { userId: alice } } }
     responses:
         Changed:
             description: Whether the deployment changed.
@@ -1083,7 +1083,6 @@ components:
             properties:
                 homeRegion: { $ref: "#/components/schemas/HomeRegion" }
                 metadata: { description: Required connection metadata; may be null. Maximum 64 KiB of JSON. }
-                authorizationLifetimeMs: { type: integer, minimum: 1000, maximum: 86400000, default: 900000 }
         HomeRegion:
             type: [string, "null"]
             pattern: "^[a-z0-9._-]{1,64}$"
@@ -1102,12 +1101,11 @@ components:
                     description: Route cache deadline in Unix milliseconds, bounded by the host idle timeout, host lease, and credential expiry. May precede the token's expiry.
         WebSocketGrant:
             type: object
-            required: [homeRegion, websocketUrl, connectByMs, authorizedUntilMs]
+            required: [homeRegion, websocketUrl, connectByMs]
             properties:
                 homeRegion: { type: string }
                 websocketUrl: { type: string, format: uri }
                 connectByMs: { type: integer, format: int64, description: Connect before this time. }
-                authorizedUntilMs: { type: integer, format: int64, description: Connection expires at this time. }
         Inventory:
             type: object
             required: [actors, connectionsComplete]

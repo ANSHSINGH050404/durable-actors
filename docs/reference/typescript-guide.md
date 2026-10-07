@@ -180,6 +180,8 @@ type Socket = ActorSocket<Metadata, Outgoing>
 
 To connect, your backend prepares a WebSocket grant for the actor, and the client opens its `websocketUrl`. A real backend checks the user's access before issuing a grant; the [chatroom example](../../examples/chat/README.md) shows a browser doing this.
 
+Open the connection before the grant's `connectByMs` deadline. Authorization is checked on connection; an accepted socket remains authorized until it closes, including while the actor sleeps. Reconnects require a valid grant. To revoke an existing connection, explicitly close it.
+
 ```typescript
 import { actors } from "./generated/index.js"
 

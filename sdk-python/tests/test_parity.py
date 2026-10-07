@@ -22,7 +22,6 @@ GRANT = {
     "websocketUrl": "wss://host.test/socket",
     "homeRegion": "west",
     "connectByMs": 9999999999999,
-    "authorizedUntilMs": 9999999999999,
 }
 
 
@@ -102,7 +101,6 @@ def test_generated_authorizations_are_typed_and_dispatch_to_the_correct_actor(
     assert json.loads(calls[0].content) == {
         "metadata": {"text": "Ada", "role": "user"},
         "homeRegion": "west",
-        "authorizationLifetimeMs": 900000,
     }
     source = tmp_path / "usage.py"
     source.write_text("""from parity_client import actors, ActorAuthorization, ActorProxy

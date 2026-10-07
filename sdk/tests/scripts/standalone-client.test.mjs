@@ -88,7 +88,7 @@ async function checkServerCalls(t, directory) {
             requests.map(request => request.url),
             ["/v1/projects/team-a/actors/ChatRoom/lobby/invoke", "/v1/projects/team-a/actors/ChatRoom/lobby/find-websocket"]
         )
-        assert.deepEqual(requests[1].body, { metadata: { userId: "alice" }, authorizationLifetimeMs: 900000 })
+        assert.deepEqual(requests[1].body, { metadata: { userId: "alice" } })
     }
 }
 
@@ -126,7 +126,7 @@ async function controlPlaneServer(t, calls, requests) {
             })
             response.end(JSON.stringify({ target, outcome: await invoked.json() }))
         } else {
-            response.end(JSON.stringify({ websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000, authorizedUntilMs: 900000 }))
+            response.end(JSON.stringify({ websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000 }))
         }
     })
     t.after(() => controlPlane.close())

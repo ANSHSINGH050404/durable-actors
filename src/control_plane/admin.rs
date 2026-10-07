@@ -219,10 +219,10 @@ impl AdminService {
         url.set_scheme(scheme)
             .map_err(|_| anyhow::anyhow!("invalid socket endpoint"))?;
         let home_region = grant.region.clone();
-        let (key, connect_by_ms, authorized_until_ms) = self.issuer.issue_socket(grant)?;
+        let (key, connect_by_ms) = self.issuer.issue_socket(grant)?;
         url.query_pairs_mut().append_pair("key", &key);
         Ok(
-            serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
+            serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms }),
         )
     }
 

@@ -10,15 +10,14 @@ test("malformed socket grants report a protocol error", async () => {
     const grant = {
         websocketUrl: "wss://host.example/socket?key=ticket",
         homeRegion: "local",
-        connectByMs: 1000,
-        authorizedUntilMs: 900000
+        connectByMs: 1000
     }
     for (const invalid of [
         { websocketUrl: "not a URL" },
         { websocketUrl: "https://host.example/socket" },
         { connectByMs: "1000" },
-        { authorizedUntilMs: 1.5 },
-        { authorizedUntilMs: Number.MAX_SAFE_INTEGER + 1 },
+        { connectByMs: 1.5 },
+        { connectByMs: Number.MAX_SAFE_INTEGER + 1 },
         { homeRegion: "" }
     ]) {
         const proxy = new SocketProxy(
@@ -54,8 +53,7 @@ test("socket grants use environment settings and prefer the shared secret over t
                 return Response.json({
                     websocketUrl: "ws://127.0.0.1:8123/socket?key=ticket",
                     homeRegion: "local",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         }
@@ -75,8 +73,7 @@ test("socket grants target the configured project as well as the actor", async (
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
                     homeRegion: "us-east",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         })
@@ -94,8 +91,7 @@ test("socket setup accepts an explicit home region and validates its timeout", a
                 return Response.json({
                     websocketUrl: "wss://modal.example/v1/socket?_modal_connect_token=modal&key=actor",
                     homeRegion: "north-america-east",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         }
@@ -128,8 +124,7 @@ test("proxy issues socket authorization using only server-selected target and me
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
                     homeRegion: "north-america-east",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         }
@@ -142,14 +137,12 @@ test("proxy issues socket authorization using only server-selected target and me
     assert.deepEqual(grant, {
         websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
         homeRegion: "north-america-east",
-        connectByMs: 1000,
-        authorizedUntilMs: 900000
+        connectByMs: 1000
     })
     assert.equal(requests[0]!.headers.get("authorization"), "Bearer backend-secret")
     assert.equal(requests[0]!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/find-websocket")
     assert.deepEqual(requests[0]!.body, {
-        metadata: { userId: "trusted" },
-        authorizationLifetimeMs: 900000
+        metadata: { userId: "trusted" }
     })
     assert.equal(requests.length, 1)
 })
@@ -193,8 +186,7 @@ test("local backend socket grants need no project or secret", async t => {
                 return Response.json({
                     websocketUrl: "ws://127.0.0.1:7100/v1/socket?key=ticket",
                     homeRegion: "local",
-                    connectByMs: 1000,
-                    authorizedUntilMs: 900000
+                    connectByMs: 1000
                 })
             }
         }

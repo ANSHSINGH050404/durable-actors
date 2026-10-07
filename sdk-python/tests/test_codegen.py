@@ -17,9 +17,7 @@ class Transport:
     def broadcast(self, actor_name, actor_id, message):
         raise AssertionError("not used")
 
-    def prepare_websocket(
-        self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000, home_region=None
-    ):
+    def prepare_websocket(self, actor_name, actor_id, metadata, *, home_region=None):
         raise AssertionError("not used")
 
     def invoke(self, actor_name, actor_id, method, args):
@@ -90,7 +88,6 @@ def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_p
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             raise AssertionError("not used")
@@ -125,7 +122,6 @@ def test_generated_names_cannot_shadow_client_runtime(tmp_path, monkeypatch):
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             raise AssertionError("not used")
@@ -160,7 +156,6 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             raise AssertionError("not used")
@@ -240,7 +235,6 @@ def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypat
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             raise AssertionError("not used")
@@ -309,7 +303,6 @@ def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(tmp_p
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             raise AssertionError("not used")
@@ -368,9 +361,7 @@ def test_generated_docstrings_survive_contract_transport(tmp_path, monkeypatch):
     assert "synchronously" in inspect.getdoc(remote.actors.Notebook.Stub.clear)
     assert "background thread" in inspect.getdoc(remote.actors.Notebook.Stub.subscribe)
     assert "metadata" in inspect.getdoc(remote.actors.Notebook.Stub.connect)
-    assert "authorization_lifetime_ms" in inspect.getdoc(
-        remote.actors.Notebook.Stub.prepare_websocket
-    )
+    assert "admission deadline" in inspect.getdoc(remote.actors.Notebook.Stub.prepare_websocket)
     assert "emitted" in inspect.getdoc(models.EmittedState)
     assert "omitted" in inspect.getdoc(models.StatePatch)
 
@@ -514,7 +505,6 @@ def test_generated_null_types_work_as_fields_arguments_and_socket_metadata(tmp_p
             actor_id,
             metadata,
             *,
-            authorization_lifetime_ms=900000,
             home_region=None,
         ):
             assert metadata is None
@@ -522,7 +512,6 @@ def test_generated_null_types_work_as_fields_arguments_and_socket_metadata(tmp_p
                 websocket_url="wss://example.test/socket",
                 home_region="canada",
                 connect_by_ms=1,
-                authorized_until_ms=2,
             )
 
         def broadcast(self, actor_name, actor_id, message):

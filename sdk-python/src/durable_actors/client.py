@@ -55,7 +55,6 @@ class SocketGrant(BaseModel):
         websocket_url: Authorized ws:// or wss:// URL to connect to.
         home_region: Region hosting the actor.
         connect_by_ms: Latest connection time, as Unix epoch milliseconds.
-        authorized_until_ms: Authorization expiry, as Unix epoch milliseconds.
     """
 
     model_config = ConfigDict(
@@ -64,13 +63,11 @@ class SocketGrant(BaseModel):
             "websocket_url": "websocketUrl",
             "home_region": "homeRegion",
             "connect_by_ms": "connectByMs",
-            "authorized_until_ms": "authorizedUntilMs",
         }[name],
     )
     websocket_url: str
     home_region: str
     connect_by_ms: int
-    authorized_until_ms: int
 
 
 class RpcTransport(Protocol):
@@ -88,7 +85,6 @@ class ActorTransport(RpcTransport, Protocol):
         actor_id: str,
         metadata: Any,
         *,
-        authorization_lifetime_ms: int = 900000,
         home_region: str | None = None,
     ) -> SocketGrant: ...
 
@@ -216,7 +212,6 @@ class Client:
         actor_id: str,
         metadata: Any,
         *,
-        authorization_lifetime_ms: int = 900000,
         home_region: str | None = None,
     ) -> SocketGrant:
         """Request a short-lived WebSocket grant without opening a connection.
@@ -225,22 +220,16 @@ class Client:
             actor_name: Exported actor class name.
             actor_id: Identity of the actor instance.
             metadata: JSON-compatible connection metadata, limited to 16 KiB.
-            authorization_lifetime_ms: Duration from 1,000 to 86,400,000
-                milliseconds; defaults to 15 minutes.
             home_region: Placement preference overriding the client default.
 
         Returns:
-            The authorized URL, home region, and connection/authorization deadlines.
+            The authorized URL, home region, and connection deadline.
+            Accepted connections remain authorized until they close.
         """
         self._ensure_open()
         placement = home_region if home_region is not None else self.home_region
         if placement is not None:
             component(placement, 255)
-        if (
-            type(authorization_lifetime_ms) is not int
-            or not 1000 <= authorization_lifetime_ms <= 86400000
-        ):
-            raise ValueError("authorization lifetime must be between one second and one day")
         if len(json.dumps(metadata, allow_nan=False).encode()) > 16384:
             raise ValueError("socket metadata exceeds 16 KiB")
         response = self._http.post(
@@ -248,7 +237,6 @@ class Client:
             headers=self.headers,
             json={
                 "metadata": metadata,
-                "authorizationLifetimeMs": authorization_lifetime_ms,
                 **({"homeRegion": placement} if placement is not None else {}),
             },
             follow_redirects=False,

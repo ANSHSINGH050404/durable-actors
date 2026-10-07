@@ -93,7 +93,6 @@ class ActorSessionTransport:
         actor_id: str,
         metadata: Any,
         *,
-        authorization_lifetime_ms: int = 900000,
         home_region: str | None = None,
     ) -> SocketGrant:
         """Issue a WebSocket grant with the current session's permissions."""
@@ -102,7 +101,6 @@ class ActorSessionTransport:
                 actor_name,
                 actor_id,
                 metadata,
-                authorization_lifetime_ms=authorization_lifetime_ms,
                 home_region=home_region,
             )
 
