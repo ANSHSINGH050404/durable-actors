@@ -9,6 +9,7 @@ info:
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
+        Public JSON request bodies are limited to 128 MiB; larger requests return HTTP 413.
         Servers listening beyond localhost warn when the secret is unset but still start.
 servers:
     - url: http://127.0.0.1:7100
@@ -739,7 +740,7 @@ components:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
         PayloadTooLarge:
-            description: Request rejected by an upstream transport limit (payload_too_large).
+            description: HTTP JSON request bodies over the 128 MiB limit return 413 (payload_too_large).
             content:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }

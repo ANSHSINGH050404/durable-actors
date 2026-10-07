@@ -17,8 +17,8 @@ use tokio_tungstenite::{
 };
 
 use super::{
-    ActorJwtVerifier, issuer::ActorJwtIssuer, service::ControlPlaneService,
-    socket_ticket::SocketTicketVerifier,
+    ActorJwtVerifier, MAX_CONTROL_PLANE_HTTP_BODY_BYTES, issuer::ActorJwtIssuer,
+    service::ControlPlaneService, socket_ticket::SocketTicketVerifier,
 };
 
 #[derive(Clone)]
@@ -72,7 +72,9 @@ impl Gateway {
                         "/internal/socket-operation",
                         axum::routing::post(super::socket_gateway::internal_operation),
                     )
-                    .layer(axum::extract::DefaultBodyLimit::disable())
+                    .layer(axum::extract::DefaultBodyLimit::max(
+                        MAX_CONTROL_PLANE_HTTP_BODY_BYTES,
+                    ))
                     .with_state(service),
             )
     }

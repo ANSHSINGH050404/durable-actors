@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use crate::actor::ActorKey;
 
 use super::{
-    MAX_CONTROL_PLANE_MESSAGE_BYTES,
+    MAX_CONTROL_PLANE_HTTP_BODY_BYTES,
     admin::{AdminService, HostLaunchSpec},
     contracts::PublicActorContract,
     service::{ControlPlaneService, TargetResolutionTimings},
@@ -64,7 +64,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
             post(find_websocket),
         )
-        .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_HTTP_BODY_BYTES))
         .with_state(PublicApiState {
             invocations,
             admin,
