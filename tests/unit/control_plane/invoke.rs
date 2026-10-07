@@ -114,6 +114,66 @@ async fn combined_invocation_authenticates_and_validates_requests() -> Result<()
 }
 
 #[tokio::test]
+async fn public_json_body_limit_rejects_oversized_requests() -> Result<()> {
+    const REQUEST_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+    let fixture = Fixture::start(vec![]).await?;
+    let client = reqwest::Client::new();
+    let find_actor = format!(
+        "{}/v1/projects/default/actors/ChatRoom/one/find-actor",
+        fixture.origin
+    );
+    let invoke = format!(
+        "{}/v1/projects/default/actors/ChatRoom/one/invoke",
+        fixture.origin
+    );
+    let below_limit = client
+        .post(&find_actor)
+        .bearer_auth("api-key")
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(below_limit.status(), StatusCode::OK);
+
+    let body = bytes::Bytes::from(format!(
+        "{{\"homeRegion\":\"north-america-east\",\"padding\":\"{}\"}}",
+        "x".repeat(REQUEST_LIMIT_BYTES)
+    ));
+    let oversized = client
+        .post(&find_actor)
+        .bearer_auth("api-key")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.clone())
+        .send()
+        .await?;
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        oversized.json::<Value>().await?["error"]["code"],
+        "payload_too_large"
+    );
+
+    let unauthenticated = client
+        .post(&invoke)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.clone())
+        .send()
+        .await?;
+    assert_eq!(unauthenticated.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        unauthenticated.json::<Value>().await?["error"]["code"],
+        "payload_too_large"
+    );
+
+    let internal = client
+        .post(format!("{}/internal/socket-operation", fixture.origin))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await?;
+    assert_eq!(internal.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
 async fn combined_invocation_retries_known_non_execution_through_handoff() -> Result<()> {
     for (status, outcome) in [
         (
